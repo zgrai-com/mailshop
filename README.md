@@ -1,0 +1,263 @@
+# Mailshop Cloudflare 商品中台
+
+Mailshop 是一套面向跨境电商选品与货源管理的轻量级商品中台。它将 Shopify 商品、SKU、媒体素材与 1688 候选货源集中管理，并提供图片搜索、货源匹配、员工账号和审计能力。
+
+项目采用 Cloudflare Workers 全栈部署：D1 保存业务数据，R2 保存员工上传的商品图片，React 管理界面通过 Worker Static Assets 托管。无需单独维护传统服务器，适合小团队快速搭建内部商品工作台。
+
+## 核心功能
+
+- 管理 Shopify 商品、SKU、选项、价格、库存、图片和视频
+- 为一个商品关联多个 1688 候选货源，并记录匹配状态、分数和 SKU 映射
+- 通过 OneBound 接口执行以图搜图，并将候选结果加入商品
+- 上传商品图片到 Cloudflare R2，通过受保护的媒体接口访问
+- 提供管理员初始化、员工账号、会话、登录限流和密码重置
+- 记录关键管理操作的审计日志
+- 提供 Bearer Token 保护的商品与货源导入接口
+- 支持从 Fehaute 商品页解析并导入完整商品数据
+
+## 技术栈
+
+- 前端：React、TypeScript、Vite、Lucide React
+- 后端：Cloudflare Workers、TypeScript、Zod
+- 数据库：Cloudflare D1
+- 对象存储：Cloudflare R2
+- 测试：Vitest
+- 部署：Wrangler
+
+## 项目结构
+
+```text
+.
+├── migrations/         # D1 数据库迁移
+├── src/                # Worker API、认证、数据库和集成逻辑
+├── tools/              # 数据导入工具
+├── web/                # React 管理界面
+├── wrangler.jsonc      # Cloudflare Workers 配置
+└── package.json        # 开发、测试与部署命令
+```
+
+## 运行前提
+
+- Node.js 20 或更高版本
+- npm
+- Cloudflare 账号，以及可用的 D1 数据库和 R2 存储桶
+- 已登录的 Wrangler CLI：`npx wrangler login`
+
+## Cloudflare 资源
+
+- Worker：`mailshop-product-admin`
+- D1：`mailshop-products`
+- R2：`mailshop-product-images`
+- D1 binding：`DB`
+- R2 binding：`PRODUCT_IMAGES`
+
+密钥只通过 Wrangler secrets 保存，不要写入 `wrangler.jsonc`、源码或提交记录：
+
+- `INGEST_API_KEY`：爬虫接口的 Bearer Token
+- `BOOTSTRAP_TOKEN`：首次创建管理员时使用，初始化成功后接口会拒绝再次执行
+- `SETTINGS_ENCRYPTION_KEY`：独立加密 OneBound 等集成凭据，轮换初始化令牌时不会破坏已保存配置
+
+## 本地开发
+
+```powershell
+npm install
+Copy-Item .dev.vars.example .dev.vars
+npm run db:migrate:local
+npm run dev
+```
+
+默认地址为 `http://127.0.0.1:8787`。如果端口被占用，可运行 `npx wrangler dev --port 8788`。
+
+首次运行前，请为 `.dev.vars` 中的三个配置生成彼此独立的随机值。不要把真实密钥提交到 Git。
+
+## 验证与部署
+
+```powershell
+npm run typecheck
+npm test
+npm run build
+npx wrangler deploy --dry-run
+npm run db:migrate:remote
+npm run deploy
+npx wrangler secret put INGEST_API_KEY
+npx wrangler secret put BOOTSTRAP_TOKEN
+npx wrangler secret put SETTINGS_ENCRYPTION_KEY
+```
+
+首次部署后创建管理员：
+
+```powershell
+$body = @{
+  username = "admin"
+  displayName = "Administrator"
+  password = "<ADMIN_PASSWORD>"
+  token = "<BOOTSTRAP_TOKEN>"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post -Uri "https://<WORKER_HOST>/api/auth/bootstrap" -ContentType "application/json" -Body $body
+```
+
+## 爬虫接口
+
+两个导入接口都使用相同的请求头：
+
+```http
+Authorization: Bearer <INGEST_API_KEY>
+Content-Type: application/json
+```
+
+### 导入或更新 Shopify 商品
+
+`POST /api/import/products`
+
+同一 `sourcePlatform + sourceStore + externalId` 会执行更新；没有外部 ID 时由系统生成内部 ID。建议爬虫始终传入稳定的 Shopify Product ID。
+
+```json
+{
+  "sourcePlatform": "shopify",
+  "sourceStore": "example.myshopify.com",
+  "externalId": "gid://shopify/Product/1234567890",
+  "sourceUrl": "https://example.com/products/sample-dress",
+  "shopDomain": "example.myshopify.com",
+  "handle": "sample-dress",
+  "title": "Sample dress",
+  "vendor": "Example Brand",
+  "productType": "Dresses",
+  "descriptionHtml": "<p>Product description</p>",
+  "currency": "USD",
+  "status": "image_searching",
+  "priceMin": 29.9,
+  "priceMax": 39.9,
+  "compareAtPrice": 49.9,
+  "tags": ["dress", "summer"],
+  "options": [
+    { "name": "Color", "values": ["Black", "Blue"] },
+    { "name": "Size", "values": ["S", "M", "L"] }
+  ],
+  "variants": [
+    {
+      "externalId": "gid://shopify/ProductVariant/9876543210",
+      "sku": "DRESS-BLK-S",
+      "barcode": "1234567890123",
+      "title": "Black / S",
+      "option1": "Black",
+      "option2": "S",
+      "price": 29.9,
+      "compareAtPrice": 49.9,
+      "inventoryQuantity": 12,
+      "weight": 0.35,
+      "weightUnit": "kg",
+      "raw": { "source": "shopify-crawler" }
+    }
+  ],
+  "images": [
+    {
+      "externalId": "gid://shopify/ProductImage/112233",
+      "url": "https://cdn.shopify.com/example.jpg",
+      "altText": "Black dress",
+      "position": 0,
+      "width": 1600,
+      "height": 2000,
+      "contentType": "image/jpeg"
+    }
+  ],
+  "raw": { "shopifyPayload": "可保存原始字段，便于以后回溯" }
+}
+```
+
+成功响应会返回内部商品 UUID，关联 1688 商品时使用这个 `productId`：
+
+```json
+{
+  "ok": true,
+  "productId": "0a95f67f-f8fb-4454-9ef4-7cb0debb28a0"
+}
+```
+
+### 关联 1688 候选货源
+
+`POST /api/import/product-offers`
+
+同一 Shopify 商品可关联多个 1688 Offer；同一 `productId + offerId` 会更新已有关系。
+
+```json
+{
+  "productId": "0a95f67f-f8fb-4454-9ef4-7cb0debb28a0",
+  "matchStatus": "candidate",
+  "matchScore": 0.92,
+  "notes": "员工以图搜图找到，待确认面料",
+  "variantMap": {
+    "DRESS-BLK-S": "1688-BLACK-S"
+  },
+  "offer": {
+    "offerId": "1069450613745",
+    "url": "https://detail.1688.com/offer/1069450613745.html",
+    "title": "女装连衣裙源头工厂批发",
+    "supplierId": "supplier-10001",
+    "supplierName": "示例服饰工厂",
+    "priceMin": 18.5,
+    "priceMax": 24.8,
+    "currency": "CNY",
+    "minOrderQuantity": 2,
+    "unit": "件",
+    "province": "广东",
+    "city": "广州",
+    "variants": [
+      {
+        "externalId": "1688-BLACK-S",
+        "sku": "1688-BLACK-S",
+        "name": "黑色 / S",
+        "attributes": { "颜色": "黑色", "尺码": "S" },
+        "price": 18.5,
+        "stock": 200
+      }
+    ],
+    "images": [
+      {
+        "externalId": "offer-image-1",
+        "url": "https://cbu01.alicdn.com/example.jpg",
+        "position": 0
+      }
+    ],
+    "raw": { "source": "1688-crawler" }
+  }
+}
+```
+
+`matchStatus` 可取 `candidate`、`selected`、`rejected`。图片 URL 会保留为远程来源；员工在后台上传的本地图片会存入 R2，并通过需要登录的 `/media/*` 地址读取。
+
+## Fehaute 商品导入
+
+`tools/import-fehaute.mjs` 会读取商品页中的 `__NEXT_DATA__`，保存 SPU、库存、发布时间、分类、规格、尺码表、图片、视频、完整 SKU 和页面原始对象。
+
+先检查解析结果，不写数据库：
+
+```powershell
+npm run import:fehaute -- --dry-run "https://fehaute.com/products/example"
+```
+
+写入线上数据库：
+
+```powershell
+$env:INGEST_API_KEY = "<INGEST_API_KEY>"
+npm run import:fehaute -- "https://fehaute.com/products/example"
+Remove-Item Env:INGEST_API_KEY
+```
+
+未单独建列的来源字段仍会完整保存在商品和 SKU 的 `raw_json` 中，避免上游页面增加字段时发生数据丢失。
+
+## 主要数据表
+
+- `products`、`product_variants`、`product_images`
+- `product_media`：商品视频和其他非图片媒体
+- `offers_1688`、`offer_variants`、`offer_images`
+- `product_offer_links`：Shopify 商品与 1688 Offer 的一对多关系
+- `users`、`sessions`、`login_attempts`
+- `shopify_stores`：为后续 Shopify App 安装和同步预留
+- `audit_logs`
+
+数据库变更通过 `migrations/` 管理。生产环境不要直接修改已执行的 migration；新增编号更高的迁移文件。
+
+## 开源许可
+
+本项目使用 [MIT License](./LICENSE) 开源。

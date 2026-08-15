@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "mailshop-product-admin",
+  "account_id": "be09d1ff2a06874636d8d7b574225767",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mailshop-products",
+      "database_id": "dd7ca6b3-7eb8-460d-8beb-8f35a609d51d"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "PRODUCT_IMAGES",
+      "bucket_name": "mailshop-product-images"
+    }
+  ],
+  "vars": {
+    "APP_NAME": "Mailshop 商品中台",
+    "SESSION_TTL_DAYS": "7",
+    "MAX_IMAGE_BYTES": "15728640"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

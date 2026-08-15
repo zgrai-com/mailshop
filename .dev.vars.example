@@ -1,0 +1,3 @@
+INGEST_API_KEY=replace-with-a-long-random-key
+BOOTSTRAP_TOKEN=replace-with-a-one-time-random-token
+SETTINGS_ENCRYPTION_KEY=replace-with-a-separate-long-random-key
