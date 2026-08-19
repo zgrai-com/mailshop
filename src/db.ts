@@ -1,5 +1,5 @@
 import { ApiError, clientIp } from "./http";
-import type { OfferLinkInput, ProductInput, ProductListQuery, ProductPatch } from "./validation";
+import type { OfferLinkInput, ProductInput, ProductListQuery, ProductPatch, SearchTaskSyncInput } from "./validation";
 
 type JsonRow = Record<string, unknown>;
 
@@ -88,6 +88,34 @@ function hydrateJson(row: JsonRow, fields: Array<[string, unknown]>): JsonRow {
     hydrated[field] = parseJsonValue(hydrated[field], fallback);
   }
   return hydrated;
+}
+
+let searchTasksSchemaReady: Promise<void> | null = null;
+
+export async function ensureSearchTasksSchema(env: Env): Promise<void> {
+  if (!searchTasksSchemaReady) {
+    searchTasksSchemaReady = env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS search_tasks (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        client_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+        source_image_url TEXT,
+        source_page TEXT,
+        options_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(options_json)),
+        result_count INTEGER NOT NULL DEFAULT 0,
+        results_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(results_json)),
+        error TEXT,
+        charged_credits INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        completed_at TEXT,
+        UNIQUE(user_id, client_id)
+      )`,
+    ).run().then(() => env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_tasks_user_updated ON search_tasks(user_id, updated_at DESC)").run()).then(() => undefined);
+  }
+  await searchTasksSchemaReady;
 }
 
 export async function recordAudit(
@@ -214,15 +242,23 @@ function productImageStatements(env: Env, productId: string, input: ProductInput
   return statements;
 }
 
-export async function upsertProduct(env: Env, input: ProductInput, createdBy: string | null): Promise<string> {
+export async function upsertProduct(
+  env: Env,
+  input: ProductInput,
+  createdBy: string | null,
+  viewer?: ProductViewer,
+): Promise<string> {
   const sourceStore = input.sourceStore ?? "";
   const externalId = nullable(input.externalId) ?? crypto.randomUUID();
   const existing = await env.DB.prepare(
-    `SELECT id FROM products
+    `SELECT id, created_by AS createdBy FROM products
       WHERE source_platform = ? AND source_store = ? AND external_id = ?`,
   )
     .bind(input.sourcePlatform, sourceStore, externalId)
-    .first<{ id: string }>();
+    .first<{ id: string; createdBy: string | null }>();
+  if (existing && viewer?.role === "user" && existing.createdBy !== viewer.id) {
+    throw new ApiError(409, "该商品已存在于其他账号，无法覆盖", "product_owner_conflict");
+  }
   const productId = existing?.id ?? crypto.randomUUID();
 
   const statements: D1PreparedStatement[] = [
@@ -390,7 +426,9 @@ export async function patchProduct(env: Env, productId: string, patch: ProductPa
   await env.DB.batch(statements);
 }
 
-export async function listProducts(env: Env, query: ProductListQuery): Promise<{
+export type ProductViewer = { id: string; role: "admin" | "user" };
+
+export async function listProducts(env: Env, query: ProductListQuery, viewer?: ProductViewer): Promise<{
   items: JsonRow[];
   page: number;
   pageSize: number;
@@ -398,6 +436,10 @@ export async function listProducts(env: Env, query: ProductListQuery): Promise<{
 }> {
   const where: string[] = ["1 = 1"];
   const bindings: unknown[] = [];
+  if (viewer?.role !== "admin") {
+    where.push("p.created_by = ?");
+    bindings.push(viewer?.id ?? "");
+  }
   if (query.status !== "all") {
     where.push("p.status = ?");
     bindings.push(query.status);
@@ -448,6 +490,42 @@ export async function listProducts(env: Env, query: ProductListQuery): Promise<{
     .all<JsonRow>();
 
   return { items: result.results, page: query.page, pageSize: query.pageSize, total: count?.count ?? 0 };
+}
+
+export async function assertProductAccess(env: Env, productId: string, viewer: ProductViewer): Promise<void> {
+  if (viewer.role === "admin") return;
+  const row = await env.DB.prepare("SELECT created_by AS createdBy FROM products WHERE id = ?")
+    .bind(productId).first<{ createdBy: string | null }>();
+  if (!row || row.createdBy !== viewer.id) {
+    throw new ApiError(404, "Product not found", "product_not_found");
+  }
+}
+
+export async function assertOfferAccess(env: Env, offerId: string, viewer: ProductViewer): Promise<void> {
+  if (viewer.role === "admin") return;
+  const row = await env.DB.prepare(
+    `SELECT 1 AS allowed FROM offers_1688 o
+       JOIN product_offer_links pol ON pol.offer_id = o.id
+       JOIN products p ON p.id = pol.product_id
+      WHERE o.offer_id = ? AND p.created_by = ? LIMIT 1`,
+  ).bind(offerId, viewer.id).first<{ allowed: number }>();
+  if (!row) throw new ApiError(404, "1688 商品不存在或无权访问", "offer_not_found");
+}
+
+export async function assertMediaAccess(env: Env, r2Key: string, viewer: ProductViewer): Promise<void> {
+  if (viewer.role === "admin") return;
+  const row = await env.DB.prepare(
+    `SELECT 1 AS allowed FROM product_images pi
+       JOIN products p ON p.id = pi.product_id
+      WHERE pi.r2_key = ? AND p.created_by = ?
+      UNION
+     SELECT 1 AS allowed FROM offer_images oi
+       JOIN product_offer_links pol ON pol.offer_id = oi.offer_id
+       JOIN products p ON p.id = pol.product_id
+      WHERE oi.r2_key = ? AND p.created_by = ?
+      LIMIT 1`,
+  ).bind(r2Key, viewer.id, r2Key, viewer.id).first<{ allowed: number }>();
+  if (!row) throw new ApiError(404, "图片不存在或无权访问", "media_not_found");
 }
 
 export async function getProduct(env: Env, productId: string): Promise<JsonRow> {
@@ -613,24 +691,34 @@ export async function getProductImage(
     .first<{ id: string; url: string | null; r2Key: string | null; contentType: string | null }>();
 }
 
-export async function dashboardSummary(env: Env): Promise<JsonRow> {
+export async function dashboardSummary(env: Env, viewer?: ProductViewer): Promise<JsonRow> {
+  const productScope = viewer?.role === "admin" ? "" : " AND created_by = ?";
+  const productBindings = viewer?.role === "admin" ? [] : [viewer?.id ?? ""];
   const productCounts = await env.DB.prepare(
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS newCount,
             SUM(CASE WHEN status = 'image_searching' THEN 1 ELSE 0 END) AS searchingCount,
             SUM(CASE WHEN status = 'matched' THEN 1 ELSE 0 END) AS matchedCount,
             SUM(CASE WHEN status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount
-       FROM products WHERE status != 'archived'`,
-  ).first<JsonRow>();
+       FROM products WHERE status != 'archived'${productScope}`,
+  ).bind(...productBindings).first<JsonRow>();
   const [offerCount, userCount, recentResult] = await env.DB.batch<JsonRow>([
-    env.DB.prepare("SELECT COUNT(*) AS count FROM offers_1688"),
-    env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE is_active = 1"),
+    viewer?.role === "admin"
+      ? env.DB.prepare("SELECT COUNT(*) AS count FROM offers_1688")
+      : env.DB.prepare(
+        `SELECT COUNT(DISTINCT pol.offer_id) AS count FROM product_offer_links pol
+           JOIN products p ON p.id = pol.product_id WHERE p.created_by = ?`,
+      ).bind(viewer?.id ?? ""),
+    viewer?.role === "admin"
+      ? env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE is_active = 1")
+      : env.DB.prepare("SELECT 1 AS count"),
     env.DB.prepare(
       `SELECT p.id, p.title, p.status, p.updated_at AS updatedAt,
               COALESCE((SELECT CASE WHEN pi.r2_key IS NOT NULL THEN '/media/' || pi.r2_key ELSE pi.url END
                 FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.position LIMIT 1), '') AS thumbnailUrl
-         FROM products p WHERE p.status != 'archived' ORDER BY p.updated_at DESC LIMIT 6`,
-    ),
+         FROM products p WHERE p.status != 'archived'${viewer?.role === "admin" ? "" : " AND p.created_by = ?"}
+         ORDER BY p.updated_at DESC LIMIT 6`,
+    ).bind(...productBindings),
   ]);
   return {
     ...(productCounts ?? {}),
@@ -638,6 +726,55 @@ export async function dashboardSummary(env: Env): Promise<JsonRow> {
     activeUsers: userCount.results[0]?.count ?? 0,
     recentProducts: recentResult.results,
   };
+}
+
+export async function upsertSearchTask(env: Env, userId: string, input: SearchTaskSyncInput): Promise<JsonRow> {
+  await ensureSearchTasksSchema(env);
+  const now = new Date().toISOString();
+  const completedAt = input.status === "completed" ? now : null;
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO search_tasks
+      (id, user_id, client_id, name, status, source_image_url, source_page, options_json,
+       result_count, results_json, error, charged_credits, created_at, updated_at, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, client_id) DO UPDATE SET
+       name = excluded.name,
+       status = excluded.status,
+       source_image_url = excluded.source_image_url,
+       source_page = excluded.source_page,
+       options_json = excluded.options_json,
+       result_count = excluded.result_count,
+       results_json = excluded.results_json,
+       error = excluded.error,
+       charged_credits = excluded.charged_credits,
+       updated_at = excluded.updated_at,
+       completed_at = CASE WHEN excluded.status = 'completed' THEN excluded.completed_at ELSE search_tasks.completed_at END`,
+  ).bind(
+    id, userId, input.clientId, input.name, input.status, input.sourceImageUrl ?? null, input.sourcePage ?? null,
+    jsonText(input.options, {}), input.resultCount, jsonText(input.results, []), input.error ?? null,
+    input.chargedCredits, now, now, completedAt,
+  ).run();
+  const row = await env.DB.prepare(
+    `SELECT id, client_id AS clientId, name, status, source_image_url AS sourceImageUrl,
+            source_page AS sourcePage, options_json AS options, result_count AS resultCount,
+            results_json AS results, error, charged_credits AS chargedCredits,
+            created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt
+       FROM search_tasks WHERE user_id = ? AND client_id = ?`,
+  ).bind(userId, input.clientId).first<JsonRow>();
+  return hydrateJson(row ?? {}, [["options", {}], ["results", []]]);
+}
+
+export async function listSearchTasks(env: Env, userId: string): Promise<JsonRow[]> {
+  await ensureSearchTasksSchema(env);
+  const result = await env.DB.prepare(
+    `SELECT id, client_id AS clientId, name, status, source_image_url AS sourceImageUrl,
+            source_page AS sourcePage, options_json AS options, result_count AS resultCount,
+            results_json AS results, error, charged_credits AS chargedCredits,
+            created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt
+       FROM search_tasks WHERE user_id = ? ORDER BY updated_at DESC LIMIT 200`,
+  ).bind(userId).all<JsonRow>();
+  return result.results.map((row) => hydrateJson(row, [["options", {}], ["results", []]]));
 }
 
 export async function upsertOfferLink(
@@ -1005,9 +1142,11 @@ export async function addUploadedImage(
 
 export async function listUsers(env: Env): Promise<JsonRow[]> {
   const result = await env.DB.prepare(
-    `SELECT id, username, display_name AS displayName, is_active AS isActive,
+    `SELECT u.id, u.username, u.display_name AS displayName, u.email, u.avatar_url AS avatarUrl,
+            u.auth_provider AS authProvider, u.role, w.balance AS credits, u.is_active AS isActive,
             created_at AS createdAt, updated_at AS updatedAt, last_login_at AS lastLoginAt
-       FROM users ORDER BY is_active DESC, created_at`,
+       FROM users u JOIN credit_wallets w ON w.user_id = u.id
+       ORDER BY u.is_active DESC, u.created_at`,
   ).all<JsonRow>();
   return result.results.map((row) => ({ ...row, isActive: row.isActive === 1 }));
 }

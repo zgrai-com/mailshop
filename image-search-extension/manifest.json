@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Mailshop 1688 Image Search",
+  "version": "0.6.2",
+  "description": "Search 1688 products by image with your Mailshop account credits.",
+  "permissions": ["activeTab", "identity", "scripting", "sidePanel", "storage", "unlimitedStorage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Mailshop image search"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' https: http: data: blob:"
+  }
+}

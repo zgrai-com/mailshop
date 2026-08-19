@@ -9,16 +9,18 @@ test-results/
 *.tsbuildinfo
 *.cpuprofile
 
-# Cloudflare local state
+# Local development state and secrets
 .wrangler/
 .dev.vars
 .dev.vars.*
 !.dev.vars.example
-
-# Environment variables
 .env
 .env.*
 !.env.example
+
+# Tool-generated local artifacts
+.playwright-mcp/
+.hallmark/
 
 # Logs and caches
 *.log

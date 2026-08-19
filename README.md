@@ -6,6 +6,8 @@ Mailshop 是一套面向跨境电商选品与货源管理的轻量级商品中�
 
 ## 核心功能
 
+- 支持 Google 账号登录；新账号自动获得 10,000 积分，站内和扩展搜图每次消耗 10 积分
+- 普通用户登录后只使用仪表台、商品管理和积分管理；系统配置与账号管理仅管理员可见且由服务端角色校验保护
 - 管理 Shopify 商品、SKU、选项、价格、库存、图片和视频
 - 为一个商品关联多个 1688 候选货源，并记录匹配状态、分数和 SKU 映射
 - 通过 OneBound 接口执行以图搜图，并将候选结果加入商品
@@ -83,6 +85,8 @@ npx wrangler secret put INGEST_API_KEY
 npx wrangler secret put BOOTSTRAP_TOKEN
 npx wrangler secret put SETTINGS_ENCRYPTION_KEY
 ```
+
+Google OAuth、积分规则、回调地址和扩展 Origin 配置见 [`GOOGLE_AUTH.md`](./GOOGLE_AUTH.md)。Google 凭据在后台“系统设置”中保存。
 
 首次部署后创建管理员：
 
@@ -252,7 +256,8 @@ Remove-Item Env:INGEST_API_KEY
 - `product_media`：商品视频和其他非图片媒体
 - `offers_1688`、`offer_variants`、`offer_images`
 - `product_offer_links`：Shopify 商品与 1688 Offer 的一对多关系
-- `users`、`sessions`、`login_attempts`
+- `users`、`sessions`、`login_attempts`、`oauth_states`
+- `credit_wallets`、`credit_transactions`：积分余额与完整流水
 - `shopify_stores`：为后续 Shopify App 安装和同步预留
 - `audit_logs`
 

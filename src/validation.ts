@@ -39,6 +39,37 @@ export const oneboundSettingsSchema = z.object({
   secret: z.string().trim().min(1).max(512),
 });
 
+export const googleSettingsSchema = z.object({
+  clientId: z.string().trim().min(1).max(512),
+  clientSecret: z.string().trim().min(1).max(512),
+  allowedDomain: z.string().trim().max(255),
+});
+
+export const aiSettingsSchema = z.object({
+  baseUrl: z.string().trim().url().max(2_048),
+  apiKey: z.string().trim().min(1).max(2_048),
+  modelId: z.string().trim().min(1).max(255),
+});
+
+const aiCandidateSchema = z.object({
+  id: z.string().trim().min(1).max(160),
+  url: z.string().trim().url().max(2_048),
+  width: z.number().int().min(0).max(20_000).default(0),
+  height: z.number().int().min(0).max(20_000).default(0),
+  alt: z.string().max(500).default(""),
+  title: z.string().max(500).default(""),
+  source: z.string().max(80).default("image"),
+  context: z.string().max(2_000).default(""),
+  domScore: z.number().min(0).max(1).default(0),
+});
+
+export const aiCandidatesRequestSchema = z.object({
+  candidates: z.array(aiCandidateSchema).min(1).max(24),
+});
+
+export type AiSettingsInput = z.infer<typeof aiSettingsSchema>;
+export type AiCandidate = z.infer<typeof aiCandidateSchema>;
+
 export const oneboundRequestOptionsSchema = z.object({
   cache: z.enum(["yes", "no"]).default("no"),
   lang: z.enum(["cn", "en", "ru"]).default("cn"),
@@ -46,8 +77,23 @@ export const oneboundRequestOptionsSchema = z.object({
 
 export const imageSearchSchema = oneboundRequestOptionsSchema.extend({
   sort: z.enum(["_sale", "sale", "price", "_price"]).default("_sale"),
-  limit: z.number().int().min(10).max(50).default(50),
+  limit: z.coerce.number().int().min(10).max(50).default(50),
 });
+
+export const searchTaskSyncSchema = z.object({
+  clientId: z.string().trim().min(1).max(160),
+  name: z.string().trim().min(1).max(120),
+  status: z.enum(["queued", "running", "completed", "failed"]),
+  sourceImageUrl: optionalUrl,
+  sourcePage: optionalUrl,
+  options: imageSearchSchema.default(() => ({ sort: "_sale" as const, limit: 50, cache: "no" as const, lang: "cn" as const })),
+  resultCount: z.coerce.number().int().min(0).max(500).default(0),
+  results: z.array(z.unknown()).max(500).default([]),
+  error: nullableText(2_000),
+  chargedCredits: z.coerce.number().int().min(0).max(100_000).default(0),
+});
+
+export type SearchTaskSyncInput = z.infer<typeof searchTaskSyncSchema>;
 
 export const oneboundCandidateBatchSchema = oneboundRequestOptionsSchema.extend({
   offerIds: z.array(z.string().trim().min(1).max(160)).min(1).max(20)

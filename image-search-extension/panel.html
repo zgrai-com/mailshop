@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mailshop 搜款任务</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand-mark" aria-hidden="true">M</div>
+      <div class="brand-copy">
+        <strong>搜款任务</strong>
+        <span>MAILSHOP SOURCING</span>
+      </div>
+      <nav class="app-nav" aria-label="插件视图">
+        <button id="view-workspace" class="nav-button active" type="button">工作台</button>
+        <button id="view-settings" class="nav-button" type="button" hidden>AI 配置</button>
+      </nav>
+    </header>
+    <section class="account-bar" aria-live="polite">
+      <div class="account-copy">
+        <strong id="account-label">正在检查账号</strong>
+        <span id="account-meta">每次搜图消耗 10 积分</span>
+      </div>
+      <div class="account-actions">
+        <span id="account-balance" class="credit-balance" hidden></span>
+        <button id="account-refresh" class="icon-button light" type="button" title="刷新账号状态" aria-label="刷新账号状态">↻</button>
+        <button id="account-login" class="button primary compact" type="button" hidden>登录</button>
+        <button id="account-logout" class="button quiet compact" type="button" hidden>退出</button>
+      </div>
+      <div id="account-notice" class="account-notice" role="status" hidden></div>
+    </section>
+
+    <main>
+      <div id="workspace-view" class="app-view">
+      <section class="task-intake" aria-labelledby="task-heading">
+        <div class="section-heading intake-heading">
+          <div>
+            <h1 id="task-heading">1688 以图搜款</h1>
+            <p>创建任务后可以继续处理下一件商品</p>
+          </div>
+          <div class="intake-actions">
+            <button id="load-page-images" class="button quiet compact" type="button">手动选择图片</button>
+            <button id="ai-analyze-page" class="button primary compact" type="button">AI 分析图片</button>
+          </div>
+        </div>
+
+        <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="拖入图片创建任务草稿">
+          <span class="drop-icon" aria-hidden="true">＋</span>
+          <div>
+            <strong>拖入商品图片</strong>
+            <span>也可以点击选择本地文件</span>
+          </div>
+        </div>
+        <input id="file-picker" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif" hidden />
+
+        <div class="search-options" aria-label="查询参数">
+          <label><span>排序</span><select id="search-sort"><option value="_sale">销量降序</option><option value="sale">销量升序</option><option value="price">价格升序</option><option value="_price">价格降序</option></select></label>
+          <label><span>结果数</span><input id="search-limit" type="number" min="10" max="50" step="1" value="30" /></label>
+          <label><span>缓存</span><select id="search-cache"><option value="no">关闭</option><option value="yes">开启</option></select></label>
+          <label><span>语言</span><select id="search-lang"><option value="cn">中文</option><option value="en">English</option><option value="ru">Русский</option></select></label>
+        </div>
+
+        <section id="ai-usage-panel" class="ai-usage-panel" aria-labelledby="ai-usage-heading" hidden>
+          <div class="ai-usage-heading"><strong id="ai-usage-heading">AI 使用方式</strong></div>
+          <div class="ai-mode-control" role="radiogroup" aria-label="AI 使用方式">
+            <label><input id="ai-mode-server" type="radio" name="ai-mode" value="server" checked /><span>使用服务器 AI</span></label>
+            <label><input id="ai-mode-custom" type="radio" name="ai-mode" value="custom" /><span>使用自己的 AI</span></label>
+          </div>
+          <div id="custom-ai-config" class="custom-ai-config" hidden>
+            <label class="field-wide"><span>模型服务 URL</span><input id="custom-ai-url" type="url" placeholder="https://api.example.com/v1" autocomplete="off" /></label>
+            <label><span>API Key</span><input id="custom-ai-key" type="password" placeholder="输入自己的 API Key" autocomplete="new-password" /></label>
+            <label><span>模型 ID</span><input id="custom-ai-model" type="text" placeholder="支持图片识别的模型" autocomplete="off" /></label>
+            <small>自定义配置仅保存在当前浏览器插件本地。</small>
+          </div>
+          <div class="ai-config-actions">
+            <span id="ai-config-status" class="ai-config-status" role="status"></span>
+            <button id="save-ai-config" class="button quiet compact" type="button">保存配置</button>
+            <button id="test-ai-config" class="button primary compact" type="button">测试配置</button>
+          </div>
+          <section class="ai-request-log-panel" aria-labelledby="ai-request-log-heading">
+            <div class="ai-request-log-heading">
+              <div>
+                <strong id="ai-request-log-heading">AI 请求日志</strong>
+                <small id="ai-request-log-summary">最近 0 条</small>
+              </div>
+              <div class="ai-request-log-actions">
+                <button id="refresh-ai-logs" class="button quiet compact" type="button">刷新</button>
+                <button id="clear-ai-logs" class="button quiet compact" type="button">清空</button>
+              </div>
+            </div>
+            <div id="ai-request-logs" class="ai-request-logs"></div>
+          </section>
+        </section>
+
+        <div id="draft-panel" class="draft-panel" hidden>
+          <img id="draft-preview" class="draft-preview" alt="任务图片预览" />
+          <div class="draft-content">
+            <label for="task-name">任务名称</label>
+            <input id="task-name" type="text" maxlength="120" placeholder="例如：黑色连衣裙" />
+            <span id="draft-meta" class="draft-meta"></span>
+          </div>
+          <div class="draft-actions">
+            <button id="discard-draft" class="button quiet" type="button">取消</button>
+            <button id="create-task" class="button primary" type="button">创建任务</button>
+          </div>
+        </div>
+        <div id="notice" class="notice" role="status" hidden></div>
+      </section>
+
+      <section id="task-workspace" class="task-workspace" aria-labelledby="queue-heading">
+        <div class="queue-header">
+          <div>
+            <h2 id="queue-heading">任务队列</h2>
+            <p id="queue-summary">还没有任务</p>
+          </div>
+          <button id="clear-finished" class="button quiet compact" type="button" hidden>清理已完成</button>
+        </div>
+        <div id="task-list" class="task-list" aria-live="polite"></div>
+      </section>
+      </div>
+
+      <section id="settings-view" class="app-view settings-view" aria-labelledby="settings-heading" hidden>
+        <div class="settings-header">
+          <div>
+            <h1 id="settings-heading">AI 配置</h1>
+            <p>选择图片分析方式，并在保存前测试连接。</p>
+          </div>
+          <button id="settings-back" class="button quiet compact" type="button">返回工作台</button>
+        </div>
+        <div id="ai-settings-mount"></div>
+      </section>
+    </main>
+
+    <div id="image-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="image-modal-heading" hidden>
+      <button id="modal-backdrop" class="modal-backdrop" type="button" aria-label="关闭图片选择"></button>
+      <section class="modal-sheet">
+        <header class="modal-header">
+          <div>
+            <h2 id="image-modal-heading">选择当前页面图片</h2>
+            <p id="page-meta">正在扫描页面</p>
+          </div>
+          <button id="close-image-modal" class="modal-close" type="button" aria-label="关闭">×</button>
+        </header>
+        <div class="modal-tools">
+          <label class="search-field">
+            <span aria-hidden="true">⌕</span>
+            <input id="image-filter" type="search" placeholder="筛选图片" />
+          </label>
+          <label id="product-only-field" class="checkbox-field">
+            <input id="hide-small" type="checkbox" checked />
+            <span>隐藏小图</span>
+          </label>
+          <label class="checkbox-field">
+            <input id="product-only" type="checkbox" checked />
+            <span id="product-only-label">只显示疑似商品图</span>
+          </label>
+          <button id="refresh-images" class="button quiet compact" type="button">重新扫描</button>
+        </div>
+        <div id="modal-state" class="modal-state" role="status"></div>
+        <div id="image-grid" class="image-grid"></div>
+        <footer class="modal-footer">
+          <span id="selected-count" class="selected-count">已选 0 张</span>
+          <button id="clear-image-selection" class="button quiet compact" type="button">清空</button>
+          <button id="create-selected-tasks" class="button primary compact" type="button" disabled>创建任务</button>
+        </footer>
+      </section>
+    </div>
+
+    <div id="results-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="results-modal-heading" hidden>
+      <button id="results-modal-backdrop" class="modal-backdrop" type="button" aria-label="关闭查询结果"></button>
+      <section class="modal-sheet results-modal-sheet">
+        <header class="modal-header">
+          <div>
+            <h2 id="results-modal-heading">查询结果</h2>
+            <p id="results-modal-meta"></p>
+          </div>
+          <button id="results-modal-close" class="modal-close" type="button" aria-label="关闭">×</button>
+        </header>
+        <div id="results-modal-grid" class="results-modal-grid"></div>
+      </section>
+    </div>
+
+    <div id="ai-error-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="ai-error-heading" hidden>
+      <button id="ai-error-backdrop" class="modal-backdrop" type="button" aria-label="关闭错误日志"></button>
+      <section class="modal-sheet ai-error-sheet">
+        <header class="modal-header">
+          <div>
+            <h2 id="ai-error-heading">AI 测试错误日志</h2>
+            <p>以下信息不包含 API Key。</p>
+          </div>
+          <button id="ai-error-close" class="modal-close" type="button" aria-label="关闭">×</button>
+        </header>
+        <pre id="ai-error-log" class="ai-error-log"></pre>
+        <footer class="modal-footer ai-error-footer">
+          <button id="reload-extension" class="button primary compact" type="button" hidden>重新加载插件</button>
+        </footer>
+      </section>
+    </div>
+
+    <div id="image-viewer" class="image-viewer" role="dialog" aria-modal="true" aria-labelledby="viewer-title" hidden>
+      <button id="viewer-backdrop" class="viewer-backdrop" type="button" aria-label="关闭图片预览"></button>
+      <section class="viewer-sheet">
+        <header class="viewer-toolbar">
+          <strong id="viewer-title">图片预览</strong>
+          <div>
+            <button id="viewer-reset" class="button quiet compact" type="button">100%</button>
+            <button id="viewer-close" class="button quiet compact" type="button">关闭</button>
+          </div>
+        </header>
+        <div id="viewer-stage" class="viewer-stage">
+          <div class="viewer-pane">
+            <span class="viewer-pane-label">原图</span>
+            <img id="viewer-original-image" alt="原图" />
+          </div>
+          <div class="viewer-pane">
+            <span class="viewer-pane-label">结果图</span>
+            <img id="viewer-result-image" alt="结果图" />
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <template id="empty-task-template">
+      <div class="empty-state">
+        <strong>暂无搜款任务</strong>
+        <span>加载页面图片或拖入图片开始。</span>
+      </div>
+    </template>
+
+    <template id="empty-image-template">
+      <div class="empty-state image-empty">
+        <strong>没有找到可用图片</strong>
+        <span>可以重新扫描，或关闭弹窗后直接拖入图片。</span>
+      </div>
+    </template>
+
+    <script src="panel.js" type="module"></script>
+  </body>
+</html>

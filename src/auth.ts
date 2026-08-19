@@ -7,7 +7,15 @@ export type SessionUser = {
   id: string;
   username: string;
   displayName: string;
+  email: string | null;
+  avatarUrl: string | null;
+  credits: number;
+  role: "admin" | "user";
 };
+
+export function assertAdmin(user: SessionUser): void {
+  if (user.role !== "admin") throw new ApiError(403, "需要管理员权限", "admin_required");
+}
 
 type UserCredentialRow = {
   id: string;
@@ -17,6 +25,7 @@ type UserCredentialRow = {
   password_salt: string;
   password_iterations: number;
   is_active: number;
+  role: "admin" | "user";
 };
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -91,7 +100,7 @@ function parseCookies(request: Request): Map<string, string> {
 }
 
 function sessionCookie(value: string, maxAge: number): string {
-  return `${COOKIE_NAME}=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+  return `${COOKIE_NAME}=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${maxAge}`;
 }
 
 export function clearSessionCookie(): string {
@@ -99,28 +108,76 @@ export function clearSessionCookie(): string {
 }
 
 export async function authenticate(request: Request, env: Env): Promise<SessionUser> {
-  const token = parseCookies(request).get(COOKIE_NAME);
+  const token = request.headers.get("x-mailshop-session") || parseCookies(request).get(COOKIE_NAME);
   if (!token) throw new ApiError(401, "请先登录", "unauthorized");
 
   const tokenHash = await sha256(token);
   const row = await env.DB.prepare(
-    `SELECT u.id, u.username, u.display_name
+    `SELECT u.id, u.username, u.display_name, u.email, u.avatar_url, u.role, u.auth_provider,
+            u.google_sub, u.password_hash, w.balance
        FROM sessions s
        JOIN users u ON u.id = s.user_id
+       JOIN credit_wallets w ON w.user_id = u.id
       WHERE s.token_hash = ? AND s.expires_at > ? AND u.is_active = 1`,
   )
     .bind(tokenHash, new Date().toISOString())
-    .first<{ id: string; username: string; display_name: string }>();
+    .first<{
+      id: string;
+      username: string;
+      display_name: string;
+      email: string | null;
+      avatar_url: string | null;
+      role: "admin" | "user";
+      auth_provider: "password" | "google";
+      google_sub: string | null;
+      password_hash: string;
+      balance: number;
+    }>();
 
   if (!row) throw new ApiError(401, "登录状态已失效", "session_expired");
-  return { id: row.id, username: row.username, displayName: row.display_name };
+  if (row.role === "admin" && row.auth_provider === "google" && row.password_hash && row.google_sub && row.email) {
+    const googleUserId = crypto.randomUUID();
+    const googleUsername = `google-${row.google_sub}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE users SET auth_provider = 'password', google_sub = NULL, email = NULL, avatar_url = NULL,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
+      ).bind(row.id),
+      env.DB.prepare(
+        `INSERT INTO users
+          (id, username, display_name, password_hash, password_salt, password_iterations,
+           auth_provider, role, google_sub, email, avatar_url, last_login_at)
+         VALUES (?, ?, ?, '', '', 100000, 'google', 'user', ?, ?, ?,
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
+      ).bind(googleUserId, googleUsername, row.display_name, row.google_sub, row.email, row.avatar_url),
+      env.DB.prepare("UPDATE sessions SET user_id = ? WHERE token_hash = ?").bind(googleUserId, tokenHash),
+    ]);
+    return {
+      id: googleUserId,
+      username: googleUsername,
+      displayName: row.display_name,
+      email: row.email,
+      avatarUrl: row.avatar_url,
+      credits: 10_000,
+      role: "user",
+    };
+  }
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    email: row.email,
+    avatarUrl: row.avatar_url,
+    credits: row.balance,
+    role: row.role,
+  };
 }
 
 export async function createSession(
   request: Request,
   env: Env,
   userId: string,
-): Promise<{ cookie: string; expiresAt: string }> {
+): Promise<{ cookie: string; expiresAt: string; token: string }> {
   const token = bytesToBase64Url(randomBytes(32));
   const tokenHash = await sha256(token);
   const ttlDays = Math.max(1, Math.min(30, Number(env.SESSION_TTL_DAYS) || 7));
@@ -134,11 +191,11 @@ export async function createSession(
     .bind(crypto.randomUUID(), userId, tokenHash, expiresAt, clientIp(request), userAgent)
     .run();
 
-  return { cookie: sessionCookie(token, ttlDays * 86_400), expiresAt };
+  return { cookie: sessionCookie(token, ttlDays * 86_400), expiresAt, token };
 }
 
 export async function revokeSession(request: Request, env: Env): Promise<void> {
-  const token = parseCookies(request).get(COOKIE_NAME);
+  const token = request.headers.get("x-mailshop-session") || parseCookies(request).get(COOKIE_NAME);
   if (!token) return;
   await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run();
 }
@@ -153,7 +210,7 @@ export async function assertIngestKey(request: Request, env: Env): Promise<void>
 
 export async function getLoginUser(env: Env, username: string): Promise<UserCredentialRow | null> {
   return env.DB.prepare(
-    `SELECT id, username, display_name, password_hash, password_salt, password_iterations, is_active
+    `SELECT id, username, display_name, password_hash, password_salt, password_iterations, is_active, role
        FROM users WHERE username = ? COLLATE NOCASE`,
   )
     .bind(username)
@@ -192,7 +249,7 @@ export async function recordLoginAttempt(
 
 export async function insertUser(
   env: Env,
-  input: { username: string; displayName: string; password: string },
+  input: { username: string; displayName: string; password: string; role?: "admin" | "user" },
 ): Promise<string> {
   const id = crypto.randomUUID();
   let password: Awaited<ReturnType<typeof hashPassword>>;
@@ -206,10 +263,10 @@ export async function insertUser(
   try {
     await env.DB.prepare(
       `INSERT INTO users
-        (id, username, display_name, password_hash, password_salt, password_iterations)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+        (id, username, display_name, password_hash, password_salt, password_iterations, role)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, input.username, input.displayName, password.hash, password.salt, password.iterations)
+      .bind(id, input.username, input.displayName, password.hash, password.salt, password.iterations, input.role ?? "user")
       .run();
   } catch (error) {
     const detail = error instanceof Error ? { name: error.name, message: error.message } : { value: String(error) };

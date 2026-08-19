@@ -48,6 +48,10 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       path,
     );
   }
+  const creditPayload = payload as { credits?: { balance?: number } } | undefined;
+  if (typeof creditPayload?.credits?.balance === "number") {
+    window.dispatchEvent(new CustomEvent("mailshop:credits", { detail: creditPayload.credits.balance }));
+  }
   return payload as T;
 }
 

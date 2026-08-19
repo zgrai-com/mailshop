@@ -2,6 +2,11 @@ export type User = {
   id: string;
   username: string;
   displayName: string;
+  email?: string | null;
+  avatarUrl?: string | null;
+  credits: number;
+  authProvider?: "password" | "google";
+  role: "admin" | "user";
   isActive?: boolean;
   createdAt?: string;
   lastLoginAt?: string | null;
@@ -11,6 +16,46 @@ export type OneBoundSettings = {
   configured: boolean;
   keyHint: string | null;
   updatedAt: string | null;
+};
+
+export type GoogleSettings = {
+  configured: boolean;
+  clientIdHint: string | null;
+  allowedDomain: string;
+  updatedAt: string | null;
+};
+
+export type AiSettings = {
+  configured: boolean;
+  baseUrl: string;
+  apiKeyHint: string | null;
+  modelId: string | null;
+  updatedAt: string | null;
+};
+
+export type CreditTransaction = {
+  id: string;
+  amount: number;
+  balanceAfter: number;
+  reason: string;
+  createdAt: string;
+};
+
+export type SearchTask = {
+  id: string;
+  clientId: string;
+  name: string;
+  status: "queued" | "running" | "completed" | "failed";
+  sourceImageUrl?: string | null;
+  sourcePage?: string | null;
+  options: { sort: string; limit: number; cache: string; lang: string };
+  resultCount: number;
+  results: Array<{ offerId?: string; title?: string; imageUrl?: string; detailUrl?: string; price?: number; promotionPrice?: number; supplierName?: string }>;
+  error?: string | null;
+  chargedCredits: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
 };
 
 export type OneBoundSearchResult = {

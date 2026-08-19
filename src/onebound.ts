@@ -330,6 +330,51 @@ async function uploadImageBytes(bytes: Uint8Array, credentials: { key: string; s
   return imageId;
 }
 
+async function searchUploadedImage(
+  credentials: { key: string; secret: string },
+  uploadedImageId: string,
+  options: ImageSearchOptions,
+): Promise<{
+  uploadedImageId: string;
+  resultCount: number;
+  results: OneBoundSearchResult[];
+  request: { sort: string; cache: string; lang: string; limit: number };
+}> {
+  const payload = await callImageSearch(credentials, uploadedImageId, options);
+  const seen = new Set<string>();
+  const results = responseItems(payload).flatMap((item) => {
+    const result = normalizeSearchResult(item);
+    if (!result || seen.has(result.offerId)) return [];
+    seen.add(result.offerId);
+    return [result];
+  }).slice(0, options.limit);
+
+  return {
+    uploadedImageId,
+    resultCount: results.length,
+    results,
+    request: { sort: options.sort, cache: options.cache, lang: options.lang, limit: options.limit },
+  };
+}
+
+export async function searchImageBytes(
+  env: Env,
+  bytes: Uint8Array,
+  options: ImageSearchOptions,
+): Promise<{
+  uploadedImageId: string;
+  resultCount: number;
+  results: OneBoundSearchResult[];
+  request: { sort: string; cache: string; lang: string; limit: number };
+}> {
+  if (bytes.byteLength === 0) throw new ApiError(422, "图片内容为空", "image_empty");
+  if (bytes.byteLength > maxImageBytes(env)) {
+    throw new ApiError(413, "图片超过允许大小", "image_too_large", { maxBytes: maxImageBytes(env) });
+  }
+  const credentials = await readCredentials(env);
+  return searchUploadedImage(credentials, await uploadImageBytes(bytes, credentials), options);
+}
+
 async function uploadR2Image(env: Env, key: string, credentials: { key: string; secret: string }): Promise<string> {
   const object = await env.PRODUCT_IMAGES.get(key);
   if (!object) throw new ApiError(404, "图片文件不存在", "image_not_found");
@@ -696,21 +741,7 @@ export async function searchProductImage(
       : null;
   if (!uploadedImageId) throw new ApiError(422, "图片没有可搜索的地址", "image_url_missing");
 
-  const payload = await callImageSearch(credentials, uploadedImageId, options);
-  const seen = new Set<string>();
-  const results = responseItems(payload).flatMap((item) => {
-    const result = normalizeSearchResult(item);
-    if (!result || seen.has(result.offerId)) return [];
-    seen.add(result.offerId);
-    return [result];
-  }).slice(0, options.limit);
-  return {
-    imageId,
-    uploadedImageId,
-    resultCount: results.length,
-    results,
-    request: { sort: options.sort, cache: options.cache, lang: options.lang, limit: options.limit },
-  };
+  return { imageId, ...(await searchUploadedImage(credentials, uploadedImageId, options)) };
 }
 
 export async function getOneBoundItem(

@@ -26,7 +26,8 @@
   "vars": {
     "APP_NAME": "Mailshop 商品中台",
     "SESSION_TTL_DAYS": "7",
-    "MAX_IMAGE_BYTES": "15728640"
+    "MAX_IMAGE_BYTES": "15728640",
+    "EXTENSION_ORIGIN": "chrome-extension://enmofjhaknmagpfgdocnmlojnliinkak,chrome-extension://lhnncadoadmgdlegincljejfpdnfmdmh"
   },
   "observability": {
     "enabled": true,

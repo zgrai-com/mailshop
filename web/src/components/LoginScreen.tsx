@@ -1,5 +1,5 @@
-import { ArrowRight, KeyRound, LoaderCircle, PackageSearch, UserRound } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { ArrowRight, KeyRound, LoaderCircle, LogIn, PackageSearch, UserRound } from "lucide-react";
+import { FormEvent, useEffect, useState } from "react";
 
 import { api } from "../api";
 import type { User } from "../types";
@@ -13,6 +13,13 @@ export function LoginScreen({ onLogin }: Props) {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+
+  useEffect(() => {
+    api<{ googleEnabled: boolean }>("/api/auth/config")
+      .then((result) => setGoogleEnabled(result.googleEnabled))
+      .catch(() => setGoogleEnabled(false));
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -65,6 +72,8 @@ export function LoginScreen({ onLogin }: Props) {
               {loading ? <LoaderCircle className="spin" size={18} /> : <ArrowRight size={18} />}
               {loading ? "正在登录" : "进入工作台"}
             </button>
+            {googleEnabled && <div className="login-divider"><span>或</span></div>}
+            {googleEnabled && <a className="button google-login-button" href="/api/auth/google"><LogIn size={18} />使用 Google 账号登录</a>}
           </form>
         </div>
       </section>

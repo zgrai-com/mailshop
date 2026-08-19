@@ -4,6 +4,8 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleUserRound,
+  Coins,
+  ListChecks,
   Filter,
   LayoutDashboard,
   LoaderCircle,
@@ -29,6 +31,9 @@ import { ImageSearchModal } from "./components/ImageSearchModal";
 import { ProductModal } from "./components/ProductModal";
 import { SettingsPage } from "./components/SettingsPage";
 import { UserManager } from "./components/UserManager";
+import { UserDashboard } from "./components/UserDashboard";
+import { CreditsPage } from "./components/CreditsPage";
+import { SearchTasksPage } from "./components/SearchTasksPage";
 import type {
   DashboardSummary,
   ProductDetail as ProductDetailType,
@@ -38,10 +43,12 @@ import type {
   ProductSummary,
   StoredOfferDetail,
   OneBoundSettings,
+  GoogleSettings,
+  AiSettings,
   User,
 } from "./types";
 
-type View = "products" | "accounts" | "settings";
+type View = "dashboard" | "products" | "tasks" | "credits" | "accounts" | "settings";
 
 const statusLabels: Record<ProductStatus, string> = {
   new: "待整理",
@@ -73,7 +80,7 @@ function proxiedImageUrl(url: string): string {
 
 export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
-  const [view, setView] = useState<View>("products");
+  const [view, setView] = useState<View>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [products, setProducts] = useState<ProductSummary[]>([]);
@@ -100,9 +107,15 @@ export default function App() {
   const [users, setUsers] = useState<User[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [oneboundSettings, setOneboundSettings] = useState<OneBoundSettings | null>(null);
+  const [googleSettings, setGoogleSettings] = useState<GoogleSettings | null>(null);
+  const [aiSettings, setAiSettings] = useState<AiSettings | null>(null);
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [errorDialog, setErrorDialog] = useState<unknown>(null);
+  const [creditTransactions, setCreditTransactions] = useState<import("./types").CreditTransaction[]>([]);
+  const [loadingCredits, setLoadingCredits] = useState(false);
+  const [searchTasks, setSearchTasks] = useState<import("./types").SearchTask[]>([]);
+  const [loadingSearchTasks, setLoadingSearchTasks] = useState(false);
 
   const notify = useCallback((type: "success" | "error", message: string) => {
     setToast({ type, message });
@@ -125,6 +138,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (user?.role === "user" && (view === "accounts" || view === "settings")) setView("dashboard");
+  }, [user, view]);
+
+  useEffect(() => {
+    const updateCredits = (event: Event) => {
+      const balance = (event as CustomEvent<number>).detail;
+      setUser((current) => current ? { ...current, credits: balance } : current);
+    };
+    window.addEventListener("mailshop:credits", updateCredits);
+    return () => window.removeEventListener("mailshop:credits", updateCredits);
+  }, []);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       setDebouncedSearch(search);
       setPage(1);
@@ -138,6 +164,31 @@ export default function App() {
       setSummary(result.summary);
     } catch (caught) {
       handleApiError(caught);
+    }
+  }, [handleApiError]);
+
+  const loadCredits = useCallback(async () => {
+    setLoadingCredits(true);
+    try {
+      const result = await api<{ credits: { balance: number; transactions: import("./types").CreditTransaction[] } }>("/api/credits");
+      setCreditTransactions(result.credits.transactions);
+      setUser((current) => current ? { ...current, credits: result.credits.balance } : current);
+    } catch (caught) {
+      handleApiError(caught);
+    } finally {
+      setLoadingCredits(false);
+    }
+  }, [handleApiError]);
+
+  const loadSearchTasks = useCallback(async () => {
+    setLoadingSearchTasks(true);
+    try {
+      const result = await api<{ tasks: import("./types").SearchTask[] }>("/api/search-tasks");
+      setSearchTasks(result.tasks);
+    } catch (caught) {
+      handleApiError(caught);
+    } finally {
+      setLoadingSearchTasks(false);
     }
   }, [handleApiError]);
 
@@ -166,6 +217,14 @@ export default function App() {
     void loadSummary();
   }, [loadSummary, user]);
 
+  useEffect(() => {
+    if (user && view === "credits") void loadCredits();
+  }, [loadCredits, user, view]);
+
+  useEffect(() => {
+    if (user && view === "tasks") void loadSearchTasks();
+  }, [loadSearchTasks, user, view]);
+
   const loadUsers = useCallback(async () => {
     setLoadingUsers(true);
     try {
@@ -185,8 +244,14 @@ export default function App() {
   const loadOneBoundSettings = useCallback(async () => {
     setLoadingSettings(true);
     try {
-      const result = await api<{ settings: OneBoundSettings }>("/api/integrations/onebound");
-      setOneboundSettings(result.settings);
+      const [onebound, google, ai] = await Promise.all([
+        api<{ settings: OneBoundSettings }>("/api/integrations/onebound"),
+        api<{ settings: GoogleSettings }>("/api/integrations/google"),
+        api<{ settings: AiSettings }>("/api/integrations/ai"),
+      ]);
+      setOneboundSettings(onebound.settings);
+      setGoogleSettings(google.settings);
+      setAiSettings(ai.settings);
     } catch (caught) {
       handleApiError(caught);
     } finally {
@@ -357,6 +422,40 @@ export default function App() {
     }
   }
 
+  async function saveGoogleSettings(clientId: string, clientSecret: string, allowedDomain: string) {
+    setSaving(true);
+    try {
+      const result = await api<{ settings: GoogleSettings }>("/api/integrations/google", {
+        method: "PUT",
+        body: JSON.stringify({ clientId, clientSecret, allowedDomain }),
+      });
+      setGoogleSettings(result.settings);
+      notify("success", "Google 登录配置已保存");
+    } catch (caught) {
+      handleApiError(caught);
+      throw caught;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveAiSettings(baseUrl: string, apiKey: string, modelId: string) {
+    setSaving(true);
+    try {
+      const result = await api<{ settings: AiSettings }>("/api/integrations/ai", {
+        method: "PUT",
+        body: JSON.stringify({ baseUrl, apiKey, modelId }),
+      });
+      setAiSettings(result.settings);
+      notify("success", "AI 模型配置已保存");
+    } catch (caught) {
+      handleApiError(caught);
+      throw caught;
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function archiveProduct() {
     if (!selectedProduct) return;
     try {
@@ -396,21 +495,29 @@ export default function App() {
       <aside className={`sidebar ${sidebarOpen ? "mobile-open" : ""}`}>
         <header className="sidebar-brand"><span className="sidebar-mark"><PackageSearch size={20} /></span><div><strong>MAILSHOP</strong><small>商品中台</small></div><button className="icon-button mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭导航"><X size={18} /></button></header>
         <nav className="sidebar-nav" aria-label="主导航">
-          <button className={view === "products" ? "active" : ""} type="button" onClick={() => { setView("products"); setSidebarOpen(false); }}><LayoutDashboard size={18} /><span>商品工作台</span>{summary?.searchingCount ? <em>{summary.searchingCount}</em> : null}</button>
-          <button className={view === "accounts" ? "active" : ""} type="button" onClick={() => { setView("accounts"); setSidebarOpen(false); }}><Users size={18} /><span>账号管理</span></button>
-          <button className={view === "settings" ? "active" : ""} type="button" onClick={() => { setView("settings"); setSidebarOpen(false); }}><Settings size={18} /><span>系统设置</span></button>
+          <button className={view === "dashboard" ? "active" : ""} type="button" onClick={() => { setView("dashboard"); setSidebarOpen(false); }}><LayoutDashboard size={18} /><span>仪表台</span></button>
+          <button className={view === "products" ? "active" : ""} type="button" onClick={() => { setView("products"); setSidebarOpen(false); }}><PackageSearch size={18} /><span>商品管理</span>{summary?.searchingCount ? <em>{summary.searchingCount}</em> : null}</button>
+          <button className={view === "credits" ? "active" : ""} type="button" onClick={() => { setView("credits"); setSidebarOpen(false); }}><Coins size={18} /><span>积分管理</span></button>
+          <button className={view === "tasks" ? "active" : ""} type="button" onClick={() => { setView("tasks"); setSidebarOpen(false); }}><ListChecks size={18} /><span>查询任务</span></button>
+          {user.role === "admin" && <><button className={view === "accounts" ? "active" : ""} type="button" onClick={() => { setView("accounts"); setSidebarOpen(false); }}><Users size={18} /><span>账号管理</span></button><button className={view === "settings" ? "active" : ""} type="button" onClick={() => { setView("settings"); setSidebarOpen(false); }}><Settings size={18} /><span>系统设置</span></button></>}
         </nav>
-        <footer className="sidebar-footer"><div className="sidebar-user"><span>{user.displayName.slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName}</strong><small>{user.username}</small></div></div><button className="icon-button" type="button" onClick={logout} aria-label="退出登录" title="退出登录"><LogOut size={18} /></button></footer>
+        <footer className="sidebar-footer"><div className="sidebar-user"><span>{user.displayName.slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName}</strong><small>{user.email || user.username}</small><small className="credit-balance">{user.credits.toLocaleString()} 积分</small></div></div><button className="icon-button" type="button" onClick={logout} aria-label="退出登录" title="退出登录"><LogOut size={18} /></button></footer>
       </aside>
       {sidebarOpen && <button className="sidebar-scrim" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭导航" />}
 
       <main className="main-content">
-        <header className="mobile-topbar"><button className="icon-button" type="button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={20} /></button><strong>MAILSHOP</strong><span className="avatar-small">{user.displayName.slice(0, 1).toUpperCase()}</span></header>
+        <header className="mobile-topbar"><button className="icon-button" type="button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={20} /></button><strong>MAILSHOP</strong><span className="mobile-credit-badge">{user.credits.toLocaleString()} 积分</span><span className="avatar-small">{user.displayName.slice(0, 1).toUpperCase()}</span></header>
 
-        {view === "products" ? (
+        {view === "dashboard" ? (
+          <UserDashboard user={user} summary={summary} onProducts={() => setView("products")} onCredits={() => setView("credits")} />
+        ) : view === "credits" ? (
+          <CreditsPage balance={user.credits} transactions={creditTransactions} loading={loadingCredits} />
+        ) : view === "tasks" ? (
+          <SearchTasksPage tasks={searchTasks} loading={loadingSearchTasks} />
+        ) : view === "products" ? (
           <section className="products-view">
             <header className="page-heading products-heading">
-              <div><span>PRODUCT OPERATIONS</span><h1>商品工作台</h1><p>Shopify 商品与 1688 货源匹配队列</p></div>
+              <div><span>PRODUCT OPERATIONS</span><h1>商品管理</h1><p>管理商品、图片与 1688 货源匹配</p></div>
               <button className="button primary" type="button" onClick={() => setProductModalOpen(true)}><PackagePlus size={17} />新增商品</button>
             </header>
 
@@ -469,7 +576,7 @@ export default function App() {
               <ProductDetail product={selectedProduct} loading={loadingDetail} saving={saving} onClose={() => setSelectedProduct(null)} onPatch={patchSelected} onOpenOffer={() => setOfferModalOpen(true)} onRemoveOffer={removeOffer} onUpload={uploadImage} onImageSearch={searchImage} onArchive={archiveProduct} />
             </section>
           </section>
-        ) : view === "accounts" ? (
+        ) : view === "accounts" && user.role === "admin" ? (
           <UserManager
             currentUser={user}
             users={users}
@@ -478,8 +585,10 @@ export default function App() {
             onPatch={async (userId, patch) => { try { const result = await api<{ users: User[] }>(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify(patch) }); setUsers(result.users); notify("success", "账号状态已更新"); } catch (caught) { handleApiError(caught); } }}
             onPassword={async (userId, password) => { try { await api(`/api/users/${userId}/password`, { method: "POST", body: JSON.stringify({ password }) }); notify("success", "密码已重置"); if (userId === user.id) setUser(null); } catch (caught) { handleApiError(caught); throw caught; } }}
           />
+        ) : user.role === "admin" ? (
+          <SettingsPage onebound={oneboundSettings} google={googleSettings} ai={aiSettings} loading={loadingSettings} saving={saving} onSaveOneBound={saveOneBoundSettings} onSaveGoogle={saveGoogleSettings} onSaveAi={saveAiSettings} />
         ) : (
-          <SettingsPage settings={oneboundSettings} loading={loadingSettings} saving={saving} onSave={saveOneBoundSettings} />
+          <UserDashboard user={user} summary={summary} onProducts={() => setView("products")} onCredits={() => setView("credits")} />
         )}
       </main>
 

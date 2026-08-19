@@ -5,6 +5,9 @@ import {
   imageSearchSchema,
   oneboundCandidateBatchSchema,
   oneboundSettingsSchema,
+  googleSettingsSchema,
+  aiCandidatesRequestSchema,
+  aiSettingsSchema,
   productInputSchema,
   productListQuerySchema,
 } from "./validation";
@@ -98,9 +101,61 @@ describe("oneboundSettingsSchema", () => {
   });
 });
 
+describe("googleSettingsSchema", () => {
+  it("accepts OAuth credentials and an optional Workspace domain", () => {
+    expect(googleSettingsSchema.parse({
+      clientId: "client.apps.googleusercontent.com",
+      clientSecret: "secret-value",
+      allowedDomain: "example.com",
+    })).toEqual({
+      clientId: "client.apps.googleusercontent.com",
+      clientSecret: "secret-value",
+      allowedDomain: "example.com",
+    });
+    expect(googleSettingsSchema.parse({
+      clientId: "client.apps.googleusercontent.com",
+      clientSecret: "secret-value",
+      allowedDomain: "",
+    }).allowedDomain).toBe("");
+  });
+
+  it("rejects missing OAuth credentials", () => {
+    expect(() => googleSettingsSchema.parse({ clientId: "", clientSecret: "secret", allowedDomain: "" })).toThrow();
+    expect(() => googleSettingsSchema.parse({ clientId: "client", clientSecret: "", allowedDomain: "" })).toThrow();
+  });
+});
+
+describe("AI schemas", () => {
+  it("accepts encrypted-server configuration inputs without exposing them to clients", () => {
+    expect(aiSettingsSchema.parse({
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-example",
+      modelId: "gpt-4o-mini",
+    }).modelId).toBe("gpt-4o-mini");
+  });
+
+  it("caps AI candidate batches and preserves DOM context", () => {
+    const candidates = aiCandidatesRequestSchema.parse({ candidates: [{
+      id: "image-1",
+      url: "https://cdn.example.com/product.jpg",
+      width: 600,
+      height: 600,
+      alt: "Blue shirt",
+      context: "SKU: SHIRT-BLUE 商品价格 ¥39",
+      domScore: 0.84,
+    }] });
+    expect(candidates.candidates[0]?.domScore).toBe(0.84);
+    expect(() => aiCandidatesRequestSchema.parse({ candidates: Array.from({ length: 25 }, (_, index) => ({ id: String(index), url: `https://example.com/${index}.jpg` })) })).toThrow();
+  });
+});
+
 describe("OneBound workflow schemas", () => {
   it("applies image-search defaults", () => {
     expect(imageSearchSchema.parse({})).toEqual({ sort: "_sale", limit: 50, cache: "no", lang: "cn" });
+  });
+
+  it("coerces image-search form values", () => {
+    expect(imageSearchSchema.parse({ limit: "20", sort: "price" })).toMatchObject({ limit: 20, sort: "price" });
   });
 
   it("deduplicates selected candidate ids and caps batch size", () => {
