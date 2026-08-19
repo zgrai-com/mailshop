@@ -378,14 +378,17 @@ async function classifyPageImagesWithCustom(candidates, config, pageSnapshot = n
     "你是电商页面图片筛选器。结合图片、DOM 上下文和尺寸，判断真实商品图片并提取明确出现的 SKU。",
     "排除 logo、头像、图标、广告、按钮和装饰图。sku 不明确时必须为 null，禁止猜测。",
     "type 只能是 product_main、product_detail、variant、non_product、unknown。",
-    pageSnapshot?.regions?.length ? "先识别页面商品区域。region 的 rootId、imageIds 必须来自输入，titleIds/skuIds 使用 HTML 中已有 data-node-id；只返回严格 JSON 对象：{\\"regions\\":[{\\"rootId\\",\\"imageIds\\",\\"titleIds\\",\\"skuIds\\",\\"confidence\\"}]}。" : "页面没有可用 HTML 区域，请直接分析候选图片。",
+    pageSnapshot?.regions?.length ? '先识别页面商品区域。region 的 rootId、imageIds 必须来自输入，titleIds/skuIds 使用 HTML 中已有 data-node-id；只返回严格 JSON 对象：{"regions":[{"rootId","imageIds","titleIds","skuIds","confidence"}]}。' : "页面没有可用 HTML 区域，请直接分析候选图片。",
     JSON.stringify({ candidates: candidates.map(({ id, url, width, height, alt, title, context, domScore, sku }) => ({ id, url, width, height, alt, title, context, domScore, sku })), page: pageSnapshot ? { title: pageSnapshot.title, url: pageSnapshot.url, regions: pageSnapshot.regions.map(({ id, imageIds, text, html }) => ({ id, imageIds, text, html })) } : null }),
     '无 HTML 区域时只输出 JSON 数组：[{"id","keep","score","type","productTitle","sku","reason"}]',
   ].join("\n");
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25_000);
-    const requestBody = { model: config.modelId, temperature: 0, max_tokens: 4_000, messages: [{ role: "user", content: [{ type: "text", text: prompt }, ...candidates.map((candidate) => ({ type: "image_url", image_url: { url: candidate.url, detail: "low" } }))] }] };
+    const content = pageSnapshot?.regions?.length
+      ? prompt
+      : [{ type: "text", text: prompt }, ...candidates.map((candidate) => ({ type: "image_url", image_url: { url: candidate.url, detail: "low" } }))];
+    const requestBody = { model: config.modelId, temperature: 0, max_tokens: 4_000, messages: [{ role: "user", content }] };
     const { response, payload } = await loggedAiFetch({
       source: "custom",
       action: "page_image_analysis",
@@ -412,7 +415,9 @@ async function classifyPageImagesWithCustom(candidates, config, pageSnapshot = n
       const extraction = await loggedAiFetch({ source: "custom", action: "page_region_extraction", url: customCompletionUrl(config.baseUrl), requestBody: extractionBody, options: { headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" }, signal: controller.signal } });
       if (!extraction.response.ok) throw new Error(`自定义 AI 区域提取失败（HTTP ${extraction.response.status}）`);
       const extracted = parseCustomAiContent(extraction.payload.choices?.[0]?.message?.content);
-      const results = applyExtractedResults(candidates.map((candidate) => ({ ...candidate })), extracted, selected);
+      const selectedIds = new Set(selected.flatMap((region) => region.imageIds));
+      const seeded = fallback.map((candidate) => selectedIds.has(candidate.id) ? { ...candidate, keep: true, score: Math.max(candidate.score, 0.65), type: candidate.type === "non_product" ? "unknown" : candidate.type, reason: "AI 识别为商品区域" } : { ...candidate });
+      const results = applyExtractedResults(seeded, extracted, selected);
       return { configured: true, degraded: false, source: "custom", pipeline: "html_two_stage", results };
     }
     const results = mergeAiResults(candidates, parsed, fallback);
@@ -423,11 +428,11 @@ async function classifyPageImagesWithCustom(candidates, config, pageSnapshot = n
   }
 }
 
-async function classifyPageImages(candidates) {
+async function classifyPageImages(candidates, pageSnapshot = null) {
   const config = await getAiUsage();
   return config.mode === "custom"
-    ? classifyPageImagesWithCustom(candidates, config)
-    : classifyPageImagesWithServer(candidates);
+    ? classifyPageImagesWithCustom(candidates, config, pageSnapshot)
+    : classifyPageImagesWithServer(candidates, pageSnapshot);
 }
 
 async function testAiUsage(value, candidates = []) {
@@ -780,7 +785,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         await clearFinishedTasks();
         return { ok: true };
       case "CLASSIFY_PAGE_IMAGES":
-        return await classifyPageImages(Array.isArray(message.candidates) ? message.candidates : []);
+        return await classifyPageImages(Array.isArray(message.candidates) ? message.candidates : [], message.pageSnapshot || null);
       case "OPEN_IMAGE_VIEWER":
         return {
           opened: await openImageViewerInTab(
