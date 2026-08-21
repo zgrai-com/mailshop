@@ -269,7 +269,10 @@ export default function App() {
   useEffect(() => {
     const updateCredits = (event: Event) => {
       const balance = (event as CustomEvent<number>).detail;
-      setUser((current) => current ? { ...current, credits: balance } : current);
+      setUser((current) => {
+        if (!current || current.credits === balance) return current;
+        return { ...current, credits: balance };
+      });
     };
     window.addEventListener("mailshop:credits", updateCredits);
     return () => window.removeEventListener("mailshop:credits", updateCredits);
@@ -327,7 +330,10 @@ export default function App() {
     try {
       const result = await api<{ credits: { balance: number; transactions: import("./types").CreditTransaction[] } }>("/api/credits");
       setCreditTransactions(result.credits.transactions);
-      setUser((current) => current ? { ...current, credits: result.credits.balance } : current);
+      setUser((current) => {
+        if (!current || current.credits === result.credits.balance) return current;
+        return { ...current, credits: result.credits.balance };
+      });
     } catch (caught) {
       handleApiError(caught);
     } finally {
@@ -382,27 +388,27 @@ export default function App() {
   useEffect(() => {
     if (!user || view !== "products") return;
     void loadProducts();
-  }, [loadProducts, user, view]);
+  }, [loadProducts, user?.id, view]);
 
   useEffect(() => {
     if (!user) return;
     void loadSummary();
-  }, [loadSummary, user]);
+  }, [loadSummary, user?.id]);
 
   useEffect(() => {
     if (!user) return;
     api<{ stores: ShopifyStore[] }>("/api/integrations/shopify")
       .then((result) => setShopifyStores(result.stores))
       .catch(handleApiError);
-  }, [handleApiError, user]);
+  }, [handleApiError, user?.id]);
 
   useEffect(() => {
     if (user && view === "credits") void loadCredits();
-  }, [loadCredits, user, view]);
+  }, [loadCredits, user?.id, view]);
 
   useEffect(() => {
     if (user && view === "tasks") void loadSearchTasks();
-  }, [loadSearchTasks, user, view]);
+  }, [loadSearchTasks, user?.id, view]);
 
   const loadUsers = useCallback(async () => {
     setLoadingUsers(true);
@@ -418,7 +424,7 @@ export default function App() {
 
   useEffect(() => {
     if (user && view === "accounts") void loadUsers();
-  }, [loadUsers, user, view]);
+  }, [loadUsers, user?.id, view]);
 
   const loadOneBoundSettings = useCallback(async () => {
     setLoadingSettings(true);
@@ -442,7 +448,7 @@ export default function App() {
 
   useEffect(() => {
     if (user && view === "settings") void loadOneBoundSettings();
-  }, [loadOneBoundSettings, user, view]);
+  }, [loadOneBoundSettings, user?.id, view]);
 
   async function selectProduct(productId: string) {
     setLoadingDetail(true);
