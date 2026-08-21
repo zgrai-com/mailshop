@@ -25,7 +25,7 @@ import type {
 } from "../types";
 
 type SearchOptions = {
-  sort: "_sale" | "sale" | "price" | "_price";
+  sort: "_sale" | "sale" | "bid2" | "_bid2";
   cache: "yes" | "no";
   lang: "cn" | "en" | "ru";
   limit: 10 | 20 | 50;
@@ -277,7 +277,7 @@ export function ImageSearchModal({ product, image, onClose, onSaved }: Props) {
 
           <section className="search-config-section">
             <div className="search-config-heading"><span>SEARCH CONFIG</span><strong>搜索配置</strong></div>
-            <label className="field-label"><span>结果排序</span><select autoFocus value={options.sort} onChange={(event) => setOptions((current) => ({ ...current, sort: event.target.value as SearchOptions["sort"] }))}><option value="_sale">销量从高到低</option><option value="sale">销量从低到高</option><option value="price">价格从低到高</option><option value="_price">价格从高到低</option></select></label>
+            <label className="field-label"><span>结果排序</span><select autoFocus value={options.sort} onChange={(event) => setOptions((current) => ({ ...current, sort: event.target.value as SearchOptions["sort"] }))}><option value="_sale">销量从高到低</option><option value="sale">销量从低到高</option><option value="bid2">总价从低到高</option><option value="_bid2">总价从高到低</option></select></label>
             <div className="form-grid two-columns compact-config-grid">
               <label className="field-label"><span>返回数量</span><select value={options.limit} onChange={(event) => setOptions((current) => ({ ...current, limit: Number(event.target.value) as SearchOptions["limit"] }))}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select></label>
               <label className="field-label"><span>接口语言</span><select value={options.lang} onChange={(event) => setOptions((current) => ({ ...current, lang: event.target.value as SearchOptions["lang"] }))}><option value="cn">中文</option><option value="en">English</option><option value="ru">Русский</option></select></label>

@@ -5,6 +5,7 @@
   --color-surface: oklch(100% 0 0);
   --color-line: oklch(90% .012 145);
   --color-accent: oklch(93% .21 120);
+  --color-accent-ink: oklch(25% .03 155);
   --color-accent-hover: oklch(87% .2 120);
   --color-accent-dark: oklch(55% .14 115);
   --color-danger: oklch(52% .17 30);
@@ -12,6 +13,11 @@
   --color-brand-muted: oklch(72% .02 155);
   --color-brand-line: oklch(40% .025 155);
   --color-preview: oklch(94% .01 140);
+  --color-viewer: oklch(16% .015 155);
+  --color-viewer-text: oklch(98% .006 155);
+  --color-viewer-line: oklch(98% .006 155 / .24);
+  --color-viewer-toolbar: oklch(16% .015 155 / .96);
+  --color-viewer-label: oklch(16% .015 155 / .78);
   --font-body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --space-1: 4px;
   --space-2: 8px;

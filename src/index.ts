@@ -22,15 +22,21 @@ import {
   assertMediaAccess,
   assertOfferAccess,
   assertProductAccess,
+  completeSearchTask,
   dashboardSummary,
+  deleteSearchTask,
+  failSearchTask,
   getProduct,
+  getSearchTask,
   getStoredOfferDetail,
   listProducts,
   listUsers,
   patchProduct,
   patchUser,
   recordAudit,
+  recordSearchTaskImports,
   listSearchTasks,
+  startSearchTask,
   upsertSearchTask,
   removeOfferLink,
   upsertOfferLink,
@@ -39,9 +45,11 @@ import {
 import {
   getOneBoundItem,
   getOneBoundSettings,
+  importOneBoundProducts,
   saveOneBoundCandidates,
   saveOneBoundSettings,
   searchImageBytes,
+  searchImageUrl,
   searchProductImage,
 } from "./onebound";
 import {
@@ -57,6 +65,7 @@ import {
 import { handleImageProxy } from "./image-proxy";
 import { classifyImageCandidates, getAiSettings, saveAiSettings } from "./ai";
 import { allowedExtensionOrigins, extensionOriginFromRequest } from "./extension-origin";
+import { deleteShopifyStore, getShopifySettings, publishProductToShopify, saveShopifySettings, testShopifyStore } from "./shopify";
 import {
   bootstrapSchema,
   crawlerOfferLinkSchema,
@@ -65,6 +74,7 @@ import {
   passwordChangeSchema,
   productInputSchema,
   productListQuerySchema,
+  searchTaskListQuerySchema,
   productPatchSchema,
   userCreateSchema,
   userPatchSchema,
@@ -74,9 +84,14 @@ import {
   imageSearchSchema,
   googleSettingsSchema,
   searchTaskSyncSchema,
+  searchTaskImportSchema,
+  searchTaskRunSchema,
   aiSettingsSchema,
   aiCandidatesRequestSchema,
+  shopifySettingsSchema,
+  shopifyPublishSchema,
 } from "./validation";
+import type { SearchTaskRunInput } from "./validation";
 
 function methodNotAllowed(allowed: string[]): Response {
   return json(
@@ -89,6 +104,9 @@ function methodNotAllowed(allowed: string[]): Response {
 const PUBLIC_IMAGE_SEARCH_PATH = "/api/public/onebound/image-search";
 const PUBLIC_EXTENSION_ACCOUNT_PATH = "/api/public/extension/account";
 const PUBLIC_EXTENSION_TASKS_PATH = "/api/public/extension/tasks";
+const PUBLIC_EXTENSION_PRODUCTS_PATH = "/api/public/extension/products";
+const PUBLIC_EXTENSION_STORES_PATH = "/api/public/extension/stores";
+const PUBLIC_EXTENSION_CREDITS_PATH = "/api/public/extension/credits";
 const PUBLIC_EXTENSION_AI_PATH = "/api/public/extension/ai-classify";
 const PUBLIC_IMAGE_TYPES = new Set([
   "image/avif",
@@ -109,7 +127,7 @@ function withPublicCors(request: Request, response: Response, env: Env): Respons
     "access-control-allow-headers",
     "content-type, x-mailshop-client, x-mailshop-session, x-mailshop-extension-id",
   );
-  corsResponse.headers.set("access-control-allow-methods", "GET, POST, OPTIONS");
+  corsResponse.headers.set("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
   corsResponse.headers.set("access-control-allow-credentials", "true");
   corsResponse.headers.set("access-control-max-age", "86400");
   return corsResponse;
@@ -171,6 +189,67 @@ async function handlePublicImageSearch(request: Request, env: Env): Promise<Resp
   }
 }
 
+function taskImage(task: Record<string, unknown>, imageId: string): { id: string; url: string } | null {
+  const images = Array.isArray(task.images) ? task.images : [];
+  const selected = images.find((item) => item && typeof item === "object" && !Array.isArray(item) && (item as Record<string, unknown>).id === imageId);
+  if (!selected || typeof selected !== "object" || Array.isArray(selected)) return null;
+  const url = (selected as Record<string, unknown>).url;
+  return typeof url === "string" && url ? { id: imageId, url } : null;
+}
+
+function extensionSearchTask(task: Record<string, unknown>): Record<string, unknown> {
+  const { legacyStatus, ...rest } = task;
+  return { ...rest, status: typeof legacyStatus === "string" ? legacyStatus : task.status };
+}
+
+async function executeSearchTask(
+  env: Env,
+  userId: string,
+  taskId: string,
+  input: SearchTaskRunInput,
+  source: "extension_task" | "server_task",
+  imageBytes?: Uint8Array,
+): Promise<{ task: Record<string, unknown> | null; credits: { balance: number; charged: number } }> {
+  const task = await getSearchTask(env, userId, taskId);
+  if (!task) throw new ApiError(404, "任务不存在", "search_task_not_found");
+  const image = taskImage(task, input.imageId);
+  if (!image) throw new ApiError(422, "所选图片不属于该任务", "search_task_image_not_found");
+  const { imageId, ...options } = input;
+  const runId = await startSearchTask(env, userId, taskId, imageId, image.url, options);
+  if (!runId) throw new ApiError(409, "任务正在查询，请等待当前查询完成", "search_task_running");
+
+  let charge: Awaited<ReturnType<typeof chargeImageSearch>> | null = null;
+  try {
+    charge = await chargeImageSearch(env, userId, { source, taskId, runId, imageId, page: options.page });
+    const result = imageBytes
+      ? await searchImageBytes(env, imageBytes, options)
+      : await searchImageUrl(env, image.url, options);
+    const storedResults = result.results.map((item) => ({
+      offerId: item.offerId,
+      title: item.title,
+      imageUrl: item.imageUrl,
+      detailUrl: item.detailUrl,
+      price: item.price,
+      promotionPrice: item.promotionPrice,
+      sales: item.sales,
+      supplierName: item.supplierName,
+      location: item.location,
+    }));
+    const updatedTask = await completeSearchTask(env, userId, taskId, runId, {
+      results: storedResults,
+      resultCount: result.resultCount,
+      totalResultCount: result.totalResultCount,
+      uploadedImageId: result.uploadedImageId,
+      chargedCredits: charge.cost,
+    });
+    return { task: updatedTask, credits: { balance: charge.balance, charged: charge.cost } };
+  } catch (error) {
+    if (charge) await refundImageSearch(env, userId, charge);
+    await failSearchTask(env, userId, taskId, runId, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+}
+
 async function handlePublicExtensionAccount(request: Request, env: Env): Promise<Response> {
   if (!extensionOriginFromRequest(env, request)) {
     throw new ApiError(403, "仅允许已配置的浏览器插件访问", "extension_origin_forbidden");
@@ -186,7 +265,6 @@ async function handlePublicExtensionAccount(request: Request, env: Env): Promise
     user,
     credits: {
       balance: await getCreditBalance(env, user.id),
-      transactions: await listCreditTransactions(env, user.id),
     },
   });
 }
@@ -199,10 +277,89 @@ async function handlePublicExtensionTasks(request: Request, env: Env): Promise<R
   if (request.headers.get("x-mailshop-client") !== "extension") {
     throw new ApiError(403, "插件客户端标识无效", "extension_client_forbidden");
   }
-  if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
   const user = await authenticate(request, env);
-  const input = await readJson(request, searchTaskSyncSchema);
-  return json({ ok: true, task: await upsertSearchTask(env, user.id, input) });
+  const url = new URL(request.url);
+  if (url.pathname === PUBLIC_EXTENSION_TASKS_PATH) {
+    if (request.method === "GET") {
+      const query = searchTaskListQuerySchema.parse(parseQuery(url));
+      const result = await listSearchTasks(env, user.id, query);
+      return json({ ok: true, tasks: result.items.map(extensionSearchTask), page: result.page, pageSize: result.pageSize, total: result.total });
+    }
+    if (request.method === "POST") {
+      const input = await readJson(request, searchTaskSyncSchema);
+      return json({ ok: true, task: extensionSearchTask(await upsertSearchTask(env, user.id, input)) }, 201);
+    }
+    return methodNotAllowed(["GET", "POST", "OPTIONS"]);
+  }
+
+  const searchRoute = url.pathname.match(/^\/api\/public\/extension\/tasks\/([0-9a-f-]{36})\/search$/iu);
+  if (searchRoute) {
+    if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
+    if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("multipart/form-data")) {
+      throw new ApiError(415, "请使用 multipart/form-data 上传图片", "unsupported_media_type");
+    }
+    const maxBytes = Math.max(1_048_576, Number(env.MAX_IMAGE_BYTES) || 15_728_640);
+    const form = await request.formData();
+    const image = form.get("image");
+    const imageId = stringFormValue(form, "imageId");
+    if (!(image instanceof File)) throw new ApiError(422, "缺少 image 图片文件", "image_missing");
+    if (!imageId) throw new ApiError(422, "缺少 imageId", "task_image_id_missing");
+    if (!PUBLIC_IMAGE_TYPES.has(image.type.toLowerCase())) {
+      throw new ApiError(415, "仅支持 JPG、PNG、WebP、GIF 或 AVIF 图片", "invalid_image_type");
+    }
+    if (!image.size || image.size > maxBytes) {
+      throw new ApiError(image.size ? 413 : 422, image.size ? "图片文件过大" : "图片内容为空", image.size ? "image_too_large" : "image_empty", { maxBytes });
+    }
+    const input = searchTaskRunSchema.parse({
+      imageId,
+      sort: stringFormValue(form, "sort"),
+      limit: stringFormValue(form, "limit"),
+      page: stringFormValue(form, "page"),
+      cache: stringFormValue(form, "cache"),
+      lang: stringFormValue(form, "lang"),
+      version: stringFormValue(form, "version"),
+    });
+    const result = await executeSearchTask(env, user.id, searchRoute[1], input, "extension_task", new Uint8Array(await image.arrayBuffer()));
+    return json({ ok: true, ...result, task: result.task ? extensionSearchTask(result.task) : null });
+  }
+
+  const taskRoute = url.pathname.match(/^\/api\/public\/extension\/tasks\/([0-9a-f-]{36})$/iu);
+  if (taskRoute) {
+    if (request.method !== "DELETE") return methodNotAllowed(["DELETE", "OPTIONS"]);
+    if (!(await deleteSearchTask(env, user.id, taskRoute[1]))) {
+      throw new ApiError(404, "任务不存在", "search_task_not_found");
+    }
+    return json({ ok: true, deleted: true });
+  }
+  throw new ApiError(404, "接口不存在", "not_found");
+}
+
+async function handlePublicExtensionManagement(request: Request, env: Env): Promise<Response> {
+  if (!extensionOriginFromRequest(env, request)) {
+    throw new ApiError(403, "仅允许已配置的浏览器插件访问", "extension_origin_forbidden");
+  }
+  if (request.method === "OPTIONS") return new Response(null, { status: 204 });
+  if (request.headers.get("x-mailshop-client") !== "extension") {
+    throw new ApiError(403, "插件客户端标识无效", "extension_client_forbidden");
+  }
+  if (request.method !== "GET") return methodNotAllowed(["GET", "OPTIONS"]);
+  const user = await authenticate(request, env);
+  const url = new URL(request.url);
+  if (url.pathname === PUBLIC_EXTENSION_PRODUCTS_PATH) {
+    const query = productListQuerySchema.parse(parseQuery(url));
+    return json({ ok: true, ...(await listProducts(env, query, user)) });
+  }
+  if (url.pathname === PUBLIC_EXTENSION_STORES_PATH) {
+    const { stores } = await getShopifySettings(env, user.id);
+    return json({
+      ok: true,
+      stores: stores.map(({ clientId: _clientId, clientSecret: _clientSecret, ...store }) => store),
+    });
+  }
+  if (url.pathname === PUBLIC_EXTENSION_CREDITS_PATH) {
+    return json({ ok: true, credits: { balance: await getCreditBalance(env, user.id), transactions: await listCreditTransactions(env, user.id) } });
+  }
+  throw new ApiError(404, "接口不存在", "not_found");
 }
 
 async function handlePublicExtensionAi(request: Request, env: Env): Promise<Response> {
@@ -216,7 +373,7 @@ async function handlePublicExtensionAi(request: Request, env: Env): Promise<Resp
   if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
   await authenticate(request, env);
   const input = await readJson(request, aiCandidatesRequestSchema);
-  const result = await classifyImageCandidates(env, input.candidates);
+  const result = await classifyImageCandidates(env, input.candidates, input.pageSnapshot ?? null, input.stage, input.regionSnapshots);
   return json({ ok: true, ...result });
 }
 
@@ -247,6 +404,21 @@ function productImageSearchRoute(pathname: string): { productId: string; imageId
   const match = pathname.match(/^\/api\/products\/([0-9a-f-]{36})\/images\/([0-9a-f-]{36})\/search$/iu);
   if (!match) return null;
   return { productId: match[1], imageId: match[2] };
+}
+
+function shopifyPublishRoute(pathname: string): { productId: string } | null {
+  const match = pathname.match(/^\/api\/products\/([0-9a-f-]{36})\/shopify$/iu);
+  return match ? { productId: match[1] } : null;
+}
+
+function shopifyStoreTestRoute(pathname: string): { storeId: string } | null {
+  const match = pathname.match(/^\/api\/integrations\/shopify\/stores\/([0-9a-f-]{36})\/test$/iu);
+  return match ? { storeId: match[1] } : null;
+}
+
+function shopifyStoreRoute(pathname: string): { storeId: string } | null {
+  const match = pathname.match(/^\/api\/integrations\/shopify\/stores\/([0-9a-f-]{36})$/iu);
+  return match ? { storeId: match[1] } : null;
 }
 
 function oneboundItemRoute(pathname: string): { offerId: string } | null {
@@ -478,9 +650,68 @@ async function handleAuthenticatedApi(
       : methodNotAllowed(["GET"]);
   }
   if (url.pathname === "/api/search-tasks") {
-    return request.method === "GET"
-      ? json({ ok: true, tasks: await listSearchTasks(env, user.id) })
-      : methodNotAllowed(["GET"]);
+    if (request.method !== "GET") return methodNotAllowed(["GET"]);
+    const query = searchTaskListQuerySchema.parse(parseQuery(url));
+    const result = await listSearchTasks(env, user.id, query);
+    return json({ ok: true, tasks: result.items, page: result.page, pageSize: result.pageSize, total: result.total });
+  }
+  const searchTaskRun = url.pathname.match(/^\/api\/search-tasks\/([0-9a-f-]{36})\/search$/iu);
+  if (searchTaskRun) {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const input = await readJson(request, searchTaskRunSchema);
+    const result = await executeSearchTask(env, user.id, searchTaskRun[1], input, "server_task");
+    ctx.waitUntil(recordAudit(request, env, user.id, "search_task.query", "search_task", searchTaskRun[1], {
+      imageId: input.imageId,
+      page: input.page,
+      limit: input.limit,
+    }));
+    return json({ ok: true, ...result });
+  }
+  const searchTaskImport = url.pathname.match(/^\/api\/search-tasks\/([0-9a-f-]{36})\/import$/iu);
+  if (searchTaskImport) {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const input = await readJson(request, searchTaskImportSchema);
+    const task = await getSearchTask(env, user.id, searchTaskImport[1]);
+    if (!task) throw new ApiError(404, "Search task not found", "search_task_not_found");
+    const runs = Array.isArray(task.runs) ? task.runs.filter((run): run is Record<string, unknown> => Boolean(run && typeof run === "object" && !Array.isArray(run))) : [];
+    const selectedRuns = input.runId ? runs.filter((run) => run.id === input.runId) : runs;
+    if (input.runId && selectedRuns.length === 0) throw new ApiError(422, "查询轮次不存在", "search_task_run_not_found");
+    const results = selectedRuns.flatMap((run) => Array.isArray(run.results) ? run.results : []);
+    const allowedOfferIds = new Set(
+      results.flatMap((result) => {
+        if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+        const offerId = (result as Record<string, unknown>).offerId;
+        return typeof offerId === "string" && offerId.trim() ? [offerId.trim()] : [];
+      }),
+    );
+    const offerIds = input.offerIds ?? [...allowedOfferIds];
+    if (!offerIds.length) throw new ApiError(422, "查询任务中没有可导入的 1688 商品", "search_task_results_empty");
+    const invalidOfferIds = offerIds.filter((offerId) => !allowedOfferIds.has(offerId));
+    if (invalidOfferIds.length) {
+      throw new ApiError(422, "只能导入当前查询任务的结果", "search_task_offer_not_found", { offerIds: invalidOfferIds });
+    }
+    const selectedRun = input.runId ? selectedRuns[0] : runs[0];
+    const taskOptions = selectedRun?.options && typeof selectedRun.options === "object" && !Array.isArray(selectedRun.options)
+      ? selectedRun.options as Record<string, unknown>
+      : task.options && typeof task.options === "object" && !Array.isArray(task.options)
+        ? task.options as Record<string, unknown>
+      : {};
+    const result = await importOneBoundProducts(
+      env,
+      offerIds,
+      {
+        cache: input.cache ?? (taskOptions.cache === "yes" ? "yes" : "no"),
+        lang: input.lang ?? (taskOptions.lang === "en" ? "en" : taskOptions.lang === "ru" ? "ru" : "cn"),
+      },
+      user.id,
+    );
+    await recordSearchTaskImports(env, searchTaskImport[1], input.runId ?? null, result.imported);
+    ctx.waitUntil(recordAudit(request, env, user.id, "search_task.products.import", "search_task", searchTaskImport[1], {
+      offerIds,
+      imported: result.imported.map((item) => item.offerId),
+      failureCount: result.failures.length,
+    }));
+    return json({ ok: true, task: await getSearchTask(env, user.id, searchTaskImport[1]), ...result });
   }
   if (url.pathname === "/api/integrations/onebound") {
     if (request.method === "GET") return json({ ok: true, settings: await getOneBoundSettings(env) });
@@ -514,6 +745,30 @@ async function handleAuthenticatedApi(
       return json({ ok: true, settings: await getAiSettings(env) });
     }
     return methodNotAllowed(["GET", "PUT"]);
+  }
+  if (url.pathname === "/api/integrations/shopify") {
+    if (request.method === "GET") return json({ ok: true, ...(await getShopifySettings(env, user.id)) });
+    if (request.method === "PUT") {
+      const input = await readJson(request, shopifySettingsSchema);
+      const store = await saveShopifySettings(env, user.id, input);
+      ctx.waitUntil(recordAudit(request, env, user.id, "integration.shopify.update", "shopify_store", store.id, { shopDomain: store.shopDomain }));
+      return json({ ok: true, store });
+    }
+    return methodNotAllowed(["GET", "PUT"]);
+  }
+  const shopifyStoreTest = shopifyStoreTestRoute(url.pathname);
+  if (shopifyStoreTest) {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const store = await testShopifyStore(env, user.id, shopifyStoreTest.storeId);
+    ctx.waitUntil(recordAudit(request, env, user.id, "integration.shopify.test", "shopify_store", store.id, { shopDomain: store.shopDomain }));
+    return json({ ok: true, store });
+  }
+  const shopifyStore = shopifyStoreRoute(url.pathname);
+  if (shopifyStore) {
+    if (request.method !== "DELETE") return methodNotAllowed(["DELETE"]);
+    await deleteShopifyStore(env, user.id, shopifyStore.storeId);
+    ctx.waitUntil(recordAudit(request, env, user.id, "integration.shopify.delete", "shopify_store", shopifyStore.storeId));
+    return json({ ok: true, deleted: true });
   }
   if (url.pathname === "/api/image-proxy") {
     return request.method === "GET"
@@ -577,6 +832,20 @@ async function handleAuthenticatedApi(
       }),
     );
     return json({ ok: true, credits: { balance: charge.balance, charged: charge.cost }, ...result });
+  }
+
+  const shopifyPublish = shopifyPublishRoute(url.pathname);
+  if (shopifyPublish) {
+    await assertProductAccess(env, shopifyPublish.productId, user);
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const input = await readJson(request, shopifyPublishSchema);
+    const publication = await publishProductToShopify(env, user.id, shopifyPublish.productId, input.storeId);
+    ctx.waitUntil(recordAudit(request, env, user.id, "product.shopify.publish", "product", shopifyPublish.productId, {
+      storeId: input.storeId,
+      shopifyProductId: publication.productId,
+      warnings: publication.warnings,
+    }));
+    return json({ ok: true, publication, product: await getProduct(env, shopifyPublish.productId) });
   }
 
 
@@ -685,7 +954,10 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
   const url = new URL(request.url);
   if (url.pathname === PUBLIC_IMAGE_SEARCH_PATH) return handlePublicImageSearch(request, env);
   if (url.pathname === PUBLIC_EXTENSION_ACCOUNT_PATH) return handlePublicExtensionAccount(request, env);
-  if (url.pathname === PUBLIC_EXTENSION_TASKS_PATH) return handlePublicExtensionTasks(request, env);
+  if (url.pathname === PUBLIC_EXTENSION_TASKS_PATH || url.pathname.startsWith(`${PUBLIC_EXTENSION_TASKS_PATH}/`)) return handlePublicExtensionTasks(request, env);
+  if ([PUBLIC_EXTENSION_PRODUCTS_PATH, PUBLIC_EXTENSION_STORES_PATH, PUBLIC_EXTENSION_CREDITS_PATH].includes(url.pathname)) {
+    return handlePublicExtensionManagement(request, env);
+  }
   if (url.pathname === PUBLIC_EXTENSION_AI_PATH) return handlePublicExtensionAi(request, env);
   if (url.pathname === "/api/public/extension/logout") return handlePublicExtensionLogout(request, env, ctx);
 
@@ -746,9 +1018,8 @@ export default {
     const startedAt = Date.now();
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
     try {
-      const publicRequest = [PUBLIC_IMAGE_SEARCH_PATH, PUBLIC_EXTENSION_ACCOUNT_PATH, PUBLIC_EXTENSION_TASKS_PATH, PUBLIC_EXTENSION_AI_PATH, "/api/public/extension/logout"].includes(
-        new URL(request.url).pathname,
-      );
+      const requestPath = new URL(request.url).pathname;
+      const publicRequest = requestPath.startsWith("/api/public/extension/") || requestPath === PUBLIC_IMAGE_SEARCH_PATH;
       const routedResponse = await routeRequest(request, env, ctx);
       const response = publicRequest
         ? withPublicCors(request, withSecurityHeaders(routedResponse), env)
@@ -768,9 +1039,8 @@ export default {
       );
       return response;
     } catch (error) {
-      const publicRequest = [PUBLIC_IMAGE_SEARCH_PATH, PUBLIC_EXTENSION_ACCOUNT_PATH, PUBLIC_EXTENSION_TASKS_PATH, PUBLIC_EXTENSION_AI_PATH, "/api/public/extension/logout"].includes(
-        new URL(request.url).pathname,
-      );
+      const requestPath = new URL(request.url).pathname;
+      const publicRequest = requestPath.startsWith("/api/public/extension/") || requestPath === PUBLIC_IMAGE_SEARCH_PATH;
       const errorResult = withSecurityHeaders(errorResponse(error));
       const response = publicRequest ? withPublicCors(request, errorResult, env) : errorResult;
       response.headers.set("x-request-id", requestId);

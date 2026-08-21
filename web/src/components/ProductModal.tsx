@@ -18,7 +18,7 @@ function optionalNumber(value: string): number | null {
 
 export function ProductModal({ open, saving, onClose, onSave }: Props) {
   const [title, setTitle] = useState("");
-  const [sourcePlatform, setSourcePlatform] = useState<ProductInput["sourcePlatform"]>("shopify");
+  const [sourcePlatform, setSourcePlatform] = useState<ProductInput["sourcePlatform"]>("1688");
   const [sourceStore, setSourceStore] = useState("");
   const [externalId, setExternalId] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
@@ -98,7 +98,7 @@ export function ProductModal({ open, saving, onClose, onSave }: Props) {
         <form onSubmit={submit}>
           <div className="form-grid two-columns">
             <label className="field-label field-span-2"><span>商品标题</span><input value={title} onChange={(event) => setTitle(event.target.value)} required autoFocus /></label>
-            <label className="field-label"><span>来源</span><select value={sourcePlatform} onChange={(event) => setSourcePlatform(event.target.value as ProductInput["sourcePlatform"])}><option value="shopify">Shopify</option><option value="manual">手动录入</option><option value="other">其他</option></select></label>
+            <label className="field-label"><span>来源</span><select value={sourcePlatform} onChange={(event) => setSourcePlatform(event.target.value as ProductInput["sourcePlatform"])}><option value="1688">1688</option><option value="shopify">Shopify</option><option value="manual">手动录入</option><option value="other">其他</option></select></label>
             <label className="field-label"><span>店铺 / 来源标识</span><input value={sourceStore} onChange={(event) => setSourceStore(event.target.value)} placeholder="example.myshopify.com" /></label>
             <label className="field-label"><span>外部商品 ID</span><input value={externalId} onChange={(event) => setExternalId(event.target.value)} /></label>
             <label className="field-label"><span>Shopify 域名</span><input value={shopDomain} onChange={(event) => setShopDomain(event.target.value)} placeholder="example.myshopify.com" /></label>

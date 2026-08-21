@@ -51,6 +51,17 @@ export const aiSettingsSchema = z.object({
   modelId: z.string().trim().min(1).max(255),
 });
 
+export const shopifySettingsSchema = z.object({
+  shopDomain: z.string().trim().min(1).max(255),
+  displayName: z.string().trim().max(255).default(""),
+  clientId: z.string().trim().min(1).max(1_024),
+  clientSecret: z.string().trim().min(1).max(2_048),
+});
+
+export const shopifyPublishSchema = z.object({
+  storeId: z.string().uuid(),
+});
+
 const aiCandidateSchema = z.object({
   id: z.string().trim().min(1).max(160),
   url: z.string().trim().url().max(2_048),
@@ -59,16 +70,39 @@ const aiCandidateSchema = z.object({
   alt: z.string().max(500).default(""),
   title: z.string().max(500).default(""),
   source: z.string().max(80).default("image"),
+  sourcePage: optionalUrl,
   context: z.string().max(2_000).default(""),
+  sku: nullableText(160),
   domScore: z.number().min(0).max(1).default(0),
 });
 
+const aiPageRegionSchema = z.object({
+  rootId: z.string().trim().min(1).max(160),
+  titleIds: z.array(z.string().trim().min(1).max(160)).max(24).default([]),
+  skuIds: z.array(z.string().trim().min(1).max(160)).max(24).default([]),
+  imageIds: z.array(z.string().trim().min(1).max(160)).max(96).default([]),
+  html: z.string().max(80_000).default(""),
+});
+
+const aiPageSnapshotSchema = z.object({
+  url: optionalUrl,
+  title: z.string().max(500).default(""),
+  html: z.string().max(200_000).default(""),
+  regions: z.array(aiPageRegionSchema).max(48).default([]),
+});
+
 export const aiCandidatesRequestSchema = z.object({
-  candidates: z.array(aiCandidateSchema).min(1).max(24),
+  stage: z.enum(["regions", "fields"]).default("regions"),
+  candidates: z.array(aiCandidateSchema).max(120).default([]),
+  pageSnapshot: aiPageSnapshotSchema.nullable().optional(),
+  regionSnapshots: z.array(aiPageRegionSchema).max(24).default([]),
 });
 
 export type AiSettingsInput = z.infer<typeof aiSettingsSchema>;
+export type ShopifySettingsInput = z.infer<typeof shopifySettingsSchema>;
 export type AiCandidate = z.infer<typeof aiCandidateSchema>;
+export type AiPageSnapshot = z.infer<typeof aiPageSnapshotSchema>;
+export type AiPageRegion = z.infer<typeof aiPageRegionSchema>;
 
 export const oneboundRequestOptionsSchema = z.object({
   cache: z.enum(["yes", "no"]).default("no"),
@@ -76,21 +110,48 @@ export const oneboundRequestOptionsSchema = z.object({
 });
 
 export const imageSearchSchema = oneboundRequestOptionsSchema.extend({
-  sort: z.enum(["_sale", "sale", "price", "_price"]).default("_sale"),
+  sort: z.enum(["_sale", "sale", "bid2", "_bid2"]).default("_sale"),
   limit: z.coerce.number().int().min(10).max(50).default(50),
+  page: z.coerce.number().int().min(1).max(1_000).default(1),
+  version: z.string().trim().max(64).default(""),
+});
+
+const extensionTaskImageUrlSchema = z.string().trim().min(1).max(2_000_000).refine((value) => {
+  if (/^data:image\/(?:avif|gif|jpeg|png|webp);base64,/iu.test(value)) return true;
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}, "图片地址必须是 HTTP(S) URL 或受支持的 data URL");
+
+export const extensionTaskImageSchema = z.object({
+  id: z.string().trim().min(1).max(160),
+  url: extensionTaskImageUrlSchema,
+  width: z.coerce.number().int().min(0).max(20_000).default(0),
+  height: z.coerce.number().int().min(0).max(20_000).default(0),
+  alt: z.string().trim().max(500).default(""),
+  title: z.string().trim().max(500).default(""),
+  source: z.string().trim().max(80).default("page"),
 });
 
 export const searchTaskSyncSchema = z.object({
   clientId: z.string().trim().min(1).max(160),
   name: z.string().trim().min(1).max(120),
-  status: z.enum(["queued", "running", "completed", "failed"]),
-  sourceImageUrl: optionalUrl,
-  sourcePage: optionalUrl,
-  options: imageSearchSchema.default(() => ({ sort: "_sale" as const, limit: 50, cache: "no" as const, lang: "cn" as const })),
-  resultCount: z.coerce.number().int().min(0).max(500).default(0),
-  results: z.array(z.unknown()).max(500).default([]),
-  error: nullableText(2_000),
-  chargedCredits: z.coerce.number().int().min(0).max(100_000).default(0),
+  productTitle: nullableText(1_000),
+  description: nullableText(20_000),
+  sku: nullableText(500),
+  sourceSite: nullableText(255),
+  productUrl: optionalUrl,
+  images: z.array(extensionTaskImageSchema).min(1).max(200),
+  options: imageSearchSchema.default(() => ({
+    sort: "_sale" as const,
+    limit: 50,
+    page: 1,
+    version: "",
+    cache: "no" as const,
+    lang: "cn" as const,
+  })),
 });
 
 export type SearchTaskSyncInput = z.infer<typeof searchTaskSyncSchema>;
@@ -150,7 +211,7 @@ export const productMediaSchema = z.object({
 });
 
 export const productInputSchema = z.object({
-  sourcePlatform: z.enum(["shopify", "manual", "other"]).default("shopify"),
+  sourcePlatform: z.enum(["1688", "shopify", "manual", "other"]).default("1688"),
   sourceStore: z.string().trim().max(255).default(""),
   externalId: nullableText(160),
   sourceUrl: optionalUrl,
@@ -187,6 +248,34 @@ export const productInputSchema = z.object({
   raw: z.unknown().optional(),
   notes: nullableText(20_000),
   assignedTo: nullableText(64),
+  offerId1688: nullableText(160),
+  supplierId1688: nullableText(160),
+  supplierName1688: nullableText(500),
+  minOrderQuantity1688: nullableMoney,
+  unit1688: nullableText(64),
+  province1688: nullableText(100),
+  city1688: nullableText(100),
+  shortDescription1688: nullableText(500_000),
+  totalPrice1688: nullableMoney,
+  suggestedPrice1688: nullableMoney,
+  originalPrice1688: nullableMoney,
+  stockQuantity1688: nullableInteger,
+  soldQuantity1688: nullableInteger,
+  brand1688: nullableText(255),
+  brandId1688: nullableText(160),
+  rootCategoryId1688: nullableText(160),
+  categoryId1688: nullableText(160),
+  sellerNick1688: nullableText(255),
+  location1688: nullableText(255),
+  itemWeight1688: nullableText(255),
+  itemSize1688: nullableText(255),
+  shopId1688: nullableText(160),
+  videoUrl1688: optionalUrl,
+  sampleId1688: nullableText(160),
+  shippingTo1688: nullableText(255),
+  hasDiscount1688: nullableInteger,
+  isPromotion1688: nullableInteger,
+  fetchedAt1688: nullableText(64),
   variants: z.array(productVariantSchema).max(500).default([]),
   images: z.array(productImageSchema).max(200).default([]),
   media: z.array(productMediaSchema).max(100).default([]),
@@ -244,12 +333,32 @@ export const crawlerOfferLinkSchema = offerLinkSchema.extend({
 export const productListQuerySchema = z.object({
   search: z.string().trim().max(200).default(""),
   status: z.enum(["all", ...productStatuses]).default("all"),
-  source: z.enum(["all", "shopify", "manual", "other"]).default("all"),
+  source: z.enum(["all", "1688", "shopify", "manual", "other"]).default("all"),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(10).max(100).default(25),
+});
+
+export const searchTaskListQuerySchema = z.object({
+  search: z.string().trim().max(200).default(""),
+  status: z.enum(["all", "unqueried", "queried", "imported"]).default("all"),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(5).max(50).default(5),
+});
+
+export const searchTaskImportSchema = oneboundRequestOptionsSchema.extend({
+  runId: z.string().uuid().optional(),
+  offerIds: z.array(z.string().trim().min(1).max(160)).max(100)
+    .transform((values) => [...new Set(values)]).optional(),
+});
+
+export const searchTaskRunSchema = imageSearchSchema.extend({
+  imageId: z.string().trim().min(1).max(160),
 });
 
 export type ProductInput = z.infer<typeof productInputSchema>;
 export type ProductPatch = z.infer<typeof productPatchSchema>;
 export type OfferLinkInput = z.infer<typeof offerLinkSchema>;
 export type ProductListQuery = z.infer<typeof productListQuerySchema>;
+export type SearchTaskListQuery = z.infer<typeof searchTaskListQuerySchema>;
+export type SearchTaskImportInput = z.infer<typeof searchTaskImportSchema>;
+export type SearchTaskRunInput = z.infer<typeof searchTaskRunSchema>;

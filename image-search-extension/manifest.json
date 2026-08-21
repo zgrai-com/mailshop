@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Mailshop 1688 Image Search",
-  "version": "0.6.2",
-  "description": "Search 1688 products by image with your Mailshop account credits.",
+  "name": "Mailshop Product Sourcing",
+  "version": "0.7.0",
+  "description": "Collect product data, manage sourcing tasks, and search 1688 by a selected task image.",
   "permissions": ["activeTab", "identity", "scripting", "sidePanel", "storage", "unlimitedStorage"],
   "host_permissions": ["<all_urls>"],
   "background": {

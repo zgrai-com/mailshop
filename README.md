@@ -258,8 +258,25 @@ Remove-Item Env:INGEST_API_KEY
 - `product_offer_links`：Shopify 商品与 1688 Offer 的一对多关系
 - `users`、`sessions`、`login_attempts`、`oauth_states`
 - `credit_wallets`、`credit_transactions`：积分余额与完整流水
-- `shopify_stores`：为后续 Shopify App 安装和同步预留
+- `shopify_stores`、`shopify_product_publications`：Shopify 店铺凭据、连接状态和商品发布记录
 - `audit_logs`
+
+## 发布商品到 Shopify
+
+系统设置新增了 Shopify Admin API 配置。配置并测试连接后，可在商品详情中把标题、描述、供应商、类型、标签、规格、SKU、价格和最多 20 张图片上传到 Shopify。首次上传会创建商品，后续点击会更新同一条 Shopify 商品记录；商品始终保存为 Shopify 草稿，库存暂不自动写入。
+
+准备步骤：
+
+1. 准备一个目标 Shopify 商店。开发测试可使用 Shopify Dev Dashboard 中的开发商店，正式销售则使用正式商店。
+2. 在 Shopify Dev Dashboard 创建应用，为应用版本申请 `write_products` 权限，并把应用安装到目标商店。
+3. 在 Mailshop 的“系统设置 / Shopify 商品发布”中填写商店的 `xxx.myshopify.com` 域名、Client ID 和 Client Secret。
+4. 点击“测试连接”。通过后，进入商品详情并点击“上传到 Shopify 草稿”。
+
+Shopify Client Secret 使用 `SETTINGS_ENCRYPTION_KEY` 加密后存入 D1，不会返回浏览器。部署前需要执行数据库迁移：
+
+```bash
+npm run db:migrate:remote
+```
 
 数据库变更通过 `migrations/` 管理。生产环境不要直接修改已执行的 migration；新增编号更高的迁移文件。
 

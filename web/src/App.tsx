@@ -11,15 +11,16 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
-  PackagePlus,
   PackageSearch,
   RefreshCw,
   Search,
   Settings,
+  Store,
   Users,
   X,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 
 import { api, ApiClientError, toQuery } from "./api";
 import { ErrorDialog } from "./components/ErrorDialog";
@@ -30,6 +31,7 @@ import { ProductDetail } from "./components/ProductDetail";
 import { ImageSearchModal } from "./components/ImageSearchModal";
 import { ProductModal } from "./components/ProductModal";
 import { SettingsPage } from "./components/SettingsPage";
+import { ShopifyStoresPage } from "./components/ShopifyStoresPage";
 import { UserManager } from "./components/UserManager";
 import { UserDashboard } from "./components/UserDashboard";
 import { CreditsPage } from "./components/CreditsPage";
@@ -45,10 +47,57 @@ import type {
   OneBoundSettings,
   GoogleSettings,
   AiSettings,
+  ShopifyStore,
   User,
 } from "./types";
 
-type View = "dashboard" | "products" | "tasks" | "credits" | "accounts" | "settings";
+type View = "dashboard" | "products" | "tasks" | "credits" | "accounts" | "settings" | "shopify";
+
+const viewPaths: Record<View, string> = {
+  dashboard: "/dashboard",
+  products: "/products",
+  tasks: "/tasks",
+  credits: "/credits",
+  shopify: "/shopify",
+  accounts: "/accounts",
+  settings: "/settings",
+};
+
+const pathViews = new Map(Object.entries(viewPaths).map(([view, path]) => [path, view as View]));
+
+function viewFromPath(pathname: string): View | null {
+  const normalized = pathname !== "/" ? pathname.replace(/\/$/u, "") : pathname;
+  return pathViews.get(normalized) ?? null;
+}
+
+function positiveInteger(value: string | null, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readProductRouteState() {
+  const params = new URLSearchParams(window.location.search);
+  const statusValue = params.get("status") ?? "all";
+  const sourceValue = params.get("source") ?? "all";
+  return {
+    search: params.get("search") ?? "",
+    status: ["all", "new", "image_searching", "matched", "reviewed", "archived"].includes(statusValue) ? statusValue : "all",
+    source: ["all", "1688", "shopify", "manual", "other"].includes(sourceValue) ? sourceValue : "all",
+    page: positiveInteger(params.get("page"), 1),
+  };
+}
+
+function readTaskRouteState() {
+  const params = new URLSearchParams(window.location.search);
+  const statusValue = params.get("status") ?? "all";
+  const pageSizeValue = positiveInteger(params.get("pageSize"), 5);
+  return {
+    search: params.get("search") ?? "",
+    status: (["all", "unqueried", "queried", "imported"].includes(statusValue) ? statusValue : "all") as import("./types").SearchTask["status"] | "all",
+    page: positiveInteger(params.get("page"), 1),
+    pageSize: [5, 10, 20].includes(pageSizeValue) ? pageSizeValue : 5,
+  };
+}
 
 const statusLabels: Record<ProductStatus, string> = {
   new: "待整理",
@@ -79,18 +128,21 @@ function proxiedImageUrl(url: string): string {
 }
 
 export default function App() {
+  const initialView = viewFromPath(window.location.pathname) ?? "dashboard";
+  const initialProductRoute = readProductRouteState();
+  const initialTaskRoute = readTaskRouteState();
   const [user, setUser] = useState<User | null | undefined>(undefined);
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>(initialView);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [products, setProducts] = useState<ProductSummary[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(initialView === "products" ? initialProductRoute.page : 1);
   const [pageSize] = useState(25);
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [status, setStatus] = useState("all");
-  const [source, setSource] = useState("all");
+  const [search, setSearch] = useState(initialView === "products" ? initialProductRoute.search : "");
+  const [debouncedSearch, setDebouncedSearch] = useState(initialView === "products" ? initialProductRoute.search : "");
+  const [status, setStatus] = useState(initialView === "products" ? initialProductRoute.status : "all");
+  const [source, setSource] = useState(initialView === "products" ? initialProductRoute.source : "all");
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductDetailType | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -109,6 +161,7 @@ export default function App() {
   const [oneboundSettings, setOneboundSettings] = useState<OneBoundSettings | null>(null);
   const [googleSettings, setGoogleSettings] = useState<GoogleSettings | null>(null);
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null);
+  const [shopifyStores, setShopifyStores] = useState<ShopifyStore[]>([]);
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [errorDialog, setErrorDialog] = useState<unknown>(null);
@@ -116,6 +169,31 @@ export default function App() {
   const [loadingCredits, setLoadingCredits] = useState(false);
   const [searchTasks, setSearchTasks] = useState<import("./types").SearchTask[]>([]);
   const [loadingSearchTasks, setLoadingSearchTasks] = useState(false);
+  const [searchTasksTotal, setSearchTasksTotal] = useState(0);
+  const [searchTaskSearch, setSearchTaskSearch] = useState(initialView === "tasks" ? initialTaskRoute.search : "");
+  const [debouncedSearchTaskSearch, setDebouncedSearchTaskSearch] = useState(initialView === "tasks" ? initialTaskRoute.search : "");
+  const [searchTaskStatus, setSearchTaskStatus] = useState<import("./types").SearchTask["status"] | "all">(initialView === "tasks" ? initialTaskRoute.status : "all");
+  const [searchTaskPage, setSearchTaskPage] = useState(initialView === "tasks" ? initialTaskRoute.page : 1);
+  const [searchTaskPageSize, setSearchTaskPageSize] = useState(initialView === "tasks" ? initialTaskRoute.pageSize : 5);
+
+  const navigate = useCallback((nextView: View, options?: { replace?: boolean }) => {
+    const nextPath = viewPaths[nextView];
+    const currentLocation = `${window.location.pathname}${window.location.search}`;
+    if (currentLocation !== nextPath) {
+      window.history[options?.replace ? "replaceState" : "pushState"]({}, "", nextPath);
+    }
+    setView(nextView);
+    setSidebarOpen(false);
+    setSelectedProduct(null);
+    setExpandedProductId(null);
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }, []);
+
+  const handleNavigation = useCallback((event: ReactMouseEvent<HTMLAnchorElement>, nextView: View) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigate(nextView);
+  }, [navigate]);
 
   const notify = useCallback((type: "success" | "error", message: string) => {
     setToast({ type, message });
@@ -138,8 +216,55 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user?.role === "user" && (view === "accounts" || view === "settings")) setView("dashboard");
-  }, [user, view]);
+    const routeView = viewFromPath(window.location.pathname);
+    if (!routeView) navigate("dashboard", { replace: true });
+
+    const handlePopState = () => {
+      const nextView = viewFromPath(window.location.pathname) ?? "dashboard";
+      if (!viewFromPath(window.location.pathname)) {
+        window.history.replaceState({}, "", viewPaths.dashboard);
+      }
+      if (nextView === "products") {
+        const route = readProductRouteState();
+        setSearch(route.search);
+        setDebouncedSearch(route.search);
+        setStatus(route.status);
+        setSource(route.source);
+        setPage(route.page);
+      } else if (nextView === "tasks") {
+        const route = readTaskRouteState();
+        setSearchTaskSearch(route.search);
+        setDebouncedSearchTaskSearch(route.search);
+        setSearchTaskStatus(route.status);
+        setSearchTaskPage(route.page);
+        setSearchTaskPageSize(route.pageSize);
+      }
+      setSelectedProduct(null);
+      setExpandedProductId(null);
+      setSidebarOpen(false);
+      setView(nextView);
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [navigate]);
+
+  useEffect(() => {
+    if (user?.role === "user" && (view === "accounts" || view === "settings")) navigate("dashboard", { replace: true });
+  }, [navigate, user, view]);
+
+  useEffect(() => {
+    const titles: Record<View, string> = {
+      dashboard: "仪表台",
+      products: "商品管理",
+      tasks: "查询任务",
+      credits: "积分管理",
+      shopify: "Shopify 店铺",
+      accounts: "账号管理",
+      settings: "系统设置",
+    };
+    document.title = `${titles[view]} | Mailshop 商品中台`;
+  }, [view]);
 
   useEffect(() => {
     const updateCredits = (event: Event) => {
@@ -153,10 +278,40 @@ export default function App() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDebouncedSearch(search);
-      setPage(1);
     }, 260);
     return () => window.clearTimeout(timer);
   }, [search]);
+
+  useEffect(() => {
+    if (view !== "products" || window.location.pathname !== viewPaths.products) return;
+    const nextUrl = `${viewPaths.products}${toQuery({
+      search,
+      status: status !== "all" ? status : undefined,
+      source: source !== "all" ? source : undefined,
+      page: page > 1 ? page : undefined,
+    })}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (currentUrl !== nextUrl) window.history.replaceState({}, "", nextUrl);
+  }, [page, search, source, status, view]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchTaskSearch(searchTaskSearch);
+    }, 260);
+    return () => window.clearTimeout(timer);
+  }, [searchTaskSearch]);
+
+  useEffect(() => {
+    if (view !== "tasks" || window.location.pathname !== viewPaths.tasks) return;
+    const nextUrl = `${viewPaths.tasks}${toQuery({
+      search: searchTaskSearch,
+      status: searchTaskStatus !== "all" ? searchTaskStatus : undefined,
+      page: searchTaskPage > 1 ? searchTaskPage : undefined,
+      pageSize: searchTaskPageSize !== 5 ? searchTaskPageSize : undefined,
+    })}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (currentUrl !== nextUrl) window.history.replaceState({}, "", nextUrl);
+  }, [searchTaskPage, searchTaskPageSize, searchTaskSearch, searchTaskStatus, view]);
 
   const loadSummary = useCallback(async () => {
     try {
@@ -183,14 +338,31 @@ export default function App() {
   const loadSearchTasks = useCallback(async () => {
     setLoadingSearchTasks(true);
     try {
-      const result = await api<{ tasks: import("./types").SearchTask[] }>("/api/search-tasks");
+      const result = await api<{
+        tasks: import("./types").SearchTask[];
+        total: number;
+        page: number;
+        pageSize: number;
+      }>(`/api/search-tasks${toQuery({
+        search: debouncedSearchTaskSearch,
+        status: searchTaskStatus,
+        page: searchTaskPage,
+        pageSize: searchTaskPageSize,
+      })}`);
       setSearchTasks(result.tasks);
+      setSearchTasksTotal(result.total);
     } catch (caught) {
       handleApiError(caught);
     } finally {
       setLoadingSearchTasks(false);
     }
-  }, [handleApiError]);
+  }, [debouncedSearchTaskSearch, handleApiError, searchTaskPage, searchTaskPageSize, searchTaskStatus]);
+
+  useEffect(() => {
+    if (!user || view !== "tasks") return;
+    const pageCount = Math.max(1, Math.ceil(searchTasksTotal / searchTaskPageSize));
+    if (searchTaskPage > pageCount) setSearchTaskPage(pageCount);
+  }, [searchTaskPage, searchTaskPageSize, searchTasksTotal, user, view]);
 
   const loadProducts = useCallback(async () => {
     setLoadingProducts(true);
@@ -216,6 +388,13 @@ export default function App() {
     if (!user) return;
     void loadSummary();
   }, [loadSummary, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    api<{ stores: ShopifyStore[] }>("/api/integrations/shopify")
+      .then((result) => setShopifyStores(result.stores))
+      .catch(handleApiError);
+  }, [handleApiError, user]);
 
   useEffect(() => {
     if (user && view === "credits") void loadCredits();
@@ -244,14 +423,16 @@ export default function App() {
   const loadOneBoundSettings = useCallback(async () => {
     setLoadingSettings(true);
     try {
-      const [onebound, google, ai] = await Promise.all([
+      const [onebound, google, ai, shopify] = await Promise.all([
         api<{ settings: OneBoundSettings }>("/api/integrations/onebound"),
         api<{ settings: GoogleSettings }>("/api/integrations/google"),
         api<{ settings: AiSettings }>("/api/integrations/ai"),
+        api<{ stores: ShopifyStore[] }>("/api/integrations/shopify"),
       ]);
       setOneboundSettings(onebound.settings);
       setGoogleSettings(google.settings);
       setAiSettings(ai.settings);
+      setShopifyStores(shopify.stores);
     } catch (caught) {
       handleApiError(caught);
     } finally {
@@ -306,6 +487,39 @@ export default function App() {
       handleApiError(caught);
     } finally {
       setLoadingOfferDetail(false);
+    }
+  }
+
+  async function runSearchTask(taskId: string, input: import("./types").SearchTaskOptions & { imageId: string }) {
+    setSaving(true);
+    try {
+      await api(`/api/search-tasks/${taskId}/search`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      await loadSearchTasks();
+      notify("success", `第 ${input.page} 页查询完成`);
+    } catch (caught) {
+      handleApiError(caught);
+      throw caught;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function importSearchTaskProducts(taskId: string, runId: string, offerIds?: string[]) {
+    setSaving(true);
+    try {
+      const result = await api<{ imported: Array<{ title: string }>; failures: Array<{ message: string }> }>("/api/search-tasks/" + taskId + "/import", {
+        method: "POST",
+        body: JSON.stringify({ runId, ...(offerIds?.length ? { offerIds } : {}) }),
+      });
+      await Promise.all([loadSearchTasks(), loadProducts(), loadSummary()]);
+      notify(result.failures.length ? "error" : "success", result.failures.length ? "已导入 " + result.imported.length + " 个商品，" + result.failures.length + " 个失败" : "已导入 " + result.imported.length + " 个 1688 商品");
+    } catch (caught) {
+      handleApiError(caught);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -456,6 +670,70 @@ export default function App() {
     }
   }
 
+  async function saveShopifySettings(shopDomain: string, displayName: string, clientId: string, clientSecret: string) {
+    setSaving(true);
+    try {
+      const result = await api<{ store: ShopifyStore }>("/api/integrations/shopify", {
+        method: "PUT",
+        body: JSON.stringify({ shopDomain, displayName, clientId, clientSecret }),
+      });
+      setShopifyStores((stores) => [result.store, ...stores.filter((store) => store.id !== result.store.id)]);
+      notify("success", "Shopify 配置已保存");
+    } catch (caught) {
+      handleApiError(caught);
+      throw caught;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function testShopifyStore(storeId: string) {
+    setSaving(true);
+    try {
+      const result = await api<{ store: ShopifyStore }>(`/api/integrations/shopify/stores/${storeId}/test`, { method: "POST" });
+      setShopifyStores((stores) => stores.map((store) => store.id === storeId ? result.store : store));
+      notify("success", "Shopify 店铺连接正常");
+    } catch (caught) {
+      handleApiError(caught);
+      throw caught;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteShopifyStore(storeId: string) {
+    setSaving(true);
+    try {
+      await api(`/api/integrations/shopify/stores/${storeId}`, { method: "DELETE" });
+      setShopifyStores((stores) => stores.filter((store) => store.id !== storeId));
+      notify("success", "Shopify 店铺已删除");
+    } catch (caught) {
+      handleApiError(caught);
+      throw caught;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function publishSelectedToShopify(storeId: string) {
+    if (!selectedProduct) return;
+    setSaving(true);
+    try {
+      const result = await api<{ product: ProductDetailType; publication: { warnings: string[] } }>(`/api/products/${selectedProduct.id}/shopify`, {
+        method: "POST",
+        body: JSON.stringify({ storeId }),
+      });
+      setSelectedProduct(result.product);
+      setExpandedProducts((current) => ({ ...current, [result.product.id]: result.product }));
+      await Promise.all([loadProducts(), loadSummary()]);
+      notify(result.publication.warnings.length ? "error" : "success", result.publication.warnings.length ? `商品已上传，${result.publication.warnings.length} 张图片需要检查` : "商品已上传到 Shopify 草稿");
+    } catch (caught) {
+      handleApiError(caught);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function archiveProduct() {
     if (!selectedProduct) return;
     try {
@@ -482,7 +760,7 @@ export default function App() {
     { label: "商品总数", value: summary?.total ?? 0, key: "total" },
     { label: "待图搜", value: summary?.searchingCount ?? 0, key: "searching" },
     { label: "已匹配", value: summary?.matchedCount ?? 0, key: "matched" },
-    { label: "1688 货源", value: summary?.offerCount ?? 0, key: "offers" },
+    { label: "1688 商品", value: summary?.offerCount ?? 0, key: "offers" },
   ], [summary]);
 
   if (user === undefined) {
@@ -495,11 +773,12 @@ export default function App() {
       <aside className={`sidebar ${sidebarOpen ? "mobile-open" : ""}`}>
         <header className="sidebar-brand"><span className="sidebar-mark"><PackageSearch size={20} /></span><div><strong>MAILSHOP</strong><small>商品中台</small></div><button className="icon-button mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭导航"><X size={18} /></button></header>
         <nav className="sidebar-nav" aria-label="主导航">
-          <button className={view === "dashboard" ? "active" : ""} type="button" onClick={() => { setView("dashboard"); setSidebarOpen(false); }}><LayoutDashboard size={18} /><span>仪表台</span></button>
-          <button className={view === "products" ? "active" : ""} type="button" onClick={() => { setView("products"); setSidebarOpen(false); }}><PackageSearch size={18} /><span>商品管理</span>{summary?.searchingCount ? <em>{summary.searchingCount}</em> : null}</button>
-          <button className={view === "credits" ? "active" : ""} type="button" onClick={() => { setView("credits"); setSidebarOpen(false); }}><Coins size={18} /><span>积分管理</span></button>
-          <button className={view === "tasks" ? "active" : ""} type="button" onClick={() => { setView("tasks"); setSidebarOpen(false); }}><ListChecks size={18} /><span>查询任务</span></button>
-          {user.role === "admin" && <><button className={view === "accounts" ? "active" : ""} type="button" onClick={() => { setView("accounts"); setSidebarOpen(false); }}><Users size={18} /><span>账号管理</span></button><button className={view === "settings" ? "active" : ""} type="button" onClick={() => { setView("settings"); setSidebarOpen(false); }}><Settings size={18} /><span>系统设置</span></button></>}
+          <a className={view === "dashboard" ? "active" : ""} href={viewPaths.dashboard} onClick={(event) => handleNavigation(event, "dashboard")}><LayoutDashboard size={18} /><span>仪表台</span></a>
+          <a className={view === "products" ? "active" : ""} href={viewPaths.products} onClick={(event) => handleNavigation(event, "products")}><PackageSearch size={18} /><span>商品管理</span>{summary?.searchingCount ? <em>{summary.searchingCount}</em> : null}</a>
+          <a className={view === "credits" ? "active" : ""} href={viewPaths.credits} onClick={(event) => handleNavigation(event, "credits")}><Coins size={18} /><span>积分管理</span></a>
+          <a className={view === "tasks" ? "active" : ""} href={viewPaths.tasks} onClick={(event) => handleNavigation(event, "tasks")}><ListChecks size={18} /><span>查询任务</span></a>
+          <a className={view === "shopify" ? "active" : ""} href={viewPaths.shopify} onClick={(event) => handleNavigation(event, "shopify")}><Store size={18} /><span>Shopify 店铺</span>{shopifyStores.length ? <em>{shopifyStores.length}</em> : null}</a>
+          {user.role === "admin" && <><a className={view === "accounts" ? "active" : ""} href={viewPaths.accounts} onClick={(event) => handleNavigation(event, "accounts")}><Users size={18} /><span>账号管理</span></a><a className={view === "settings" ? "active" : ""} href={viewPaths.settings} onClick={(event) => handleNavigation(event, "settings")}><Settings size={18} /><span>系统设置</span></a></>}
         </nav>
         <footer className="sidebar-footer"><div className="sidebar-user"><span>{user.displayName.slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName}</strong><small>{user.email || user.username}</small><small className="credit-balance">{user.credits.toLocaleString()} 积分</small></div></div><button className="icon-button" type="button" onClick={logout} aria-label="退出登录" title="退出登录"><LogOut size={18} /></button></footer>
       </aside>
@@ -509,16 +788,31 @@ export default function App() {
         <header className="mobile-topbar"><button className="icon-button" type="button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={20} /></button><strong>MAILSHOP</strong><span className="mobile-credit-badge">{user.credits.toLocaleString()} 积分</span><span className="avatar-small">{user.displayName.slice(0, 1).toUpperCase()}</span></header>
 
         {view === "dashboard" ? (
-          <UserDashboard user={user} summary={summary} onProducts={() => setView("products")} onCredits={() => setView("credits")} />
+          <UserDashboard user={user} summary={summary} onProducts={() => navigate("products")} onCredits={() => navigate("credits")} />
         ) : view === "credits" ? (
           <CreditsPage balance={user.credits} transactions={creditTransactions} loading={loadingCredits} />
         ) : view === "tasks" ? (
-          <SearchTasksPage tasks={searchTasks} loading={loadingSearchTasks} />
+          <SearchTasksPage
+            tasks={searchTasks}
+            total={searchTasksTotal}
+            page={searchTaskPage}
+            pageSize={searchTaskPageSize}
+            search={searchTaskSearch}
+            status={searchTaskStatus}
+            loading={loadingSearchTasks}
+            onSearchChange={(value) => { setSearchTaskSearch(value); setSearchTaskPage(1); }}
+            onStatusChange={(value) => { setSearchTaskStatus(value); setSearchTaskPage(1); }}
+            onPageChange={setSearchTaskPage}
+            onPageSizeChange={(value) => { setSearchTaskPageSize(value); setSearchTaskPage(1); }}
+            onRefresh={() => void loadSearchTasks()}
+            onRun={runSearchTask}
+            onImport={importSearchTaskProducts}
+          />
         ) : view === "products" ? (
           <section className="products-view">
             <header className="page-heading products-heading">
-              <div><span>PRODUCT OPERATIONS</span><h1>商品管理</h1><p>管理商品、图片与 1688 货源匹配</p></div>
-              <button className="button primary" type="button" onClick={() => setProductModalOpen(true)}><PackagePlus size={17} />新增商品</button>
+              <div><span>PRODUCT OPERATIONS</span><h1>商品管理</h1><p>管理从查询任务导入的 1688 商品，并发布到 Shopify 店铺</p></div>
+              <button className="button primary" type="button" onClick={() => navigate("tasks")}><PackageSearch size={17} />从查询任务导入</button>
             </header>
 
             <section className="stats-band" aria-label="商品统计">{statusCounts.map((item) => <div key={item.key} className={`stat-item ${item.key}`}><span>{item.label}</span><strong>{item.value}</strong></div>)}</section>
@@ -527,7 +821,7 @@ export default function App() {
               <div className="product-list-panel">
                 <div className="toolbar">
                   <label className="search-field"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、供应商、商品 ID 或 SKU" aria-label="搜索商品" /></label>
-                  <div className="filter-group"><Filter size={16} /><select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }} aria-label="按状态筛选"><option value="all">全部状态</option>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={source} onChange={(event) => { setSource(event.target.value); setPage(1); }} aria-label="按来源筛选"><option value="all">全部来源</option><option value="shopify">Shopify</option><option value="manual">手动录入</option><option value="other">其他</option></select><button className="icon-button" type="button" onClick={() => { void loadProducts(); void loadSummary(); }} aria-label="刷新" title="刷新"><RefreshCw className={loadingProducts ? "spin" : ""} size={17} /></button></div>
+                  <div className="filter-group"><Filter size={16} /><select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }} aria-label="按状态筛选"><option value="all">全部状态</option>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={source} onChange={(event) => { setSource(event.target.value); setPage(1); }} aria-label="按来源筛选"><option value="all">全部来源</option><option value="1688">1688</option><option value="shopify">Shopify</option><option value="manual">手动录入</option><option value="other">其他</option></select><button className="icon-button" type="button" onClick={() => { void loadProducts(); void loadSummary(); }} aria-label="刷新" title="刷新"><RefreshCw className={loadingProducts ? "spin" : ""} size={17} /></button></div>
                 </div>
 
                 <div className="table-meta"><span>{total} 个商品</span><span>第 {page} / {pageCount} 页</span></div>
@@ -543,39 +837,42 @@ export default function App() {
                             className={`product-row ${selectedProduct?.id === product.id ? "selected" : ""} ${expanded ? "expanded" : ""}`}
                             tabIndex={0}
                             aria-expanded={expanded}
-                            onClick={() => void toggleProductRow(product.id)}
+                            onClick={() => product.sourcePlatform === "1688" ? void selectProduct(product.id) : void toggleProductRow(product.id)}
                             onKeyDown={(event) => {
                               if (event.target !== event.currentTarget || !["Enter", " "].includes(event.key)) return;
                               event.preventDefault();
-                              void toggleProductRow(product.id);
+                              if (product.sourcePlatform === "1688") void selectProduct(product.id);
+                              else void toggleProductRow(product.id);
                             }}
                           >
-                            <td><div className="product-cell"><span className={`row-chevron ${expanded ? "expanded" : ""}`}><ChevronDown size={15} /></span><span className="product-thumb">{product.thumbnailUrl ? <img src={product.thumbnailUrl} alt="" /> : <Boxes size={19} />}</span><span className="product-primary"><strong>{product.title}</strong><small>{product.vendor || product.externalId}</small></span><button className="button quiet compact mobile-row-detail-button" type="button" onClick={(event) => { event.stopPropagation(); void selectProduct(product.id); }}>详情</button></div></td>
+                            <td><div className="product-cell"><span className={`row-chevron ${expanded ? "expanded" : ""}`}>{product.sourcePlatform !== "1688" && <ChevronDown size={15} />}</span><span className="product-thumb">{product.thumbnailUrl ? <img src={product.thumbnailUrl} alt="" /> : <Boxes size={19} />}</span><span className="product-primary"><strong>{product.title}</strong><small>{product.vendor || product.externalId}</small></span><button className="button quiet compact mobile-row-detail-button" type="button" onClick={(event) => { event.stopPropagation(); void selectProduct(product.id); }}>详情</button></div></td>
                             <td><span className={`source-badge ${product.sourcePlatform}`}>{product.sourcePlatform}</span><small className="cell-subtext">{product.sourceStore || "—"}</small></td>
                             <td>{formatPrice(product)}</td>
                             <td><span className="count-pair"><b>{product.variantCount}</b> SKU</span><small className="cell-subtext">{product.imageCount} 张图</small></td>
-                            <td><span className={product.offerCount ? "offer-count active" : "offer-count"}>{product.offerCount}</span></td>
+                            <td>{product.sourcePlatform === "1688" ? <><span className="mono">{product.offerId1688 || product.externalId}</span><small className="cell-subtext">{product.supplierName1688 || product.vendor || "1688"}</small></> : <span className={product.offerCount ? "offer-count active" : "offer-count"}>{product.offerCount}</span>}</td>
                             <td><span className={`status-label ${product.status}`}><i />{statusLabels[product.status]}</span></td>
                             <td><time dateTime={product.updatedAt}>{new Date(product.updatedAt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}</time></td>
                             <td className="actions-cell"><button className="button quiet compact product-detail-button" type="button" onClick={(event) => { event.stopPropagation(); void selectProduct(product.id); }}>商品详情</button></td>
                           </tr>
-                          {expanded && <tr className="candidate-child-row"><td colSpan={8}>
+                          {product.sourcePlatform !== "1688" && expanded && <tr className="candidate-child-row"><td colSpan={8}>
                             <div className="candidate-child-panel">
                               <header><div><span>1688 SOURCING</span><strong>候选货源</strong></div><small>{expandedProduct ? `${expandedProduct.offers.length} 个候选` : "正在读取"}</small></header>
                               {loadingExpandedProductId === product.id ? <div className="candidate-child-state"><LoaderCircle className="spin" size={18} />加载候选货源</div> : expandedProduct?.offers.length ? <div className="candidate-list-wrap"><table className="candidate-table"><thead><tr><th>货源商品</th><th>供应商</th><th>价格 / 起批</th><th>SKU</th><th>匹配状态</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{expandedProduct.offers.map((offer) => <tr key={offer.linkId}><td><div className="candidate-product"><span className="candidate-thumb">{offer.thumbnailUrl ? <img src={proxiedImageUrl(offer.thumbnailUrl)} alt="" loading="lazy" /> : <PackageSearch size={18} />}</span><div className="candidate-product-copy"><strong>{offer.title}</strong><small className="mono">{offer.offerId}</small></div><button className="button quiet compact mobile-candidate-detail-button" type="button" onClick={() => void openOfferDetail(offer.offerId)}>详情</button></div></td><td><strong className="candidate-supplier">{offer.supplierName || "待补充"}</strong><small>{[offer.province, offer.city].filter(Boolean).join(" ") || "—"}</small></td><td><strong className="candidate-price">{formatOfferPrice(offer.priceMin, offer.priceMax, offer.currency)}</strong><small>{offer.minOrderQuantity ? `${offer.minOrderQuantity}${offer.unit || "件"}起批` : "起批量待补充"}</small></td><td><span className="count-pair"><b>{offer.variantCount}</b> SKU</span></td><td><span className={`match-badge ${offer.matchStatus}`}>{offer.matchStatus === "selected" ? "已选定" : offer.matchStatus === "rejected" ? "已排除" : "候选"}</span></td><td className="actions-cell"><button className="button quiet compact" type="button" onClick={() => void openOfferDetail(offer.offerId)}>查看详情</button></td></tr>)}</tbody></table></div> : <div className="candidate-child-state"><PackageSearch size={19} /><span>这个商品还没有 1688 候选货源</span></div>}
                             </div>
                           </td></tr>}
                         </Fragment>;
-                      }) : <tr><td colSpan={8}><div className="empty-table"><PackageSearch size={25} /><strong>没有符合条件的商品</strong><button className="button quiet" type="button" onClick={() => setProductModalOpen(true)}>新增商品</button></div></td></tr>}
+                      }) : <tr><td colSpan={8}><div className="empty-table"><PackageSearch size={25} /><strong>没有符合条件的商品</strong><button className="button quiet" type="button" onClick={() => navigate("tasks")}>前往查询任务</button></div></td></tr>}
                     </tbody>
                   </table>
                 </div>
                 <footer className="pagination"><button className="icon-button" type="button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)} aria-label="上一页"><ChevronLeft size={18} /></button><span>{page} / {pageCount}</span><button className="icon-button" type="button" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)} aria-label="下一页"><ChevronRight size={18} /></button></footer>
               </div>
 
-              <ProductDetail product={selectedProduct} loading={loadingDetail} saving={saving} onClose={() => setSelectedProduct(null)} onPatch={patchSelected} onOpenOffer={() => setOfferModalOpen(true)} onRemoveOffer={removeOffer} onUpload={uploadImage} onImageSearch={searchImage} onArchive={archiveProduct} />
+              <ProductDetail product={selectedProduct} shopifyStores={shopifyStores} loading={loadingDetail} saving={saving} onClose={() => setSelectedProduct(null)} onPatch={patchSelected} onOpenOffer={() => setOfferModalOpen(true)} onRemoveOffer={removeOffer} onUpload={uploadImage} onImageSearch={searchImage} onPublishShopify={publishSelectedToShopify} onArchive={archiveProduct} />
             </section>
           </section>
+        ) : view === "shopify" ? (
+          <ShopifyStoresPage stores={shopifyStores} loading={loadingSettings} saving={saving} onSave={saveShopifySettings} onTest={testShopifyStore} onDelete={deleteShopifyStore} />
         ) : view === "accounts" && user.role === "admin" ? (
           <UserManager
             currentUser={user}
@@ -586,9 +883,9 @@ export default function App() {
             onPassword={async (userId, password) => { try { await api(`/api/users/${userId}/password`, { method: "POST", body: JSON.stringify({ password }) }); notify("success", "密码已重置"); if (userId === user.id) setUser(null); } catch (caught) { handleApiError(caught); throw caught; } }}
           />
         ) : user.role === "admin" ? (
-          <SettingsPage onebound={oneboundSettings} google={googleSettings} ai={aiSettings} loading={loadingSettings} saving={saving} onSaveOneBound={saveOneBoundSettings} onSaveGoogle={saveGoogleSettings} onSaveAi={saveAiSettings} />
+          <SettingsPage onebound={oneboundSettings} google={googleSettings} ai={aiSettings} shopifyStores={shopifyStores} loading={loadingSettings} saving={saving} onSaveOneBound={saveOneBoundSettings} onSaveGoogle={saveGoogleSettings} onSaveAi={saveAiSettings} onSaveShopify={saveShopifySettings} onTestShopify={testShopifyStore} />
         ) : (
-          <UserDashboard user={user} summary={summary} onProducts={() => setView("products")} onCredits={() => setView("credits")} />
+          <UserDashboard user={user} summary={summary} onProducts={() => navigate("products")} onCredits={() => navigate("credits")} />
         )}
       </main>
 

@@ -3,25 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mailshop 搜款任务</title>
+    <title>Mailshop 商品采集</title>
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
     <header class="app-header">
       <div class="brand-mark" aria-hidden="true">M</div>
       <div class="brand-copy">
-        <strong>搜款任务</strong>
+        <strong>商品采集</strong>
         <span>MAILSHOP SOURCING</span>
       </div>
       <nav class="app-nav" aria-label="插件视图">
-        <button id="view-workspace" class="nav-button active" type="button">工作台</button>
-        <button id="view-settings" class="nav-button" type="button" hidden>AI 配置</button>
+        <button id="view-workspace" class="nav-button active" type="button">采集</button>
+        <button id="view-products" class="nav-button" type="button" hidden>商品</button>
+        <button id="view-tasks" class="nav-button" type="button" hidden>任务</button>
+        <button id="view-stores" class="nav-button" type="button" hidden>店铺</button>
+        <button id="view-credits" class="nav-button" type="button" hidden>积分</button>
+        <button id="view-settings" class="nav-button" type="button" hidden>AI</button>
       </nav>
     </header>
     <section class="account-bar" aria-live="polite">
       <div class="account-copy">
         <strong id="account-label">正在检查账号</strong>
-        <span id="account-meta">每次搜图消耗 10 积分</span>
+        <span id="account-meta">创建任务免费，选图搜索时消耗 10 积分</span>
       </div>
       <div class="account-actions">
         <span id="account-balance" class="credit-balance" hidden></span>
@@ -37,8 +41,8 @@
       <section class="task-intake" aria-labelledby="task-heading">
         <div class="section-heading intake-heading">
           <div>
-            <h1 id="task-heading">1688 以图搜款</h1>
-            <p>创建任务后可以继续处理下一件商品</p>
+            <h1 id="task-heading">采集当前商品</h1>
+            <p>多选图片保存为一个商品任务，稍后再选择搜索图</p>
           </div>
           <div class="intake-actions">
             <button id="load-page-images" class="button quiet compact" type="button">手动选择图片</button>
@@ -56,7 +60,7 @@
         <input id="file-picker" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif" hidden />
 
         <div class="search-options" aria-label="查询参数">
-          <label><span>排序</span><select id="search-sort"><option value="_sale">销量降序</option><option value="sale">销量升序</option><option value="price">价格升序</option><option value="_price">价格降序</option></select></label>
+          <label><span>排序</span><select id="search-sort"><option value="_sale">销量降序</option><option value="sale">销量升序</option><option value="bid2">总价升序</option><option value="_bid2">总价降序</option></select></label>
           <label><span>结果数</span><input id="search-limit" type="number" min="10" max="50" step="1" value="30" /></label>
           <label><span>缓存</span><select id="search-cache"><option value="no">关闭</option><option value="yes">开启</option></select></label>
           <label><span>语言</span><select id="search-lang"><option value="cn">中文</option><option value="en">English</option><option value="ru">Русский</option></select></label>
@@ -69,7 +73,7 @@
             <label><input id="ai-mode-custom" type="radio" name="ai-mode" value="custom" /><span>使用自己的 AI</span></label>
           </div>
           <div id="custom-ai-config" class="custom-ai-config" hidden>
-            <label class="field-wide"><span>模型服务 URL</span><input id="custom-ai-url" type="url" placeholder="https://api.example.com/v1" autocomplete="off" /></label>
+            <label class="field-wide"><span>模型服务 URL（Responses）</span><input id="custom-ai-url" type="url" placeholder="https://api.example.com/v1" autocomplete="off" /></label>
             <label><span>API Key</span><input id="custom-ai-key" type="password" placeholder="输入自己的 API Key" autocomplete="new-password" /></label>
             <label><span>模型 ID</span><input id="custom-ai-model" type="text" placeholder="支持图片识别的模型" autocomplete="off" /></label>
             <small>自定义配置仅保存在当前浏览器插件本地。</small>
@@ -109,17 +113,45 @@
         <div id="notice" class="notice" role="status" hidden></div>
       </section>
 
+      </div>
+
+      <section id="tasks-view" class="app-view management-view" aria-labelledby="queue-heading" hidden>
       <section id="task-workspace" class="task-workspace" aria-labelledby="queue-heading">
         <div class="queue-header">
           <div>
-            <h2 id="queue-heading">任务队列</h2>
+            <h1 id="queue-heading">任务管理</h1>
             <p id="queue-summary">还没有任务</p>
           </div>
           <button id="clear-finished" class="button quiet compact" type="button" hidden>清理已完成</button>
         </div>
         <div id="task-list" class="task-list" aria-live="polite"></div>
       </section>
-      </div>
+      </section>
+
+      <section id="products-view" class="app-view management-view" aria-labelledby="products-heading" hidden>
+        <div class="management-header">
+          <div><h1 id="products-heading">商品管理</h1><p id="products-summary">服务器商品目录</p></div>
+          <button id="refresh-products" class="icon-button" type="button" title="刷新商品" aria-label="刷新商品">↻</button>
+        </div>
+        <div id="products-list" class="management-list" aria-live="polite"></div>
+      </section>
+
+      <section id="stores-view" class="app-view management-view" aria-labelledby="stores-heading" hidden>
+        <div class="management-header">
+          <div><h1 id="stores-heading">店铺管理</h1><p id="stores-summary">Shopify 店铺连接状态</p></div>
+          <button id="refresh-stores" class="icon-button" type="button" title="刷新店铺" aria-label="刷新店铺">↻</button>
+        </div>
+        <div id="stores-list" class="management-list" aria-live="polite"></div>
+      </section>
+
+      <section id="credits-view" class="app-view management-view" aria-labelledby="credits-heading" hidden>
+        <div class="management-header">
+          <div><h1 id="credits-heading">积分管理</h1><p>搜图扣费与退款记录</p></div>
+          <button id="refresh-credits" class="icon-button" type="button" title="刷新积分" aria-label="刷新积分">↻</button>
+        </div>
+        <div id="credits-balance-card" class="credits-balance-card"></div>
+        <div id="credits-list" class="management-list" aria-live="polite"></div>
+      </section>
 
       <section id="settings-view" class="app-view settings-view" aria-labelledby="settings-heading" hidden>
         <div class="settings-header">
@@ -127,7 +159,7 @@
             <h1 id="settings-heading">AI 配置</h1>
             <p>选择图片分析方式，并在保存前测试连接。</p>
           </div>
-          <button id="settings-back" class="button quiet compact" type="button">返回工作台</button>
+          <button id="settings-back" class="button quiet compact" type="button">返回采集</button>
         </div>
         <div id="ai-settings-mount"></div>
       </section>
@@ -148,22 +180,40 @@
             <span aria-hidden="true">⌕</span>
             <input id="image-filter" type="search" placeholder="筛选图片" />
           </label>
-          <label id="product-only-field" class="checkbox-field">
+          <label class="checkbox-field">
             <input id="hide-small" type="checkbox" checked />
             <span>隐藏小图</span>
           </label>
-          <label class="checkbox-field">
+          <label id="ignore-svg-field" class="checkbox-field">
+            <input id="ignore-svg" type="checkbox" checked />
+            <span>忽略 SVG 图片</span>
+          </label>
+          <label id="product-only-field" class="checkbox-field">
             <input id="product-only" type="checkbox" checked />
             <span id="product-only-label">只显示疑似商品图</span>
           </label>
           <button id="refresh-images" class="button quiet compact" type="button">重新扫描</button>
         </div>
         <div id="modal-state" class="modal-state" role="status"></div>
+        <div id="ai-analysis-loading" class="ai-analysis-loading" role="status" aria-live="polite" hidden>
+          <span class="ai-analysis-spinner" aria-hidden="true"></span>
+          <strong>AI 正在分析页面</strong>
+          <span id="ai-analysis-step">正在读取当前页面 DOM，请稍候…</span>
+          <dl class="ai-analysis-stats" aria-label="页面分析统计">
+            <div><dt>可读取 frame</dt><dd id="ai-analysis-frames">--</dd></div>
+            <div><dt>保留 / 原始 DOM</dt><dd id="ai-analysis-dom-nodes">--</dd></div>
+            <div><dt>HTML 大小</dt><dd id="ai-analysis-html-size">--</dd></div>
+            <div><dt>图片绑定</dt><dd id="ai-analysis-image-bindings">--</dd></div>
+            <div><dt>候选图片</dt><dd id="ai-analysis-candidates">--</dd></div>
+            <div><dt>商品区域</dt><dd id="ai-analysis-regions">--</dd></div>
+          </dl>
+        </div>
         <div id="image-grid" class="image-grid"></div>
+        <section id="ai-product-info" class="ai-product-info" aria-live="polite"></section>
         <footer class="modal-footer">
           <span id="selected-count" class="selected-count">已选 0 张</span>
-          <button id="clear-image-selection" class="button quiet compact" type="button">清空</button>
-          <button id="create-selected-tasks" class="button primary compact" type="button" disabled>创建任务</button>
+          <button id="toggle-image-selection" class="button quiet compact" type="button">全选</button>
+          <button id="create-selected-tasks" class="button primary compact" type="button" disabled>创建商品任务</button>
         </footer>
       </section>
     </div>
@@ -196,6 +246,20 @@
         <footer class="modal-footer ai-error-footer">
           <button id="reload-extension" class="button primary compact" type="button" hidden>重新加载插件</button>
         </footer>
+      </section>
+    </div>
+
+    <div id="ai-log-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="ai-log-modal-heading" hidden>
+      <button id="ai-log-modal-backdrop" class="modal-backdrop" type="button" aria-label="关闭 AI 请求日志"></button>
+      <section class="modal-sheet ai-log-modal-sheet">
+        <header class="modal-header">
+          <div>
+            <h2 id="ai-log-modal-heading">AI 请求日志</h2>
+            <p id="ai-log-modal-meta"></p>
+          </div>
+          <button id="ai-log-modal-close" class="modal-close" type="button" aria-label="关闭">×</button>
+        </header>
+        <div id="ai-log-modal-content" class="ai-log-modal-content"></div>
       </section>
     </div>
 

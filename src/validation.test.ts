@@ -8,8 +8,12 @@ import {
   googleSettingsSchema,
   aiCandidatesRequestSchema,
   aiSettingsSchema,
+  shopifyPublishSchema,
+  shopifySettingsSchema,
   productInputSchema,
   productListQuerySchema,
+  searchTaskSyncSchema,
+  searchTaskListQuerySchema,
 } from "./validation";
 
 describe("productInputSchema", () => {
@@ -94,6 +98,17 @@ describe("productListQuerySchema", () => {
   });
 });
 
+describe("searchTaskListQuerySchema", () => {
+  it("normalizes task filters and pagination", () => {
+    expect(searchTaskListQuerySchema.parse({ search: "  dress  ", status: "queried", page: "3", pageSize: "10" }))
+      .toEqual({ search: "dress", status: "queried", page: 3, pageSize: 10 });
+  });
+
+  it("uses compact task-page defaults", () => {
+    expect(searchTaskListQuerySchema.parse({})).toEqual({ search: "", status: "all", page: 1, pageSize: 5 });
+  });
+});
+
 describe("oneboundSettingsSchema", () => {
   it("requires both OneBound credentials", () => {
     expect(oneboundSettingsSchema.parse({ key: "key-1", secret: "secret-1" })).toEqual({ key: "key-1", secret: "secret-1" });
@@ -134,7 +149,7 @@ describe("AI schemas", () => {
     }).modelId).toBe("gpt-4o-mini");
   });
 
-  it("caps AI candidate batches and preserves DOM context", () => {
+  it("caps AI candidate batches and accepts bounded page HTML snapshots", () => {
     const candidates = aiCandidatesRequestSchema.parse({ candidates: [{
       id: "image-1",
       url: "https://cdn.example.com/product.jpg",
@@ -142,24 +157,81 @@ describe("AI schemas", () => {
       height: 600,
       alt: "Blue shirt",
       context: "SKU: SHIRT-BLUE 商品价格 ¥39",
+      sku: "SHIRT-BLUE",
       domScore: 0.84,
-    }] });
+    }], pageSnapshot: {
+      url: "https://shop.example.com/products/blue-shirt",
+      title: "Blue shirt",
+      html: '<html data-node-id="f123-n1"><body data-node-id="f123-n2"><article data-node-id="f123-n10"><img data-node-id="f123-n11" data-image-ids="image-1"><h2 data-node-id="f123-n12">Blue shirt</h2><span data-node-id="f123-n13">SKU: SHIRT-BLUE</span></article></body></html>',
+    } });
     expect(candidates.candidates[0]?.domScore).toBe(0.84);
-    expect(() => aiCandidatesRequestSchema.parse({ candidates: Array.from({ length: 25 }, (_, index) => ({ id: String(index), url: `https://example.com/${index}.jpg` })) })).toThrow();
+    expect(candidates.candidates[0]?.sku).toBe("SHIRT-BLUE");
+    expect(candidates.pageSnapshot?.html).toContain('data-image-ids="image-1"');
+    expect(() => aiCandidatesRequestSchema.parse({ candidates: Array.from({ length: 121 }, (_, index) => ({ id: String(index), url: `https://example.com/${index}.jpg` })) })).toThrow();
+    expect(aiCandidatesRequestSchema.parse({ stage: "fields", regionSnapshots: [{ rootId: "f1-n10", html: "<div>Title</div>" }] }).stage).toBe("fields");
+    expect(() => aiCandidatesRequestSchema.parse({ stage: "fields", regionSnapshots: [{ rootId: "f1-n10", html: "x".repeat(80_001) }] })).toThrow();
+    expect(() => aiCandidatesRequestSchema.parse({ candidates: [{ id: "image-1", url: "https://cdn.example.com/product.jpg" }], pageSnapshot: { regions: Array.from({ length: 49 }, (_, index) => ({ id: String(index), html: "<div />" })) } })).toThrow();
+    expect(() => aiCandidatesRequestSchema.parse({ candidates: [{ id: "image-1", url: "https://cdn.example.com/product.jpg" }], pageSnapshot: { html: "x".repeat(200_001) } })).toThrow();
+  });
+});
+
+describe("Shopify schemas", () => {
+  it("accepts encrypted server credentials and a publication target", () => {
+    expect(shopifySettingsSchema.parse({
+      shopDomain: "demo.myshopify.com",
+      clientId: "client-id",
+      clientSecret: "client-secret",
+    })).toMatchObject({ shopDomain: "demo.myshopify.com", displayName: "" });
+    expect(shopifyPublishSchema.parse({ storeId: "0a95f67f-f8fb-4454-9ef4-7cb0debb28a0" }).storeId).toContain("0a95");
   });
 });
 
 describe("OneBound workflow schemas", () => {
   it("applies image-search defaults", () => {
-    expect(imageSearchSchema.parse({})).toEqual({ sort: "_sale", limit: 50, cache: "no", lang: "cn" });
+    expect(imageSearchSchema.parse({})).toEqual({ sort: "_sale", limit: 50, page: 1, cache: "no", lang: "cn", version: "" });
   });
 
   it("coerces image-search form values", () => {
-    expect(imageSearchSchema.parse({ limit: "20", sort: "price" })).toMatchObject({ limit: 20, sort: "price" });
+    expect(imageSearchSchema.parse({ limit: "20", sort: "bid2", page: "3", version: "2025-09" })).toMatchObject({ limit: 20, sort: "bid2", page: 3, version: "2025-09" });
   });
 
   it("deduplicates selected candidate ids and caps batch size", () => {
     expect(oneboundCandidateBatchSchema.parse({ offerIds: ["1001", "1001", "1002"] }).offerIds).toEqual(["1001", "1002"]);
     expect(() => oneboundCandidateBatchSchema.parse({ offerIds: [] })).toThrow();
+  });
+});
+
+describe("searchTaskSyncSchema", () => {
+  it("accepts one product task with multiple source images", () => {
+    const task = searchTaskSyncSchema.parse({
+      clientId: "extension-task-1",
+      name: "Summer dress",
+      productTitle: "Summer dress",
+      description: "Lightweight product description",
+      sku: "SKU-1001",
+      sourceSite: "example.com",
+      productUrl: "https://example.com/products/1001",
+      images: [
+        { id: "image-1", url: "https://example.com/image.jpg", width: 800, height: 800 },
+        { id: "image-2", url: "https://example.com/image-2.jpg" },
+      ],
+    });
+
+    expect(task.images).toHaveLength(2);
+    expect(task.options).toEqual({ sort: "_sale", limit: 50, page: 1, cache: "no", lang: "cn", version: "" });
+  });
+
+  it("rejects a task without source images", () => {
+    expect(() => searchTaskSyncSchema.parse({ clientId: "task-2", name: "No image", images: [] })).toThrow();
+  });
+
+  it("accepts up to 200 source images", () => {
+    const images = Array.from({ length: 200 }, (_, index) => ({
+      id: `image-${index}`,
+      url: `https://example.com/${index}.jpg`,
+    }));
+
+    expect(searchTaskSyncSchema.parse({ clientId: "task-3", name: "Bulk images", images }).images).toHaveLength(200);
+    expect(() => searchTaskSyncSchema.parse({ clientId: "task-4", name: "Too many images", images: [...images, { id: "image-200", url: "https://example.com/200.jpg" }] })).toThrow();
   });
 });

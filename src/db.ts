@@ -1,5 +1,13 @@
 import { ApiError, clientIp } from "./http";
-import type { OfferLinkInput, ProductInput, ProductListQuery, ProductPatch, SearchTaskSyncInput } from "./validation";
+import type {
+  OfferLinkInput,
+  ProductInput,
+  ProductListQuery,
+  ProductPatch,
+  SearchTaskListQuery,
+  SearchTaskRunInput,
+  SearchTaskSyncInput,
+} from "./validation";
 
 type JsonRow = Record<string, unknown>;
 
@@ -94,8 +102,9 @@ let searchTasksSchemaReady: Promise<void> | null = null;
 
 export async function ensureSearchTasksSchema(env: Env): Promise<void> {
   if (!searchTasksSchemaReady) {
-    searchTasksSchemaReady = env.DB.prepare(
-      `CREATE TABLE IF NOT EXISTS search_tasks (
+    searchTasksSchemaReady = (async () => {
+      await env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS search_tasks (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         client_id TEXT NOT NULL,
@@ -108,12 +117,87 @@ export async function ensureSearchTasksSchema(env: Env): Promise<void> {
         results_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(results_json)),
         error TEXT,
         charged_credits INTEGER NOT NULL DEFAULT 0,
+        product_title TEXT,
+        description TEXT,
+        sku TEXT,
+        source_site TEXT,
+        product_url TEXT,
+        images_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(images_json)),
+        selected_image_id TEXT,
+        selected_image_url TEXT,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         completed_at TEXT,
         UNIQUE(user_id, client_id)
       )`,
-    ).run().then(() => env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_tasks_user_updated ON search_tasks(user_id, updated_at DESC)").run()).then(() => undefined);
+      ).run();
+      const columns = await env.DB.prepare("PRAGMA table_info(search_tasks)").all<{ name: string }>();
+      const existing = new Set(columns.results.map((column) => column.name));
+      const additions = [
+        ["product_title", "ALTER TABLE search_tasks ADD COLUMN product_title TEXT"],
+        ["description", "ALTER TABLE search_tasks ADD COLUMN description TEXT"],
+        ["sku", "ALTER TABLE search_tasks ADD COLUMN sku TEXT"],
+        ["source_site", "ALTER TABLE search_tasks ADD COLUMN source_site TEXT"],
+        ["product_url", "ALTER TABLE search_tasks ADD COLUMN product_url TEXT"],
+        ["images_json", "ALTER TABLE search_tasks ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(images_json))"],
+        ["selected_image_id", "ALTER TABLE search_tasks ADD COLUMN selected_image_id TEXT"],
+        ["selected_image_url", "ALTER TABLE search_tasks ADD COLUMN selected_image_url TEXT"],
+      ] as const;
+      for (const [name, sql] of additions) if (!existing.has(name)) await env.DB.prepare(sql).run();
+      await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_tasks_user_updated ON search_tasks(user_id, updated_at DESC)").run();
+      await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_tasks_user_product_title ON search_tasks(user_id, product_title)").run();
+      await env.DB.batch([
+        env.DB.prepare(
+          `CREATE TABLE IF NOT EXISTS search_task_runs (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES search_tasks(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            image_id TEXT NOT NULL,
+            image_url TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+            options_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(options_json)),
+            page INTEGER NOT NULL DEFAULT 1,
+            page_size INTEGER NOT NULL DEFAULT 30,
+            uploaded_image_id TEXT,
+            result_count INTEGER NOT NULL DEFAULT 0,
+            total_result_count INTEGER,
+            results_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(results_json)),
+            error TEXT,
+            charged_credits INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            completed_at TEXT
+          )`,
+        ),
+        env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_task_runs_task_created ON search_task_runs(task_id, created_at DESC)"),
+        env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_search_task_runs_one_active ON search_task_runs(task_id) WHERE status = 'running'"),
+        env.DB.prepare(
+          `CREATE TABLE IF NOT EXISTS search_task_imports (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES search_tasks(id) ON DELETE CASCADE,
+            run_id TEXT REFERENCES search_task_runs(id) ON DELETE SET NULL,
+            offer_id TEXT NOT NULL,
+            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            imported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            UNIQUE(task_id, offer_id)
+          )`,
+        ),
+        env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_task_imports_task ON search_task_imports(task_id, imported_at DESC)"),
+      ]);
+      await env.DB.prepare(
+        `INSERT INTO search_task_runs
+          (id, task_id, user_id, image_id, image_url, status, options_json, page, page_size,
+           result_count, total_result_count, results_json, error, charged_credits, created_at, completed_at)
+         SELECT lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) ||
+                '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))),
+                id, user_id, COALESCE(selected_image_id, 'legacy'), COALESCE(selected_image_url, source_image_url, ''),
+                CASE WHEN status = 'failed' THEN 'failed' ELSE 'completed' END, options_json, 1,
+                COALESCE(json_extract(options_json, '$.limit'), 30), result_count, result_count, results_json,
+                error, charged_credits, created_at, COALESCE(completed_at, updated_at)
+           FROM search_tasks
+          WHERE status IN ('completed', 'failed')
+            AND NOT EXISTS (SELECT 1 FROM search_task_runs WHERE search_task_runs.task_id = search_tasks.id)`,
+      ).run();
+    })();
   }
   await searchTasksSchemaReady;
 }
@@ -248,13 +332,16 @@ export async function upsertProduct(
   createdBy: string | null,
   viewer?: ProductViewer,
 ): Promise<string> {
-  const sourceStore = input.sourceStore ?? "";
+  const is1688 = input.sourcePlatform === "1688";
+  const dbSourcePlatform = is1688 ? "manual" : input.sourcePlatform;
+  const sourceStore = input.sourceStore ?? (is1688 ? "1688" : "");
+  const catalogSource = is1688 ? "1688" : "legacy";
   const externalId = nullable(input.externalId) ?? crypto.randomUUID();
   const existing = await env.DB.prepare(
     `SELECT id, created_by AS createdBy FROM products
       WHERE source_platform = ? AND source_store = ? AND external_id = ?`,
   )
-    .bind(input.sourcePlatform, sourceStore, externalId)
+    .bind(dbSourcePlatform, sourceStore, externalId)
     .first<{ id: string; createdBy: string | null }>();
   if (existing && viewer?.role === "user" && existing.createdBy !== viewer.id) {
     throw new ApiError(409, "该商品已存在于其他账号，无法覆盖", "product_owner_conflict");
@@ -302,7 +389,7 @@ export async function upsertProduct(
          updated_at = excluded.updated_at`,
     ).bind(
       productId,
-      input.sourcePlatform,
+      dbSourcePlatform,
       sourceStore,
       externalId,
       nullable(input.sourceUrl),
@@ -332,6 +419,31 @@ export async function upsertProduct(
       nullable(input.notes),
       nullable(input.assignedTo),
       createdBy,
+    ),
+    env.DB.prepare(
+      `UPDATE products SET
+         catalog_source = ?, offer_id_1688 = ?, supplier_id_1688 = ?, supplier_name_1688 = ?,
+         min_order_quantity_1688 = ?, unit_1688 = ?, province_1688 = ?, city_1688 = ?,
+         short_description_1688 = ?, total_price_1688 = ?, suggested_price_1688 = ?,
+         original_price_1688 = ?, stock_quantity_1688 = ?, sold_quantity_1688 = ?,
+         brand_1688 = ?, brand_id_1688 = ?, root_category_id_1688 = ?, category_id_1688 = ?,
+         seller_nick_1688 = ?, location_1688 = ?, item_weight_1688 = ?, item_size_1688 = ?,
+         shop_id_1688 = ?, video_url_1688 = ?, sample_id_1688 = ?, shipping_to_1688 = ?,
+         has_discount_1688 = ?, is_promotion_1688 = ?, fetched_at_1688 = ?,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = ?`,
+    ).bind(
+      catalogSource,
+      nullable(input.offerId1688), nullable(input.supplierId1688), nullable(input.supplierName1688),
+      nullable(input.minOrderQuantity1688), nullable(input.unit1688), nullable(input.province1688),
+      nullable(input.city1688), nullable(input.shortDescription1688), nullable(input.totalPrice1688),
+      nullable(input.suggestedPrice1688), nullable(input.originalPrice1688), nullable(input.stockQuantity1688),
+      nullable(input.soldQuantity1688), nullable(input.brand1688), nullable(input.brandId1688),
+      nullable(input.rootCategoryId1688), nullable(input.categoryId1688), nullable(input.sellerNick1688),
+      nullable(input.location1688), nullable(input.itemWeight1688), nullable(input.itemSize1688),
+      nullable(input.shopId1688), nullable(input.videoUrl1688), nullable(input.sampleId1688),
+      nullable(input.shippingTo1688), nullable(input.hasDiscount1688), nullable(input.isPromotion1688),
+      nullable(input.fetchedAt1688), productId,
     ),
     ...productVariantStatements(env, productId, input),
     ...productImageStatements(env, productId, input),
@@ -372,13 +484,47 @@ const productPatchColumns: Record<string, { column: string; serialize?: (value: 
   raw: { column: "raw_json", serialize: (value) => jsonText(value, {}) },
   notes: { column: "notes" },
   assignedTo: { column: "assigned_to" },
+  offerId1688: { column: "offer_id_1688" },
+  supplierId1688: { column: "supplier_id_1688" },
+  supplierName1688: { column: "supplier_name_1688" },
+  minOrderQuantity1688: { column: "min_order_quantity_1688" },
+  unit1688: { column: "unit_1688" },
+  province1688: { column: "province_1688" },
+  city1688: { column: "city_1688" },
+  shortDescription1688: { column: "short_description_1688" },
+  totalPrice1688: { column: "total_price_1688" },
+  suggestedPrice1688: { column: "suggested_price_1688" },
+  originalPrice1688: { column: "original_price_1688" },
+  stockQuantity1688: { column: "stock_quantity_1688" },
+  soldQuantity1688: { column: "sold_quantity_1688" },
+  brand1688: { column: "brand_1688" },
+  brandId1688: { column: "brand_id_1688" },
+  rootCategoryId1688: { column: "root_category_id_1688" },
+  categoryId1688: { column: "category_id_1688" },
+  sellerNick1688: { column: "seller_nick_1688" },
+  location1688: { column: "location_1688" },
+  itemWeight1688: { column: "item_weight_1688" },
+  itemSize1688: { column: "item_size_1688" },
+  shopId1688: { column: "shop_id_1688" },
+  videoUrl1688: { column: "video_url_1688" },
+  sampleId1688: { column: "sample_id_1688" },
+  shippingTo1688: { column: "shipping_to_1688" },
+  hasDiscount1688: { column: "has_discount_1688" },
+  isPromotion1688: { column: "is_promotion_1688" },
+  fetchedAt1688: { column: "fetched_at_1688" },
 };
 
 export async function patchProduct(env: Env, productId: string, patch: ProductPatch): Promise<void> {
   const assignments: string[] = [];
   const values: unknown[] = [];
 
+  if (patch.sourcePlatform !== undefined) {
+    assignments.push("source_platform = ?", "catalog_source = ?");
+    values.push(patch.sourcePlatform === "1688" ? "manual" : patch.sourcePlatform, patch.sourcePlatform === "1688" ? "1688" : "legacy");
+  }
+
   for (const [key, descriptor] of Object.entries(productPatchColumns)) {
+    if (key === "sourcePlatform") continue;
     const value = patch[key as keyof ProductPatch];
     if (value === undefined) continue;
     assignments.push(`${descriptor.column} = ?`);
@@ -445,8 +591,12 @@ export async function listProducts(env: Env, query: ProductListQuery, viewer?: P
     bindings.push(query.status);
   }
   if (query.source !== "all") {
-    where.push("p.source_platform = ?");
-    bindings.push(query.source);
+    if (query.source === "1688") {
+      where.push("p.catalog_source = '1688'");
+    } else {
+      where.push("p.source_platform = ? AND COALESCE(p.catalog_source, 'legacy') != '1688'");
+      bindings.push(query.source);
+    }
   }
   if (query.search) {
     const term = `%${query.search}%`;
@@ -463,9 +613,10 @@ export async function listProducts(env: Env, query: ProductListQuery, viewer?: P
     .first<{ count: number }>();
   const offset = (query.page - 1) * query.pageSize;
   const result = await env.DB.prepare(
-    `SELECT p.id, p.source_platform AS sourcePlatform, p.source_store AS sourceStore,
+    `SELECT p.id, CASE WHEN p.catalog_source = '1688' THEN '1688' ELSE p.source_platform END AS sourcePlatform, p.source_store AS sourceStore,
             p.external_id AS externalId, p.source_url AS sourceUrl, p.title, p.vendor,
             p.product_type AS productType, p.spu, p.inventory_quantity AS inventoryQuantity,
+            p.offer_id_1688 AS offerId1688, p.supplier_name_1688 AS supplierName1688,
             p.currency, p.status, p.sync_state AS syncState,
             p.price_min AS priceMin, p.price_max AS priceMax, p.updated_at AS updatedAt,
             u.display_name AS assignedToName,
@@ -530,7 +681,7 @@ export async function assertMediaAccess(env: Env, r2Key: string, viewer: Product
 
 export async function getProduct(env: Env, productId: string): Promise<JsonRow> {
   const product = await env.DB.prepare(
-    `SELECT p.id, p.source_platform AS sourcePlatform, p.source_store AS sourceStore,
+    `SELECT p.id, CASE WHEN p.catalog_source = '1688' THEN '1688' ELSE p.source_platform END AS sourcePlatform, p.source_store AS sourceStore,
             p.external_id AS externalId, p.source_url AS sourceUrl, p.shop_domain AS shopDomain,
             p.handle, p.title, p.vendor, p.product_type AS productType,
             p.description_html AS descriptionHtml, p.spu, p.published_at AS publishedAt,
@@ -539,6 +690,21 @@ export async function getProduct(env: Env, productId: string): Promise<JsonRow> 
             p.cost_min AS costMin, p.cost_max AS costMax, p.tags_json AS tags,
             p.options_json AS options, p.attributes_json AS attributes,
             p.categories_json AS categories, p.content_json AS content, p.raw_json AS raw,
+            p.catalog_source AS catalogSource, p.offer_id_1688 AS offerId1688,
+            p.supplier_id_1688 AS supplierId1688, p.supplier_name_1688 AS supplierName1688,
+            p.min_order_quantity_1688 AS minOrderQuantity1688, p.unit_1688 AS unit1688,
+            p.province_1688 AS province1688, p.city_1688 AS city1688,
+            p.short_description_1688 AS shortDescription1688, p.total_price_1688 AS totalPrice1688,
+            p.suggested_price_1688 AS suggestedPrice1688, p.original_price_1688 AS originalPrice1688,
+            p.stock_quantity_1688 AS stockQuantity1688, p.sold_quantity_1688 AS soldQuantity1688,
+            p.brand_1688 AS brand1688, p.brand_id_1688 AS brandId1688,
+            p.root_category_id_1688 AS rootCategoryId1688, p.category_id_1688 AS categoryId1688,
+            p.seller_nick_1688 AS sellerNick1688, p.location_1688 AS location1688,
+            p.item_weight_1688 AS itemWeight1688, p.item_size_1688 AS itemSize1688,
+            p.shop_id_1688 AS shopId1688, p.video_url_1688 AS videoUrl1688,
+            p.sample_id_1688 AS sampleId1688, p.shipping_to_1688 AS shippingTo1688,
+            p.has_discount_1688 AS hasDiscount1688, p.is_promotion_1688 AS isPromotion1688,
+            p.fetched_at_1688 AS fetchedAt1688,
             p.notes, p.assigned_to AS assignedTo,
             u.display_name AS assignedToName, p.created_at AS createdAt, p.updated_at AS updatedAt
        FROM products p LEFT JOIN users u ON u.id = p.assigned_to WHERE p.id = ?`,
@@ -704,10 +870,9 @@ export async function dashboardSummary(env: Env, viewer?: ProductViewer): Promis
   ).bind(...productBindings).first<JsonRow>();
   const [offerCount, userCount, recentResult] = await env.DB.batch<JsonRow>([
     viewer?.role === "admin"
-      ? env.DB.prepare("SELECT COUNT(*) AS count FROM offers_1688")
+      ? env.DB.prepare("SELECT COUNT(*) AS count FROM products WHERE catalog_source = '1688' AND status != 'archived'")
       : env.DB.prepare(
-        `SELECT COUNT(DISTINCT pol.offer_id) AS count FROM product_offer_links pol
-           JOIN products p ON p.id = pol.product_id WHERE p.created_by = ?`,
+        "SELECT COUNT(*) AS count FROM products WHERE catalog_source = '1688' AND status != 'archived' AND created_by = ?",
       ).bind(viewer?.id ?? ""),
     viewer?.role === "admin"
       ? env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE is_active = 1")
@@ -728,53 +893,272 @@ export async function dashboardSummary(env: Env, viewer?: ProductViewer): Promis
   };
 }
 
+const searchTaskSelect = `SELECT id, client_id AS clientId, name, status, source_image_url AS sourceImageUrl,
+        source_page AS sourcePage, options_json AS options, result_count AS resultCount,
+        results_json AS results, error, charged_credits AS chargedCredits,
+        product_title AS productTitle, description, sku, source_site AS sourceSite,
+        product_url AS productUrl, images_json AS images, selected_image_id AS selectedImageId,
+        selected_image_url AS selectedImageUrl,
+        created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt
+   FROM search_tasks`;
+
+function offerIdFromResult(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const offerId = (value as Record<string, unknown>).offerId;
+  return typeof offerId === "string" && offerId.trim() ? offerId.trim() : null;
+}
+
+async function hydrateSearchTasks(env: Env, rows: JsonRow[]): Promise<JsonRow[]> {
+  if (!rows.length) return [];
+  const taskIds = rows.map((row) => String(row.id));
+  const placeholders = taskIds.map(() => "?").join(", ");
+  const [runResult, importResult] = await env.DB.batch<JsonRow>([
+    env.DB.prepare(
+      `SELECT id, task_id AS taskId, image_id AS imageId, image_url AS imageUrl, status,
+              options_json AS options, page, page_size AS pageSize, uploaded_image_id AS uploadedImageId,
+              result_count AS resultCount, total_result_count AS totalResultCount, results_json AS results,
+              error, charged_credits AS chargedCredits, created_at AS createdAt, completed_at AS completedAt
+         FROM search_task_runs WHERE task_id IN (${placeholders}) ORDER BY created_at DESC`,
+    ).bind(...taskIds),
+    env.DB.prepare(
+      `SELECT task_id AS taskId, run_id AS runId, offer_id AS offerId, product_id AS productId,
+              imported_at AS importedAt
+         FROM search_task_imports WHERE task_id IN (${placeholders}) ORDER BY imported_at DESC`,
+    ).bind(...taskIds),
+  ]);
+  const runsByTask = new Map<string, JsonRow[]>();
+  for (const row of runResult.results) {
+    const taskId = String(row.taskId);
+    const values = runsByTask.get(taskId) ?? [];
+    values.push(hydrateJson(row, [["options", {}], ["results", []]]));
+    runsByTask.set(taskId, values);
+  }
+  const importsByTask = new Map<string, JsonRow[]>();
+  for (const row of importResult.results) {
+    const taskId = String(row.taskId);
+    const values = importsByTask.get(taskId) ?? [];
+    values.push(row);
+    importsByTask.set(taskId, values);
+  }
+
+  return rows.map((rawRow) => {
+    const task = hydrateJson(rawRow, [["options", {}], ["results", []], ["images", []]]);
+    const taskId = String(task.id);
+    const imports = importsByTask.get(taskId) ?? [];
+    const importedByOffer = new Map(imports.map((item) => [String(item.offerId), item]));
+    const runs: JsonRow[] = (runsByTask.get(taskId) ?? []).map((run): JsonRow => {
+      const results = Array.isArray(run.results) ? run.results.map((result) => {
+        const offerId = offerIdFromResult(result);
+        const imported = offerId ? importedByOffer.get(offerId) : undefined;
+        return result && typeof result === "object" && !Array.isArray(result)
+          ? { ...result as Record<string, unknown>, imported: Boolean(imported), importedAt: imported?.importedAt ?? null, productId: imported?.productId ?? null }
+          : result;
+      }) : [];
+      return { ...run, results };
+    });
+    const latestRun = runs[0];
+    const latestCompletedRun = runs.find((run) => run.status === "completed");
+    return {
+      ...task,
+      status: imports.length > 0 ? "imported" : latestCompletedRun ? "queried" : "unqueried",
+      legacyStatus: latestRun?.status === "running" ? "running" : latestRun?.status === "failed" ? "failed" : latestCompletedRun ? "completed" : "queued",
+      querying: runs.some((run) => run.status === "running"),
+      runs,
+      results: latestCompletedRun?.results ?? [],
+      resultCount: runs.reduce((sum, run) => sum + Number(run.resultCount ?? 0), 0),
+      chargedCredits: runs.reduce((sum, run) => sum + Number(run.chargedCredits ?? 0), 0),
+      importedCount: imports.length,
+      selectedImageId: latestRun?.imageId ?? task.selectedImageId,
+      selectedImageUrl: latestRun?.imageUrl ?? task.selectedImageUrl,
+      options: latestRun?.options ?? task.options,
+      error: latestRun?.status === "failed" ? latestRun.error ?? null : null,
+      completedAt: latestCompletedRun?.completedAt ?? task.completedAt,
+    };
+  });
+}
+
 export async function upsertSearchTask(env: Env, userId: string, input: SearchTaskSyncInput): Promise<JsonRow> {
   await ensureSearchTasksSchema(env);
   const now = new Date().toISOString();
-  const completedAt = input.status === "completed" ? now : null;
   const id = crypto.randomUUID();
+  const firstImageUrl = input.images[0]?.url ?? null;
   await env.DB.prepare(
     `INSERT INTO search_tasks
       (id, user_id, client_id, name, status, source_image_url, source_page, options_json,
-       result_count, results_json, error, charged_credits, created_at, updated_at, completed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       result_count, results_json, error, charged_credits, product_title, description, sku,
+       source_site, product_url, images_json, created_at, updated_at, completed_at)
+     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, 0, '[]', NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
      ON CONFLICT(user_id, client_id) DO UPDATE SET
        name = excluded.name,
-       status = excluded.status,
-       source_image_url = excluded.source_image_url,
+       source_image_url = COALESCE(search_tasks.selected_image_url, excluded.source_image_url),
        source_page = excluded.source_page,
        options_json = excluded.options_json,
-       result_count = excluded.result_count,
-       results_json = excluded.results_json,
-       error = excluded.error,
-       charged_credits = excluded.charged_credits,
-       updated_at = excluded.updated_at,
-       completed_at = CASE WHEN excluded.status = 'completed' THEN excluded.completed_at ELSE search_tasks.completed_at END`,
+       product_title = excluded.product_title,
+       description = excluded.description,
+       sku = excluded.sku,
+       source_site = excluded.source_site,
+       product_url = excluded.product_url,
+       images_json = excluded.images_json,
+       updated_at = excluded.updated_at`,
   ).bind(
-    id, userId, input.clientId, input.name, input.status, input.sourceImageUrl ?? null, input.sourcePage ?? null,
-    jsonText(input.options, {}), input.resultCount, jsonText(input.results, []), input.error ?? null,
-    input.chargedCredits, now, now, completedAt,
+    id, userId, input.clientId, input.name, firstImageUrl, input.productUrl ?? null,
+    jsonText(input.options, {}), input.productTitle ?? null, input.description ?? null, input.sku ?? null,
+    input.sourceSite ?? null, input.productUrl ?? null, jsonText(input.images, []), now, now,
   ).run();
-  const row = await env.DB.prepare(
-    `SELECT id, client_id AS clientId, name, status, source_image_url AS sourceImageUrl,
-            source_page AS sourcePage, options_json AS options, result_count AS resultCount,
-            results_json AS results, error, charged_credits AS chargedCredits,
-            created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt
-       FROM search_tasks WHERE user_id = ? AND client_id = ?`,
-  ).bind(userId, input.clientId).first<JsonRow>();
-  return hydrateJson(row ?? {}, [["options", {}], ["results", []]]);
+  const row = await env.DB.prepare(`${searchTaskSelect} WHERE user_id = ? AND client_id = ?`)
+    .bind(userId, input.clientId).first<JsonRow>();
+  return (await hydrateSearchTasks(env, row ? [row] : []))[0] ?? {};
 }
 
-export async function listSearchTasks(env: Env, userId: string): Promise<JsonRow[]> {
+export async function listSearchTasks(env: Env, userId: string, query: SearchTaskListQuery): Promise<{
+  items: JsonRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+}> {
   await ensureSearchTasksSchema(env);
-  const result = await env.DB.prepare(
-    `SELECT id, client_id AS clientId, name, status, source_image_url AS sourceImageUrl,
-            source_page AS sourcePage, options_json AS options, result_count AS resultCount,
-            results_json AS results, error, charged_credits AS chargedCredits,
-            created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt
-       FROM search_tasks WHERE user_id = ? ORDER BY updated_at DESC LIMIT 200`,
-  ).bind(userId).all<JsonRow>();
-  return result.results.map((row) => hydrateJson(row, [["options", {}], ["results", []]]));
+  const where = ["user_id = ?"];
+  const bindings: unknown[] = [userId];
+  if (query.status === "unqueried") where.push("NOT EXISTS (SELECT 1 FROM search_task_runs WHERE task_id = search_tasks.id AND status = 'completed') AND NOT EXISTS (SELECT 1 FROM search_task_imports WHERE task_id = search_tasks.id)");
+  if (query.status === "queried") where.push("EXISTS (SELECT 1 FROM search_task_runs WHERE task_id = search_tasks.id AND status = 'completed') AND NOT EXISTS (SELECT 1 FROM search_task_imports WHERE task_id = search_tasks.id)");
+  if (query.status === "imported") where.push("EXISTS (SELECT 1 FROM search_task_imports WHERE task_id = search_tasks.id)");
+  if (query.search) {
+    where.push(
+      `(instr(lower(name), lower(?)) > 0
+        OR instr(lower(COALESCE(product_title, '')), lower(?)) > 0
+        OR instr(lower(COALESCE(sku, '')), lower(?)) > 0
+        OR instr(lower(client_id), lower(?)) > 0
+        OR instr(lower(COALESCE(product_url, source_page, '')), lower(?)) > 0
+        OR instr(lower(results_json), lower(?)) > 0
+        OR EXISTS (SELECT 1 FROM search_task_runs WHERE task_id = search_tasks.id AND instr(lower(results_json), lower(?)) > 0))`,
+    );
+    bindings.push(query.search, query.search, query.search, query.search, query.search, query.search, query.search);
+  }
+
+  const whereSql = where.join(" AND ");
+  const count = await env.DB.prepare(`SELECT COUNT(*) AS count FROM search_tasks WHERE ${whereSql}`)
+    .bind(...bindings)
+    .first<{ count: number }>();
+  const offset = (query.page - 1) * query.pageSize;
+  const result = await env.DB.prepare(`${searchTaskSelect} WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
+    .bind(...bindings, query.pageSize, offset).all<JsonRow>();
+  return {
+    items: await hydrateSearchTasks(env, result.results),
+    page: query.page,
+    pageSize: query.pageSize,
+    total: count?.count ?? 0,
+  };
+}
+
+export async function getSearchTask(env: Env, userId: string, taskId: string): Promise<JsonRow | null> {
+  await ensureSearchTasksSchema(env);
+  const row = await env.DB.prepare(`${searchTaskSelect} WHERE id = ? AND user_id = ?`)
+    .bind(taskId, userId).first<JsonRow>();
+  return row ? (await hydrateSearchTasks(env, [row]))[0] ?? null : null;
+}
+
+export async function startSearchTask(
+  env: Env,
+  userId: string,
+  taskId: string,
+  imageId: string,
+  imageUrl: string,
+  options: Omit<SearchTaskRunInput, "imageId">,
+): Promise<string | null> {
+  await ensureSearchTasksSchema(env);
+  const active = await env.DB.prepare("SELECT id FROM search_task_runs WHERE task_id = ? AND status = 'running'")
+    .bind(taskId).first<{ id: string }>();
+  if (active) return null;
+  const runId = crypto.randomUUID();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO search_task_runs
+        (id, task_id, user_id, image_id, image_url, status, options_json, page, page_size)
+       VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+    ).bind(runId, taskId, userId, imageId, imageUrl, jsonText(options, {}), options.page, options.limit).run();
+  } catch {
+    return null;
+  }
+  await env.DB.prepare(
+    `UPDATE search_tasks
+        SET status = 'running', selected_image_id = ?, selected_image_url = ?, source_image_url = ?,
+            options_json = ?, error = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ? AND user_id = ?`,
+  ).bind(imageId, imageUrl, imageUrl, jsonText(options, {}), taskId, userId).run();
+  return runId;
+}
+
+export async function completeSearchTask(
+  env: Env,
+  userId: string,
+  taskId: string,
+  runId: string,
+  values: {
+    results: unknown[];
+    resultCount: number;
+    totalResultCount: number | null;
+    uploadedImageId: string;
+    chargedCredits: number;
+  },
+): Promise<JsonRow | null> {
+  await ensureSearchTasksSchema(env);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE search_task_runs
+          SET status = 'completed', uploaded_image_id = ?, results_json = ?, result_count = ?,
+              total_result_count = ?, charged_credits = ?, error = NULL,
+              completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ? AND task_id = ? AND user_id = ?`,
+    ).bind(values.uploadedImageId, jsonText(values.results, []), values.resultCount, values.totalResultCount, values.chargedCredits, runId, taskId, userId),
+    env.DB.prepare(
+      `UPDATE search_tasks
+        SET status = 'completed', results_json = ?, result_count = ?, charged_credits = charged_credits + ?,
+            error = NULL, completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = ? AND user_id = ?`,
+    ).bind(jsonText(values.results, []), values.resultCount, values.chargedCredits, taskId, userId),
+  ]);
+  return getSearchTask(env, userId, taskId);
+}
+
+export async function failSearchTask(env: Env, userId: string, taskId: string, runId: string, error: string): Promise<void> {
+  await ensureSearchTasksSchema(env);
+  const message = error.slice(0, 2_000);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE search_task_runs SET status = 'failed', error = ?, completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ? AND task_id = ? AND user_id = ?`,
+    ).bind(message, runId, taskId, userId),
+    env.DB.prepare(
+      `UPDATE search_tasks SET status = 'failed', error = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ? AND user_id = ?`,
+    ).bind(message, taskId, userId),
+  ]);
+}
+
+export async function recordSearchTaskImports(
+  env: Env,
+  taskId: string,
+  runId: string | null,
+  imported: Array<{ offerId: string; productId: string }>,
+): Promise<void> {
+  if (!imported.length) return;
+  await ensureSearchTasksSchema(env);
+  await env.DB.batch(imported.map((item) => env.DB.prepare(
+    `INSERT INTO search_task_imports (id, task_id, run_id, offer_id, product_id)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(task_id, offer_id) DO UPDATE SET
+       run_id = COALESCE(excluded.run_id, search_task_imports.run_id),
+       product_id = excluded.product_id,
+       imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+  ).bind(crypto.randomUUID(), taskId, runId, item.offerId, item.productId)));
+}
+
+export async function deleteSearchTask(env: Env, userId: string, taskId: string): Promise<boolean> {
+  await ensureSearchTasksSchema(env);
+  const result = await env.DB.prepare("DELETE FROM search_tasks WHERE id = ? AND user_id = ?")
+    .bind(taskId, userId).run();
+  return result.meta.changes === 1;
 }
 
 export async function upsertOfferLink(

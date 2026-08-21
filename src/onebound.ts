@@ -1,5 +1,6 @@
-import { getProductImage, upsertOfferLink, type OneBoundOfferDetailData } from "./db";
+import { getProductImage, upsertOfferLink, upsertProduct, type OneBoundOfferDetailData } from "./db";
 import { ApiError } from "./http";
+import { validateImageProxyUrl } from "./image-proxy";
 import type { OfferLinkInput } from "./validation";
 
 type OneBoundSettingsRow = {
@@ -10,9 +11,26 @@ type OneBoundSettingsRow = {
 
 type OneBoundItem = Record<string, unknown>;
 type OneBoundRequestOptions = { cache: "yes" | "no"; lang: "cn" | "en" | "ru" };
-type ImageSearchOptions = OneBoundRequestOptions & {
-  sort: "_sale" | "sale" | "price" | "_price";
+export type ImageSearchOptions = OneBoundRequestOptions & {
+  sort: "_sale" | "sale" | "bid2" | "_bid2";
   limit: number;
+  page: number;
+  version: string;
+};
+
+export type OneBoundImageSearchResponse = {
+  uploadedImageId: string;
+  resultCount: number;
+  totalResultCount: number | null;
+  results: OneBoundSearchResult[];
+  request: {
+    sort: string;
+    cache: string;
+    lang: string;
+    limit: number;
+    page: number;
+    version: string;
+  };
 };
 
 export type OneBoundSearchResult = {
@@ -62,10 +80,165 @@ type ParsedItemDetail = {
   detail: OneBoundOfferDetailData;
 };
 
+function variantOptionPairs(variant: { name?: string | null; attributes?: Record<string, unknown> }): Array<{ name: string; value: string }> {
+  const text = asString(variant.attributes?.propertiesName) ?? variant.name ?? null;
+  if (!text) return [];
+  const seen = new Set<string>();
+  return text.split(/[;；]/u).flatMap((segment) => {
+    const parts = segment.split(":").map((part) => part.trim()).filter(Boolean);
+    if (parts.length < 2) return [];
+    const name = parts.at(-2)!;
+    const value = parts.at(-1)!;
+    const key = name.toLowerCase();
+    if (!name || !value || seen.has(key)) return [];
+    seen.add(key);
+    return [{ name: name.slice(0, 100), value: value.slice(0, 255) }];
+  });
+}
+
+export function importedVariantData(variants: OfferLinkInput["offer"]["variants"]): {
+  options: Array<{ name: string; values: string[] }>;
+  values: string[][];
+} {
+  const pairs = variants.map(variantOptionPairs);
+  const optionNames = [...new Set(pairs.flatMap((items) => items.map((item) => item.name)))].slice(0, 3);
+  if (!optionNames.length && variants.length > 1) optionNames.push("规格");
+
+  const values = variants.map((variant, index) => optionNames.map((name) => {
+    const value = pairs[index]?.find((item) => item.name === name)?.value;
+    if (value) return value;
+    if (name === "规格") return (variant.name ?? variant.sku ?? variant.externalId ?? `规格 ${index + 1}`).slice(0, 255);
+    return "默认";
+  }));
+  return {
+    options: optionNames.map((name, optionIndex) => ({
+      name,
+      values: [...new Set(values.map((row) => row[optionIndex]).filter(Boolean))],
+    })),
+    values,
+  };
+}
+
+export async function importOneBoundProducts(
+  env: Env,
+  offerIds: string[],
+  options: OneBoundRequestOptions,
+  createdBy: string,
+): Promise<{
+  imported: Array<{ offerId: string; productId: string; title: string }>;
+  failures: Array<{ offerId: string; code: string; message: string; details?: unknown }>;
+}> {
+  const credentials = await readCredentials(env);
+  const imported: Array<{ offerId: string; productId: string; title: string }> = [];
+  const failures: Array<{ offerId: string; code: string; message: string; details?: unknown }> = [];
+
+  for (const offerId of offerIds) {
+    try {
+      const parsed = await callItemGet(credentials, offerId, options);
+      const { preview, linkInput, detail } = parsed;
+      const variantData = importedVariantData(linkInput.offer.variants);
+      const productId = await upsertProduct(env, {
+        sourcePlatform: "1688",
+        sourceStore: "1688",
+        externalId: preview.offerId,
+        sourceUrl: preview.detailUrl ?? undefined,
+        title: preview.title,
+        vendor: preview.supplierName ?? undefined,
+        productType: preview.categoryId ?? undefined,
+        descriptionHtml: detail.main.descriptionHtml ?? undefined,
+        currency: "CNY",
+        status: "new",
+        syncState: "not_synced",
+        priceMin: preview.priceMin,
+        priceMax: preview.priceMax,
+        inventoryQuantity: preview.stockQuantity,
+        tags: [],
+        options: variantData.options,
+        attributes: {
+          properties: preview.properties,
+          priceTiers: preview.priceTiers,
+          location: preview.location,
+          raw: preview.raw,
+        },
+        categories: [preview.categoryId, detail.main.rootCategoryId].filter(Boolean),
+        content: {
+          shortDescription: detail.main.shortDescription,
+          descriptionImages: preview.descriptionImages,
+          videos: detail.videos,
+        },
+        raw: preview.raw,
+        offerId1688: preview.offerId,
+        supplierId1688: preview.supplierId,
+        supplierName1688: preview.supplierName,
+        minOrderQuantity1688: preview.minOrderQuantity,
+        unit1688: preview.unit,
+        province1688: linkInput.offer.province,
+        city1688: linkInput.offer.city,
+        shortDescription1688: detail.main.shortDescription,
+        totalPrice1688: detail.main.totalPrice,
+        suggestedPrice1688: detail.main.suggestedPrice,
+        originalPrice1688: preview.originalPrice,
+        stockQuantity1688: detail.main.stockQuantity,
+        soldQuantity1688: detail.main.soldQuantity,
+        brand1688: detail.main.brand,
+        brandId1688: detail.main.brandId,
+        rootCategoryId1688: detail.main.rootCategoryId,
+        categoryId1688: detail.main.categoryId,
+        sellerNick1688: detail.main.sellerNick,
+        location1688: detail.main.location,
+        itemWeight1688: detail.main.itemWeight,
+        itemSize1688: detail.main.itemSize,
+        shopId1688: detail.main.shopId,
+        videoUrl1688: detail.main.videoUrl,
+        sampleId1688: detail.main.sampleId,
+        shippingTo1688: detail.main.shippingTo,
+        hasDiscount1688: detail.main.hasDiscount,
+        isPromotion1688: detail.main.isPromotion,
+        fetchedAt1688: new Date().toISOString(),
+        variants: linkInput.offer.variants.map((variant, index) => ({
+          externalId: variant.externalId,
+          sku: variant.sku,
+          title: variant.name,
+          option1: variantData.values[index]?.[0],
+          option2: variantData.values[index]?.[1],
+          option3: variantData.values[index]?.[2],
+          price: variant.price,
+          inventoryQuantity: variant.stock,
+          options: variantData.values[index] ?? [],
+          raw: variant.raw,
+        })),
+        images: linkInput.offer.images.map((image) => ({
+          externalId: image.externalId,
+          url: image.url,
+          position: image.position,
+        })),
+        media: detail.videos.map((video, index) => ({
+          externalId: `1688-video-${index + 1}`,
+          mediaType: "video" as const,
+          url: video.url,
+          posterUrl: video.posterUrl ?? undefined,
+          title: video.title ?? undefined,
+          position: index,
+          metadata: {},
+        })),
+      }, createdBy);
+      imported.push({ offerId: preview.offerId, productId, title: preview.title });
+    } catch (caught) {
+      failures.push(itemFailure(offerId, caught));
+    }
+  }
+
+  if (imported.length === 0 && failures.length > 0) {
+    throw new ApiError(502, "1688 商品导入失败", "onebound_product_import_failed", { failures });
+  }
+  return { imported, failures };
+}
+
 const ONEBOUND_SETTINGS_ID = 1;
 const ONEBOUND_API_BASE = "https://api-gw.onebound.cn/1688";
 const DEFAULT_MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const MAX_UPSTREAM_JSON_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGE_REDIRECTS = 3;
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -334,12 +507,7 @@ async function searchUploadedImage(
   credentials: { key: string; secret: string },
   uploadedImageId: string,
   options: ImageSearchOptions,
-): Promise<{
-  uploadedImageId: string;
-  resultCount: number;
-  results: OneBoundSearchResult[];
-  request: { sort: string; cache: string; lang: string; limit: number };
-}> {
+): Promise<OneBoundImageSearchResponse> {
   const payload = await callImageSearch(credentials, uploadedImageId, options);
   const seen = new Set<string>();
   const results = responseItems(payload).flatMap((item) => {
@@ -352,8 +520,16 @@ async function searchUploadedImage(
   return {
     uploadedImageId,
     resultCount: results.length,
+    totalResultCount: responseTotalResultCount(payload),
     results,
-    request: { sort: options.sort, cache: options.cache, lang: options.lang, limit: options.limit },
+    request: {
+      sort: options.sort,
+      cache: options.cache,
+      lang: options.lang,
+      limit: options.limit,
+      page: options.page,
+      version: options.version,
+    },
   };
 }
 
@@ -361,18 +537,35 @@ export async function searchImageBytes(
   env: Env,
   bytes: Uint8Array,
   options: ImageSearchOptions,
-): Promise<{
-  uploadedImageId: string;
-  resultCount: number;
-  results: OneBoundSearchResult[];
-  request: { sort: string; cache: string; lang: string; limit: number };
-}> {
+): Promise<OneBoundImageSearchResponse> {
   if (bytes.byteLength === 0) throw new ApiError(422, "图片内容为空", "image_empty");
   if (bytes.byteLength > maxImageBytes(env)) {
     throw new ApiError(413, "图片超过允许大小", "image_too_large", { maxBytes: maxImageBytes(env) });
   }
   const credentials = await readCredentials(env);
   return searchUploadedImage(credentials, await uploadImageBytes(bytes, credentials), options);
+}
+
+function dataImageBytes(value: string): Uint8Array | null {
+  const match = value.match(/^data:image\/(?:avif|gif|jpeg|png|webp);base64,([a-z0-9+/=\s]+)$/iu);
+  if (!match) return null;
+  try {
+    const binary = atob(match[1].replace(/\s+/gu, ""));
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    throw new ApiError(422, "图片 data URL 无效", "image_data_url_invalid");
+  }
+}
+
+export async function searchImageUrl(
+  env: Env,
+  imageUrl: string,
+  options: ImageSearchOptions,
+): Promise<OneBoundImageSearchResponse> {
+  const inlineBytes = dataImageBytes(imageUrl);
+  if (inlineBytes) return searchImageBytes(env, inlineBytes, options);
+  const credentials = await readCredentials(env);
+  return searchUploadedImage(credentials, await uploadRemoteImage(env, imageUrl, credentials), options);
 }
 
 async function uploadR2Image(env: Env, key: string, credentials: { key: string; secret: string }): Promise<string> {
@@ -385,26 +578,46 @@ async function uploadR2Image(env: Env, key: string, credentials: { key: string; 
   return uploadImageBytes(new Uint8Array(await object.arrayBuffer()), credentials);
 }
 
-async function uploadRemoteImage(env: Env, imageUrl: string, credentials: { key: string; secret: string }): Promise<string> {
-  let url: URL;
-  try {
-    url = new URL(imageUrl);
-  } catch {
-    throw new ApiError(422, "图片地址无效", "image_url_invalid");
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new ApiError(422, "图片地址仅支持 HTTP 或 HTTPS", "image_url_invalid");
+export async function fetchValidatedRemoteImage(
+  imageUrl: string,
+  fetcher: typeof fetch = fetch,
+): Promise<Response> {
+  let target = validateImageProxyUrl(imageUrl);
+
+  for (let redirectCount = 0; redirectCount <= MAX_IMAGE_REDIRECTS; redirectCount += 1) {
+    const response = await fetcher(target, {
+      headers: {
+        accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8",
+        referer: `${target.origin}/`,
+      },
+      redirect: "manual",
+    });
+
+    if (response.status < 300 || response.status >= 400) return response;
+
+    const location = response.headers.get("location");
+    await response.body?.cancel("following image redirect");
+    if (!location || redirectCount === MAX_IMAGE_REDIRECTS) {
+      throw new ApiError(502, "远程图片重定向失败", "remote_image_redirect_failed", {
+        upstreamStatus: response.status,
+        imageHost: target.hostname,
+      });
+    }
+    target = validateImageProxyUrl(new URL(location, target).href);
   }
 
-  const response = await fetch(url, {
-    headers: { accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8" },
-    redirect: "follow",
-  });
+  throw new ApiError(502, "下载远程图片失败", "remote_image_fetch_failed");
+}
+
+async function uploadRemoteImage(env: Env, imageUrl: string, credentials: { key: string; secret: string }): Promise<string> {
+  const validatedUrl = validateImageProxyUrl(imageUrl);
+
+  const response = await fetchValidatedRemoteImage(validatedUrl.href);
   if (!response.ok) {
     await response.body?.cancel("remote image request failed");
     throw new ApiError(502, "下载远程图片失败", "remote_image_fetch_failed", {
       upstreamStatus: response.status,
-      imageHost: url.hostname,
+      imageHost: validatedUrl.hostname,
     });
   }
 
@@ -413,7 +626,7 @@ async function uploadRemoteImage(env: Env, imageUrl: string, credentials: { key:
     await response.body?.cancel("unexpected content type");
     throw new ApiError(502, "远程地址返回的不是图片", "remote_image_invalid_content_type", {
       contentType: contentType ?? null,
-      imageHost: url.hostname,
+      imageHost: validatedUrl.hostname,
     });
   }
 
@@ -438,6 +651,16 @@ function normalizeSearchResult(item: OneBoundItem): OneBoundSearchResult | null 
   };
 }
 
+export function responseTotalResultCount(payload: Record<string, unknown>): number | null {
+  const items = asRecord(payload.items);
+  const data = asRecord(payload.data);
+  return asInteger(
+    payload.real_total_results ?? payload.total_results ?? payload.total_result ?? payload.total ??
+    items?.real_total_results ?? items?.total_results ?? items?.total_result ?? items?.total ??
+    data?.real_total_results ?? data?.total_results ?? data?.total_result ?? data?.total,
+  );
+}
+
 async function callImageSearch(
   credentials: { key: string; secret: string },
   imgid: string,
@@ -448,8 +671,11 @@ async function callImageSearch(
   url.searchParams.set("secret", credentials.secret);
   url.searchParams.set("imgid", imgid);
   url.searchParams.set("sort", options.sort);
+  url.searchParams.set("page", String(options.page));
+  url.searchParams.set("page_size", String(options.limit));
   url.searchParams.set("cache", options.cache);
   url.searchParams.set("lang", options.lang);
+  if (options.version) url.searchParams.set("version", options.version);
   url.searchParams.set("result_type", "json");
   const response = await fetch(url);
   const payload = await readUpstreamJson(response);
@@ -457,7 +683,16 @@ async function callImageSearch(
   if (!response.ok || !["0000", "2000"].includes(errorCode)) {
     throw new ApiError(502, String(payload.reason ?? "OneBound 以图搜商品失败"), "onebound_search_failed", {
       endpoint: "1688/item_search_img",
-      request: { imgid, sort: options.sort, cache: options.cache, lang: options.lang, resultType: "json" },
+      request: {
+        imgid,
+        sort: options.sort,
+        page: options.page,
+        pageSize: options.limit,
+        cache: options.cache,
+        lang: options.lang,
+        version: options.version,
+        resultType: "json",
+      },
       upstreamStatus: response.status,
       response: payload,
     });
@@ -726,11 +961,7 @@ export async function searchProductImage(
   options: ImageSearchOptions,
 ): Promise<{
   imageId: string;
-  uploadedImageId: string;
-  resultCount: number;
-  results: OneBoundSearchResult[];
-  request: { sort: string; cache: string; lang: string; limit: number };
-}> {
+} & OneBoundImageSearchResponse> {
   const image = await getProductImage(env, productId, imageId);
   if (!image) throw new ApiError(404, "商品图片不存在", "image_not_found");
   const credentials = await readCredentials(env);

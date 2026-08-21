@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { parseOneBoundItemPayload, responseImageId, responseItems } from "./onebound";
+import {
+  fetchValidatedRemoteImage,
+  importedVariantData,
+  parseOneBoundItemPayload,
+  responseImageId,
+  responseItems,
+  responseTotalResultCount,
+} from "./onebound";
 
 describe("OneBound response parsing", () => {
   it("reads an uploaded image id from the nested items.item payload", () => {
@@ -15,6 +22,57 @@ describe("OneBound response parsing", () => {
   it("keeps compatibility with direct and data-wrapped response shapes", () => {
     expect(responseImageId({ data: { imgid: "direct-data-id" } })).toBe("direct-data-id");
     expect(responseItems({ data: { items: [{ id: "item-1" }] } })).toEqual([{ id: "item-1" }]);
+  });
+
+  it("prefers OneBound's documented real result count", () => {
+    expect(responseTotalResultCount({
+      items: { real_total_results: "237", total_results: "50" },
+    })).toBe(237);
+    expect(responseTotalResultCount({ data: { total_results: 18 } })).toBe(18);
+  });
+
+  it("validates every remote image redirect before fetching it", async () => {
+    const fetcher = async () => new Response(null, {
+      status: 302,
+      headers: { location: "http://127.0.0.1/internal-image.jpg" },
+    });
+
+    await expect(fetchValidatedRemoteImage("https://cbu01.alicdn.com/source.jpg", fetcher))
+      .rejects.toMatchObject({ code: "image_proxy_url_not_allowed" });
+  });
+
+  it("follows safe remote image redirects manually", async () => {
+    const requested: string[] = [];
+    const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requested.push(String(input));
+      expect(init?.redirect).toBe("manual");
+      if (requested.length === 1) {
+        return new Response(null, { status: 302, headers: { location: "/final.jpg" } });
+      }
+      return new Response("image", { status: 200, headers: { "content-type": "image/jpeg" } });
+    };
+
+    const response = await fetchValidatedRemoteImage("https://cbu01.alicdn.com/source.jpg", fetcher);
+    expect(response.ok).toBe(true);
+    expect(requested).toEqual([
+      "https://cbu01.alicdn.com/source.jpg",
+      "https://cbu01.alicdn.com/final.jpg",
+    ]);
+  });
+
+  it("maps 1688 SKU property names to Shopify product options", () => {
+    const variants = [
+      { externalId: "sku-red-s", sku: "RED-S", name: "Color:Red;Size:S", attributes: { propertiesName: "0:0:Color:Red;1:0:Size:S" }, price: 10, stock: 5, raw: {} },
+      { externalId: "sku-blue-m", sku: "BLUE-M", name: "Color:Blue;Size:M", attributes: { propertiesName: "0:0:Color:Blue;1:0:Size:M" }, price: 12, stock: 3, raw: {} },
+    ];
+
+    expect(importedVariantData(variants)).toEqual({
+      options: [
+        { name: "Color", values: ["Red", "Blue"] },
+        { name: "Size", values: ["S", "M"] },
+      ],
+      values: [["Red", "S"], ["Blue", "M"]],
+    });
   });
 
   it("normalizes item_get details for dedicated 1688 tables", () => {

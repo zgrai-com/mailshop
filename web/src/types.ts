@@ -33,6 +33,21 @@ export type AiSettings = {
   updatedAt: string | null;
 };
 
+export type ShopifyStore = {
+  id: string;
+  shopDomain: string;
+  displayName: string | null;
+  status: "planned" | "installing" | "active" | "disabled" | "error";
+  apiVersion: string;
+  configured: boolean;
+  clientId: string | null;
+  clientSecret: string | null;
+  clientIdHint: string | null;
+  lastVerifiedAt: string | null;
+  lastError: string | null;
+  updatedAt: string;
+};
+
 export type CreditTransaction = {
   id: string;
   amount: number;
@@ -41,16 +56,69 @@ export type CreditTransaction = {
   createdAt: string;
 };
 
+export type SearchTaskOptions = {
+  sort: "_sale" | "sale" | "bid2" | "_bid2";
+  limit: number;
+  page: number;
+  cache: "yes" | "no";
+  lang: "cn" | "en" | "ru";
+  version: string;
+};
+
+export type SearchTaskResult = {
+  offerId?: string;
+  title?: string;
+  imageUrl?: string | null;
+  detailUrl?: string | null;
+  price?: number | null;
+  promotionPrice?: number | null;
+  sales?: number | null;
+  supplierName?: string | null;
+  location?: string | null;
+  imported?: boolean;
+  importedAt?: string | null;
+  productId?: string | null;
+};
+
+export type SearchTaskRun = {
+  id: string;
+  imageId: string;
+  imageUrl: string;
+  status: "running" | "completed" | "failed";
+  options: SearchTaskOptions;
+  page: number;
+  pageSize: number;
+  uploadedImageId?: string | null;
+  resultCount: number;
+  totalResultCount?: number | null;
+  results: SearchTaskResult[];
+  error?: string | null;
+  chargedCredits: number;
+  createdAt: string;
+  completedAt?: string | null;
+};
+
 export type SearchTask = {
   id: string;
   clientId: string;
   name: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "unqueried" | "queried" | "imported";
+  querying: boolean;
   sourceImageUrl?: string | null;
   sourcePage?: string | null;
-  options: { sort: string; limit: number; cache: string; lang: string };
+  productTitle?: string | null;
+  description?: string | null;
+  sku?: string | null;
+  sourceSite?: string | null;
+  productUrl?: string | null;
+  images: Array<{ id: string; url: string; width?: number; height?: number; alt?: string; title?: string; source?: string }>;
+  selectedImageId?: string | null;
+  selectedImageUrl?: string | null;
+  options: SearchTaskOptions;
   resultCount: number;
-  results: Array<{ offerId?: string; title?: string; imageUrl?: string; detailUrl?: string; price?: number; promotionPrice?: number; supplierName?: string }>;
+  results: SearchTaskResult[];
+  runs: SearchTaskRun[];
+  importedCount: number;
   error?: string | null;
   chargedCredits: number;
   createdAt: string;
@@ -103,7 +171,7 @@ export type ProductStatus = "new" | "image_searching" | "matched" | "reviewed" |
 
 export type ProductSummary = {
   id: string;
-  sourcePlatform: "shopify" | "manual" | "other";
+  sourcePlatform: "1688" | "shopify" | "manual" | "other";
   sourceStore: string;
   externalId: string;
   sourceUrl?: string | null;
@@ -112,6 +180,8 @@ export type ProductSummary = {
   productType?: string | null;
   spu?: string | null;
   inventoryQuantity?: number | null;
+  offerId1688?: string | null;
+  supplierName1688?: string | null;
   currency: string;
   status: ProductStatus;
   syncState: string;
@@ -276,6 +346,33 @@ export type StoredOfferDetail = {
 };
 
 export type ProductDetail = ProductSummary & {
+  catalogSource?: "1688" | "legacy";
+  supplierId1688?: string | null;
+  minOrderQuantity1688?: number | null;
+  unit1688?: string | null;
+  province1688?: string | null;
+  city1688?: string | null;
+  shortDescription1688?: string | null;
+  totalPrice1688?: number | null;
+  suggestedPrice1688?: number | null;
+  originalPrice1688?: number | null;
+  stockQuantity1688?: number | null;
+  soldQuantity1688?: number | null;
+  brand1688?: string | null;
+  brandId1688?: string | null;
+  rootCategoryId1688?: string | null;
+  categoryId1688?: string | null;
+  sellerNick1688?: string | null;
+  location1688?: string | null;
+  itemWeight1688?: string | null;
+  itemSize1688?: string | null;
+  shopId1688?: string | null;
+  videoUrl1688?: string | null;
+  sampleId1688?: string | null;
+  shippingTo1688?: string | null;
+  hasDiscount1688?: number | null;
+  isPromotion1688?: number | null;
+  fetchedAt1688?: string | null;
   shopDomain?: string | null;
   handle?: string | null;
   descriptionHtml?: string | null;
@@ -315,7 +412,7 @@ export type DashboardSummary = {
 };
 
 export type ProductInput = {
-  sourcePlatform: "shopify" | "manual" | "other";
+  sourcePlatform: "1688" | "shopify" | "manual" | "other";
   sourceStore: string;
   externalId?: string;
   sourceUrl?: string;
