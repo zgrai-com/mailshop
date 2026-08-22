@@ -347,6 +347,8 @@ export async function upsertProduct(
     throw new ApiError(409, "该商品已存在于其他账号，无法覆盖", "product_owner_conflict");
   }
   const productId = existing?.id ?? crypto.randomUUID();
+  const productColumns = await env.DB.prepare("PRAGMA table_info(products)").all<{ name: string }>();
+  const hasCatalogColumns = productColumns.results.some((column) => column.name === "catalog_source");
 
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
@@ -420,7 +422,7 @@ export async function upsertProduct(
       nullable(input.assignedTo),
       createdBy,
     ),
-    env.DB.prepare(
+    ...(hasCatalogColumns ? [env.DB.prepare(
       `UPDATE products SET
          catalog_source = ?, offer_id_1688 = ?, supplier_id_1688 = ?, supplier_name_1688 = ?,
          min_order_quantity_1688 = ?, unit_1688 = ?, province_1688 = ?, city_1688 = ?,
@@ -444,7 +446,7 @@ export async function upsertProduct(
       nullable(input.shopId1688), nullable(input.videoUrl1688), nullable(input.sampleId1688),
       nullable(input.shippingTo1688), nullable(input.hasDiscount1688), nullable(input.isPromotion1688),
       nullable(input.fetchedAt1688), productId,
-    ),
+    )] : []),
     ...productVariantStatements(env, productId, input),
     ...productImageStatements(env, productId, input),
     ...productMediaStatements(env, productId, input),
@@ -572,6 +574,18 @@ export async function patchProduct(env: Env, productId: string, patch: ProductPa
   await env.DB.batch(statements);
 }
 
+export async function deleteProduct(env: Env, productId: string): Promise<string[]> {
+  const images = await env.DB.prepare(
+    "SELECT r2_key AS r2Key FROM product_images WHERE product_id = ? AND r2_key IS NOT NULL",
+  )
+    .bind(productId)
+    .all<{ r2Key: string }>();
+
+  const result = await env.DB.prepare("DELETE FROM products WHERE id = ?").bind(productId).run();
+  if (!result.meta.changes) throw new ApiError(404, "Product not found", "product_not_found");
+  return images.results.map((image) => image.r2Key).filter(Boolean);
+}
+
 export type ProductViewer = { id: string; role: "admin" | "user" };
 
 export async function listProducts(env: Env, query: ProductListQuery, viewer?: ProductViewer): Promise<{
@@ -580,6 +594,13 @@ export async function listProducts(env: Env, query: ProductListQuery, viewer?: P
   pageSize: number;
   total: number;
 }> {
+  // The catalog migration is deployed separately from the Worker. Keep the
+  // list endpoint usable while an older D1 instance is catching up.
+  const productColumns = await env.DB.prepare("PRAGMA table_info(products)").all<{ name: string }>();
+  const hasProductColumn = (name: string) => productColumns.results.some((column) => column.name === name);
+  const hasCatalogSource = hasProductColumn("catalog_source");
+  const hasOfferId1688 = hasProductColumn("offer_id_1688");
+  const hasSupplierName1688 = hasProductColumn("supplier_name_1688");
   const where: string[] = ["1 = 1"];
   const bindings: unknown[] = [];
   if (viewer?.role !== "admin") {
@@ -592,9 +613,13 @@ export async function listProducts(env: Env, query: ProductListQuery, viewer?: P
   }
   if (query.source !== "all") {
     if (query.source === "1688") {
-      where.push("p.catalog_source = '1688'");
+      where.push(hasCatalogSource ? "p.catalog_source = '1688'" : "0 = 1");
     } else {
-      where.push("p.source_platform = ? AND COALESCE(p.catalog_source, 'legacy') != '1688'");
+      where.push(
+        hasCatalogSource
+          ? "p.source_platform = ? AND COALESCE(p.catalog_source, 'legacy') != '1688'"
+          : "p.source_platform = ?",
+      );
       bindings.push(query.source);
     }
   }
@@ -613,10 +638,11 @@ export async function listProducts(env: Env, query: ProductListQuery, viewer?: P
     .first<{ count: number }>();
   const offset = (query.page - 1) * query.pageSize;
   const result = await env.DB.prepare(
-    `SELECT p.id, CASE WHEN p.catalog_source = '1688' THEN '1688' ELSE p.source_platform END AS sourcePlatform, p.source_store AS sourceStore,
+    `SELECT p.id, ${hasCatalogSource ? "CASE WHEN p.catalog_source = '1688' THEN '1688' ELSE p.source_platform END" : "p.source_platform"} AS sourcePlatform, p.source_store AS sourceStore,
             p.external_id AS externalId, p.source_url AS sourceUrl, p.title, p.vendor,
             p.product_type AS productType, p.spu, p.inventory_quantity AS inventoryQuantity,
-            p.offer_id_1688 AS offerId1688, p.supplier_name_1688 AS supplierName1688,
+            ${hasOfferId1688 ? "p.offer_id_1688" : "NULL"} AS offerId1688,
+            ${hasSupplierName1688 ? "p.supplier_name_1688" : "NULL"} AS supplierName1688,
             p.currency, p.status, p.sync_state AS syncState,
             p.price_min AS priceMin, p.price_max AS priceMax, p.updated_at AS updatedAt,
             u.display_name AS assignedToName,
@@ -680,8 +706,12 @@ export async function assertMediaAccess(env: Env, r2Key: string, viewer: Product
 }
 
 export async function getProduct(env: Env, productId: string): Promise<JsonRow> {
+  const productColumns = await env.DB.prepare("PRAGMA table_info(products)").all<{ name: string }>();
+  const hasProductColumn = (name: string) => productColumns.results.some((column) => column.name === name);
+  const productColumn = (name: string) => hasProductColumn(name) ? `p.${name}` : "NULL";
+  const hasCatalogSource = hasProductColumn("catalog_source");
   const product = await env.DB.prepare(
-    `SELECT p.id, CASE WHEN p.catalog_source = '1688' THEN '1688' ELSE p.source_platform END AS sourcePlatform, p.source_store AS sourceStore,
+    `SELECT p.id, ${hasCatalogSource ? "CASE WHEN p.catalog_source = '1688' THEN '1688' ELSE p.source_platform END" : "p.source_platform"} AS sourcePlatform, p.source_store AS sourceStore,
             p.external_id AS externalId, p.source_url AS sourceUrl, p.shop_domain AS shopDomain,
             p.handle, p.title, p.vendor, p.product_type AS productType,
             p.description_html AS descriptionHtml, p.spu, p.published_at AS publishedAt,
@@ -690,21 +720,21 @@ export async function getProduct(env: Env, productId: string): Promise<JsonRow> 
             p.cost_min AS costMin, p.cost_max AS costMax, p.tags_json AS tags,
             p.options_json AS options, p.attributes_json AS attributes,
             p.categories_json AS categories, p.content_json AS content, p.raw_json AS raw,
-            p.catalog_source AS catalogSource, p.offer_id_1688 AS offerId1688,
-            p.supplier_id_1688 AS supplierId1688, p.supplier_name_1688 AS supplierName1688,
-            p.min_order_quantity_1688 AS minOrderQuantity1688, p.unit_1688 AS unit1688,
-            p.province_1688 AS province1688, p.city_1688 AS city1688,
-            p.short_description_1688 AS shortDescription1688, p.total_price_1688 AS totalPrice1688,
-            p.suggested_price_1688 AS suggestedPrice1688, p.original_price_1688 AS originalPrice1688,
-            p.stock_quantity_1688 AS stockQuantity1688, p.sold_quantity_1688 AS soldQuantity1688,
-            p.brand_1688 AS brand1688, p.brand_id_1688 AS brandId1688,
-            p.root_category_id_1688 AS rootCategoryId1688, p.category_id_1688 AS categoryId1688,
-            p.seller_nick_1688 AS sellerNick1688, p.location_1688 AS location1688,
-            p.item_weight_1688 AS itemWeight1688, p.item_size_1688 AS itemSize1688,
-            p.shop_id_1688 AS shopId1688, p.video_url_1688 AS videoUrl1688,
-            p.sample_id_1688 AS sampleId1688, p.shipping_to_1688 AS shippingTo1688,
-            p.has_discount_1688 AS hasDiscount1688, p.is_promotion_1688 AS isPromotion1688,
-            p.fetched_at_1688 AS fetchedAt1688,
+            ${productColumn("catalog_source")} AS catalogSource, ${productColumn("offer_id_1688")} AS offerId1688,
+            ${productColumn("supplier_id_1688")} AS supplierId1688, ${productColumn("supplier_name_1688")} AS supplierName1688,
+            ${productColumn("min_order_quantity_1688")} AS minOrderQuantity1688, ${productColumn("unit_1688")} AS unit1688,
+            ${productColumn("province_1688")} AS province1688, ${productColumn("city_1688")} AS city1688,
+            ${productColumn("short_description_1688")} AS shortDescription1688, ${productColumn("total_price_1688")} AS totalPrice1688,
+            ${productColumn("suggested_price_1688")} AS suggestedPrice1688, ${productColumn("original_price_1688")} AS originalPrice1688,
+            ${productColumn("stock_quantity_1688")} AS stockQuantity1688, ${productColumn("sold_quantity_1688")} AS soldQuantity1688,
+            ${productColumn("brand_1688")} AS brand1688, ${productColumn("brand_id_1688")} AS brandId1688,
+            ${productColumn("root_category_id_1688")} AS rootCategoryId1688, ${productColumn("category_id_1688")} AS categoryId1688,
+            ${productColumn("seller_nick_1688")} AS sellerNick1688, ${productColumn("location_1688")} AS location1688,
+            ${productColumn("item_weight_1688")} AS itemWeight1688, ${productColumn("item_size_1688")} AS itemSize1688,
+            ${productColumn("shop_id_1688")} AS shopId1688, ${productColumn("video_url_1688")} AS videoUrl1688,
+            ${productColumn("sample_id_1688")} AS sampleId1688, ${productColumn("shipping_to_1688")} AS shippingTo1688,
+            ${productColumn("has_discount_1688")} AS hasDiscount1688, ${productColumn("is_promotion_1688")} AS isPromotion1688,
+            ${productColumn("fetched_at_1688")} AS fetchedAt1688,
             p.notes, p.assigned_to AS assignedTo,
             u.display_name AS assignedToName, p.created_at AS createdAt, p.updated_at AS updatedAt
        FROM products p LEFT JOIN users u ON u.id = p.assigned_to WHERE p.id = ?`,
@@ -844,6 +874,39 @@ export async function getStoredOfferDetail(env: Env, offerId: string): Promise<J
   };
 }
 
+export async function getCachedOneBoundItem(env: Env, offerId: string): Promise<{ payload: JsonRow; fetchedAt: string } | null> {
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS onebound_item_cache (
+      offer_id TEXT PRIMARY KEY,
+      payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+      fetched_at TEXT NOT NULL
+    )`,
+  ).run();
+  const row = await env.DB.prepare(
+    `SELECT payload_json AS payloadJson, fetched_at AS fetchedAt FROM onebound_item_cache WHERE offer_id = ?`,
+  ).bind(offerId).first<JsonRow>();
+  if (!row || typeof row.fetchedAt !== "string") return null;
+  const payload = parseJsonValue(row.payloadJson, null);
+  return payload && typeof payload === "object" && !Array.isArray(payload)
+    ? { payload: payload as JsonRow, fetchedAt: row.fetchedAt }
+    : null;
+}
+
+export async function putCachedOneBoundItem(env: Env, offerId: string, payload: JsonRow): Promise<void> {
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS onebound_item_cache (
+      offer_id TEXT PRIMARY KEY,
+      payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+      fetched_at TEXT NOT NULL
+    )`,
+  ).run();
+  await env.DB.prepare(
+    `INSERT INTO onebound_item_cache (offer_id, payload_json, fetched_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(offer_id) DO UPDATE SET payload_json = excluded.payload_json, fetched_at = excluded.fetched_at`,
+  ).bind(offerId, jsonText(payload, {}), String(payload.cachedAt ?? new Date().toISOString())).run();
+}
+
 export async function getProductImage(
   env: Env,
   productId: string,
@@ -868,12 +931,23 @@ export async function dashboardSummary(env: Env, viewer?: ProductViewer): Promis
             SUM(CASE WHEN status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount
        FROM products WHERE status != 'archived'${productScope}`,
   ).bind(...productBindings).first<JsonRow>();
-  const [offerCount, userCount, recentResult] = await env.DB.batch<JsonRow>([
-    viewer?.role === "admin"
-      ? env.DB.prepare("SELECT COUNT(*) AS count FROM products WHERE catalog_source = '1688' AND status != 'archived'")
-      : env.DB.prepare(
+  let offerCount: { count?: number } | null = null;
+  try {
+    offerCount = viewer?.role === "admin"
+      ? await env.DB.prepare("SELECT COUNT(*) AS count FROM products WHERE catalog_source = '1688' AND status != 'archived'").first<JsonRow>()
+      : await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM products WHERE catalog_source = '1688' AND status != 'archived' AND created_by = ?",
-      ).bind(viewer?.id ?? ""),
+      ).bind(viewer?.id ?? "").first<JsonRow>();
+  } catch (error) {
+    // Keep older remote databases usable until the catalog migration is applied.
+    console.warn(JSON.stringify({ level: "warn", event: "dashboard_catalog_source_fallback", error: error instanceof Error ? error.message : String(error) }));
+    offerCount = viewer?.role === "admin"
+      ? await env.DB.prepare("SELECT COUNT(*) AS count FROM products WHERE source_platform = '1688' AND status != 'archived'").first<JsonRow>()
+      : await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM products WHERE source_platform = '1688' AND status != 'archived' AND created_by = ?",
+      ).bind(viewer?.id ?? "").first<JsonRow>();
+  }
+  const [userCount, recentResult] = await env.DB.batch<JsonRow>([
     viewer?.role === "admin"
       ? env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE is_active = 1")
       : env.DB.prepare("SELECT 1 AS count"),
@@ -887,7 +961,7 @@ export async function dashboardSummary(env: Env, viewer?: ProductViewer): Promis
   ]);
   return {
     ...(productCounts ?? {}),
-    offerCount: offerCount.results[0]?.count ?? 0,
+    offerCount: offerCount?.count ?? 0,
     activeUsers: userCount.results[0]?.count ?? 0,
     recentProducts: recentResult.results,
   };

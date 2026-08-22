@@ -48,6 +48,41 @@ export type ShopifyStore = {
   updatedAt: string;
 };
 
+export type ShopifyRemoteProduct = {
+  id: string;
+  title: string;
+  handle: string | null;
+  status: string;
+  vendor: string | null;
+  productType: string | null;
+  updatedAt: string | null;
+  publishedAt: string | null;
+  totalInventory: number | null;
+  priceMin: number | null;
+  priceMax: number | null;
+  currency: string;
+  featuredImage: { url: string; altText: string | null } | null;
+  variantCount: number;
+  tags: string[];
+  descriptionHtml?: string;
+  templateSuffix?: string | null;
+  giftCard?: boolean;
+  seo?: { title: string | null; description: string | null };
+  options?: Array<{ name: string; values: string[] }>;
+  images?: Array<{ id: string; url: string; altText: string | null; position: number }>;
+  variants?: Array<{
+    id: string;
+    title: string;
+    sku: string | null;
+    barcode: string | null;
+    price: number | null;
+    compareAtPrice: number | null;
+    inventoryQuantity: number | null;
+    selectedOptions: Array<{ name: string; value: string }>;
+    imageUrl: string | null;
+  }>;
+};
+
 export type CreditTransaction = {
   id: string;
   amount: number;
@@ -162,6 +197,27 @@ export type OneBoundItemPreview = {
   categoryId?: string | null;
   location?: string | null;
   shortDescription?: string | null;
+  descriptionHtml?: string | null;
+  itemWeight?: string | null;
+  itemSize?: string | null;
+  shippingTo?: string | null;
+  videoUrl?: string | null;
+  sellerNick?: string | null;
+  variants: Array<{
+    externalId?: string | null;
+    sku?: string | null;
+    name?: string | null;
+    imageUrl?: string | null;
+    price?: number | null;
+    stock?: number | null;
+    attributes?: Record<string, unknown>;
+    raw?: Record<string, unknown>;
+  }>;
+  propertyImages?: Array<{ propertiesKey?: string | null; url: string }>;
+  videos?: Array<{ url: string; posterUrl?: string | null; title?: string | null }>;
+  rawResponse?: Record<string, unknown>;
+  cachedAt?: string | null;
+  fromCache?: boolean;
   properties: Array<{ name: string; value: string }>;
   priceTiers: Array<{ minQuantity?: number | null; price?: number | null; originalPrice?: number | null }>;
   raw: Record<string, unknown>;

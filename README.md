@@ -6,7 +6,7 @@ Mailshop 是一套面向跨境电商选品与货源管理的轻量级商品中�
 
 ## 核心功能
 
-- 支持 Google 账号登录；新账号自动获得 10,000 积分，站内和扩展搜图每次消耗 10 积分
+- 支持 Google 账号登录；新账号自动获得 10,000 积分，以图搜图每次消耗 20 积分，AI 请求和商品详情每次消耗 5 积分
 - 普通用户登录后只使用仪表台、商品管理和积分管理；系统配置与账号管理仅管理员可见且由服务端角色校验保护
 - 管理 Shopify 商品、SKU、选项、价格、库存、图片和视频
 - 为一个商品关联多个 1688 候选货源，并记录匹配状态、分数和 SKU 映射
@@ -58,6 +58,7 @@ Mailshop 是一套面向跨境电商选品与货源管理的轻量级商品中�
 - `INGEST_API_KEY`：爬虫接口的 Bearer Token
 - `BOOTSTRAP_TOKEN`：首次创建管理员时使用，初始化成功后接口会拒绝再次执行
 - `SETTINGS_ENCRYPTION_KEY`：独立加密 OneBound 等集成凭据，轮换初始化令牌时不会破坏已保存配置
+- `SERVER_AI_BASE_URL`、`SERVER_AI_API_KEY`、`SERVER_AI_MODEL_ID`：可选的服务器托管 AI 凭据；未在后台保存 AI 配置时作为兜底使用
 
 ## 本地开发
 
@@ -84,6 +85,9 @@ npm run deploy
 npx wrangler secret put INGEST_API_KEY
 npx wrangler secret put BOOTSTRAP_TOKEN
 npx wrangler secret put SETTINGS_ENCRYPTION_KEY
+npx wrangler secret put SERVER_AI_BASE_URL
+npx wrangler secret put SERVER_AI_API_KEY
+npx wrangler secret put SERVER_AI_MODEL_ID
 ```
 
 Google OAuth、积分规则、回调地址和扩展 Origin 配置见 [`GOOGLE_AUTH.md`](./GOOGLE_AUTH.md)。Google 凭据在后台“系统设置”中保存。

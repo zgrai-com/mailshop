@@ -20,6 +20,7 @@ import { useState } from "react";
 import { api, toQuery } from "../api";
 import type { OneBoundItemPreview, SearchTask, SearchTaskOptions, SearchTaskResult, SearchTaskRun } from "../types";
 import { ImageCompareModal } from "./ImageCompareModal";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SearchResultDetailModal } from "./SearchResultDetailModal";
 
 const labels = { unqueried: "未查询", queried: "已查询", imported: "已导入" } as const;
@@ -113,13 +114,38 @@ function queryInput(draft: QueryDraft): SearchTaskOptions & { imageId: string } 
 
 function runParameterText(run: SearchTaskRun): string[] {
   const options = run.options;
+  const sortLabels: Record<SearchTaskOptions["sort"], string> = {
+    _sale: "销量高到低",
+    sale: "销量低到高",
+    bid2: "总价低到高",
+    _bid2: "总价高到低",
+  };
   return [
-    options.sort,
+    sortLabels[options.sort] ?? options.sort,
     `${options.limit} 条/页`,
-    options.lang.toUpperCase(),
     options.cache === "yes" ? "使用缓存" : "最新数据",
-    options.version ? `版本 ${options.version}` : "",
   ].filter(Boolean);
+}
+
+type RunGroup = {
+  key: string;
+  imageId: string;
+  imageUrl: string;
+  runs: SearchTaskRun[];
+};
+
+function groupRuns(runs: SearchTaskRun[]): RunGroup[] {
+  const groups = new Map<string, RunGroup>();
+  for (const run of runs) {
+    const key = run.imageId || run.imageUrl;
+    const group = groups.get(key) ?? { key, imageId: run.imageId, imageUrl: run.imageUrl, runs: [] };
+    group.runs.push(run);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    runs: [...group.runs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+  }));
 }
 
 export function SearchTasksPage({
@@ -139,11 +165,13 @@ export function SearchTasksPage({
   onImport,
 }: Props) {
   const [collapsedRunIds, setCollapsedRunIds] = useState<Set<string>>(() => new Set());
+  const [selectedRunIds, setSelectedRunIds] = useState<Record<string, string>>({});
   const [drafts, setDrafts] = useState<Record<string, QueryDraft>>({});
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [importingKey, setImportingKey] = useState<string | null>(null);
-  const [detailState, setDetailState] = useState<{ result: SearchTaskResult; detail: OneBoundItemPreview | null; loading: boolean; error: string | null } | null>(null);
+  const [detailState, setDetailState] = useState<{ result: SearchTaskResult; task: SearchTask; run?: SearchTaskRun; detail: OneBoundItemPreview | null; loading: boolean; error: string | null } | null>(null);
   const [compareState, setCompareState] = useState<{ originalUrl: string; resultUrl: string; title: string } | null>(null);
+  const [previewState, setPreviewState] = useState<{ url: string; title: string } | null>(null);
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const firstItem = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const lastItem = Math.min(page * pageSize, total);
@@ -164,6 +192,10 @@ export function SearchTasksPage({
       else next.add(runId);
       return next;
     });
+  }
+
+  function selectRun(group: RunGroup, runId: string) {
+    setSelectedRunIds((current) => ({ ...current, [group.key]: runId }));
   }
 
   async function runQuery(task: SearchTask, queryDraft = draft(task)) {
@@ -187,14 +219,15 @@ export function SearchTasksPage({
     }
   }
 
-  async function openDetail(result: SearchTaskResult, run: SearchTaskRun) {
+  async function openDetail(taskForDetail: SearchTask, result: SearchTaskResult, run: SearchTaskRun, forceRefresh = false) {
     if (!result.offerId) return;
-    setDetailState({ result, detail: null, loading: true, error: null });
+    setDetailState((current) => ({ result, task: taskForDetail, run, detail: forceRefresh ? current?.detail ?? null : null, loading: true, error: null }));
     try {
-      const response = await api<{ item: OneBoundItemPreview }>(`/api/integrations/onebound/items/${encodeURIComponent(result.offerId)}${toQuery({ cache: run.options.cache, lang: run.options.lang })}`);
-      setDetailState({ result, detail: response.item, loading: false, error: null });
+      const query = toQuery({ cache: run.options.cache, lang: run.options.lang, ...(forceRefresh ? { fresh: "1" } : {}) });
+      const response = await api<{ item: OneBoundItemPreview }>(`/api/integrations/onebound/items/${encodeURIComponent(result.offerId)}${query}`);
+      setDetailState({ result, task: taskForDetail, run, detail: response.item, loading: false, error: null });
     } catch (caught) {
-      setDetailState({ result, detail: null, loading: false, error: caught instanceof Error ? caught.message : "详情请求失败" });
+      setDetailState({ result, task: taskForDetail, detail: null, loading: false, error: caught instanceof Error ? caught.message : "详情请求失败" });
     }
   }
 
@@ -220,6 +253,7 @@ export function SearchTasksPage({
 
     {loading && tasks.length === 0 ? <div className="search-task-state"><LoaderCircle className="spin" size={20} />正在加载查询任务</div> : tasks.length === 0 ? <div className="search-task-state"><Search size={22} /><strong>{hasFilters ? "没有符合条件的任务" : "暂无查询任务"}</strong><span>{hasFilters ? "尝试修改关键词或任务状态。" : "从浏览器插件提交任务后，会同步显示在这里。"}</span>{hasFilters && <button className="button quiet compact" type="button" onClick={clearFilters}>清除筛选</button>}</div> : <div className={`search-task-list ${loading ? "loading" : ""}`} aria-busy={loading}>{tasks.map((task) => {
       const queryDraft = draft(task);
+      const selectedImage = task.images.find((image) => image.id === queryDraft.imageId) ?? task.images[0] ?? null;
       const isRunning = task.querying || runningTaskId === task.id;
       return <article className="search-task-card" key={task.id}>
         <div className="search-task-main"><div className={`search-task-status ${task.status}`}>{task.status === "unqueried" ? <Clock3 size={15} /> : <CheckCircle2 size={15} />}{labels[task.status]}</div>{isRunning && <span className="search-task-running"><LoaderCircle className="spin" size={14} />查询中</span>}<h2 title={task.productTitle || task.name}>{task.productTitle || task.name}</h2><time dateTime={task.updatedAt}>{new Date(task.updatedAt).toLocaleString("zh-CN")}</time></div>
@@ -227,35 +261,38 @@ export function SearchTasksPage({
         {task.description && <p className="search-task-description">{task.description}</p>}
 
         <section className="task-query-workbench" aria-label={`${task.name} 查询配置`}>
-          <div className="task-query-images"><header><div><span>SOURCE IMAGES</span><strong>选择查询图片</strong></div><small>{task.images.length} 张</small></header><div>{task.images.map((image, index) => <button className={image.id === queryDraft.imageId ? "selected" : ""} type="button" key={image.id} onClick={() => patchDraft(task, { imageId: image.id })} title={`选择第 ${index + 1} 张图片`} aria-label={`选择第 ${index + 1} 张图片`}><img src={proxiedImageUrl(image.url)} alt={image.alt || `源图片 ${index + 1}`} loading="lazy" /><span>{String(index + 1).padStart(2, "0")}</span></button>)}</div></div>
-          <div className="task-query-config"><header><div><span>SEARCH CONFIG</span><strong>查询参数</strong></div><small>本次消耗 10 积分</small></header><div className="task-query-fields">
+          <div className="task-query-images"><header><div><span>SOURCE IMAGES</span><strong>选择查询图片</strong></div><small>{task.images.length} 张</small></header><div>{task.images.map((image, index) => <div className="task-query-image-item" key={image.id}><button className={image.id === queryDraft.imageId ? "selected" : ""} type="button" onClick={() => patchDraft(task, { imageId: image.id })} title={`选择第 ${index + 1} 张图片`} aria-label={`选择第 ${index + 1} 张图片`}><img src={proxiedImageUrl(image.url)} alt={image.alt || `源图片 ${index + 1}`} loading="lazy" /><span>{String(index + 1).padStart(2, "0")}</span></button></div>)}</div></div>
+          <div className="task-query-preview"><header><div><span>IMAGE PREVIEW</span><strong>当前预览</strong></div>{selectedImage && <small>{task.images.findIndex((image) => image.id === selectedImage.id) + 1} / {task.images.length}</small>}</header>{selectedImage ? <button className="task-query-preview-image" type="button" onClick={() => setPreviewState({ url: selectedImage.url, title: selectedImage.alt || selectedImage.title || "查询图片预览" })} aria-label="查看当前查询图片大图" title="查看大图"><img src={proxiedImageUrl(selectedImage.url)} alt={selectedImage.alt || selectedImage.title || "当前查询图片"} /></button> : <div className="task-query-preview-empty"><ImageIcon size={26} /><span>暂无图片</span></div>}</div>
+          <div className="task-query-config"><header><div><span>SEARCH CONFIG</span><strong>查询参数</strong></div><small>本次消耗 20 积分</small></header><div className="task-query-fields">
             <label><span>排序</span><select value={queryDraft.sort} onChange={(event) => patchDraft(task, { sort: event.target.value as QueryDraft["sort"] })}><option value="_sale">销量高到低</option><option value="sale">销量低到高</option><option value="bid2">总价低到高</option><option value="_bid2">总价高到低</option></select></label>
             <label><span>页码</span><input type="number" min={1} max={1000} value={queryDraft.page} onChange={(event) => patchDraft(task, { page: Math.max(1, Number(event.target.value) || 1) })} /></label>
             <label><span>每页</span><select value={queryDraft.limit} onChange={(event) => patchDraft(task, { limit: Number(event.target.value) })}><option value={10}>10</option><option value={20}>20</option><option value={30}>30</option><option value={40}>40</option><option value={50}>50</option></select></label>
-            <label><span>语言</span><select value={queryDraft.lang} onChange={(event) => patchDraft(task, { lang: event.target.value as QueryDraft["lang"] })}><option value="cn">中文</option><option value="en">English</option><option value="ru">Русский</option></select></label>
             <label><span>缓存</span><select value={queryDraft.cache} onChange={(event) => patchDraft(task, { cache: event.target.value as QueryDraft["cache"] })}><option value="no">最新数据</option><option value="yes">使用缓存</option></select></label>
-            <label><span>API 版本</span><input value={queryDraft.version} onChange={(event) => patchDraft(task, { version: event.target.value })} placeholder="可留空" /></label>
           </div><button className="button primary task-query-submit" type="button" onClick={() => void runQuery(task)} disabled={isRunning || !queryDraft.imageId}>{isRunning ? <LoaderCircle className="spin" size={17} /> : <Search size={17} />}{isRunning ? "正在查询" : task.runs.length ? "发起新一轮查询" : "开始查询"}</button></div>
         </section>
 
-        <section className="task-run-history" aria-label={`${task.name} 查询轮次`}><header><div><span>QUERY ROUNDS</span><strong>查询记录</strong></div><small>{task.runs.length} 轮</small></header>{task.runs.length === 0 ? <div className="task-run-empty"><Images size={20} /><span>尚未查询，选择图片并填写参数后开始第一轮。</span></div> : <div className="task-run-list">{task.runs.map((run, index) => {
-          const collapsed = collapsedRunIds.has(run.id);
-          const completed = run.status === "completed";
-          const originalUrl = run.imageUrl;
-          const pendingOfferIds = run.results.flatMap((result) => !result.imported && result.offerId ? [result.offerId] : []);
-          return <section className={`task-run ${run.status}`} key={run.id}>
-            <header className="task-run-header"><div className="task-run-source"><img src={proxiedImageUrl(originalUrl)} alt={`第 ${task.runs.length - index} 轮查询原图`} /><div><span>第 {task.runs.length - index} 轮 · 第 {run.page} 页</span><strong>{run.status === "running" ? "正在查询" : run.status === "failed" ? "查询失败" : `本页 ${run.resultCount} 条${run.totalResultCount != null ? ` / 共 ${run.totalResultCount} 条` : ""}`}</strong><small>{new Date(run.createdAt).toLocaleString("zh-CN")}</small></div></div><div className="task-run-actions">{completed && <><button className="button quiet compact" type="button" onClick={() => void runQuery(task, draftForRun(run, Math.max(1, run.page - 1)))} disabled={isRunning || run.page <= 1}><ChevronLeft size={15} />上一页</button><button className="button quiet compact" type="button" onClick={() => void runQuery(task, draftForRun(run, run.page + 1))} disabled={isRunning}>下一页<ChevronRight size={15} /></button>{pendingOfferIds.length > 0 && <button className="button quiet compact" type="button" onClick={() => void importResults(task.id, run.id, pendingOfferIds)} disabled={Boolean(importingKey)}><PackagePlus size={15} />{importingKey === `${run.id}:all` ? "导入中" : "导入本页"}</button>}</>}<button className="button quiet compact" type="button" onClick={() => toggleRun(run.id)} aria-expanded={!collapsed}>{collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}{collapsed ? "展开" : "收起"}</button></div></header>
-            <div className="task-run-params">{runParameterText(run).map((text) => <span key={text}>{text}</span>)}</div>
-            {run.error && <p className="search-task-error">{run.error}</p>}
-            {!collapsed && completed && <div className="search-task-results">{run.results.map((result, resultIndex) => {
+        <section className="task-run-history" aria-label={`${task.name} 查询记录`}><header><div><span>QUERY ROUNDS</span><strong>查询记录</strong></div><small>{groupRuns(task.runs).length} 条图片记录</small></header>{task.runs.length === 0 ? <div className="task-run-empty"><Images size={20} /><span>尚未查询，选择图片并填写参数后开始第一轮。</span></div> : <div className="task-run-list">{groupRuns(task.runs).map((group) => {
+          const selectedRun = group.runs.find((item) => item.id === selectedRunIds[group.key]) ?? group.runs[0];
+          const collapsed = collapsedRunIds.has(group.key);
+          const completed = selectedRun.status === "completed";
+          const originalUrl = group.imageUrl;
+          const pendingOfferIds = selectedRun.results.flatMap((result) => !result.imported && result.offerId ? [result.offerId] : []);
+          const pages = [...new Set(group.runs.map((item) => item.page))].sort((a, b) => a - b);
+          const totalPages = Math.max(...group.runs.map((item) => item.totalResultCount && item.pageSize ? Math.ceil(item.totalResultCount / item.pageSize) : item.page), 0);
+          const remainingPages = Math.max(0, totalPages - pages.length);
+          return <section className={`task-run task-run-group ${selectedRun.status}`} key={group.key}>
+            <header className="task-run-header"><div className="task-run-source"><button className="task-run-source-image" type="button" onClick={() => setPreviewState({ url: originalUrl, title: "查询原图" })} aria-label="放大查询原图" title="放大查看"><img src={proxiedImageUrl(originalUrl)} alt="查询原图" /></button><div><span>已查询 {pages.join("、")} 页{remainingPages > 0 ? ` · 还有 ${remainingPages} 页未查询` : ""}</span><strong>{selectedRun.status === "running" ? "正在查询" : selectedRun.status === "failed" ? "查询失败" : `本页 ${selectedRun.resultCount} 条${selectedRun.totalResultCount != null ? ` / 共 ${selectedRun.totalResultCount} 条` : ""}`}</strong><small>{new Date(selectedRun.createdAt).toLocaleString("zh-CN")}</small><div className="task-run-params">{runParameterText(selectedRun).map((text) => <span key={text}>{text}</span>)}</div></div></div><div className="task-run-actions">{completed && <><button className="button quiet compact" type="button" onClick={() => void runQuery(task, draftForRun(selectedRun, Math.max(1, selectedRun.page - 1)))} disabled={isRunning || selectedRun.page <= 1}><ChevronLeft size={15} />上一页</button><button className="button quiet compact" type="button" onClick={() => void runQuery(task, draftForRun(selectedRun, selectedRun.page + 1))} disabled={isRunning}>下一页<ChevronRight size={15} /></button>{pendingOfferIds.length > 0 && <button className="button quiet compact" type="button" onClick={() => void importResults(task.id, selectedRun.id, pendingOfferIds)} disabled={Boolean(importingKey)}><PackagePlus size={15} />{importingKey === `${selectedRun.id}:all` ? "导入中" : "导入本页"}</button>}</>}<button className="button quiet compact" type="button" onClick={() => toggleRun(group.key)} aria-expanded={!collapsed}>{collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}{collapsed ? "展开" : "收起"}</button></div></header>
+            {group.runs.length > 1 && <div className="task-run-page-tabs" role="tablist" aria-label="已查询页码">{group.runs.map((run) => <button className={run.id === selectedRun.id ? "active" : ""} type="button" key={run.id} onClick={() => selectRun(group, run.id)} role="tab" aria-selected={run.id === selectedRun.id}>第 {run.page} 页</button>)}</div>}
+            {selectedRun.error && <p className="search-task-error">{selectedRun.error}</p>}
+            {!collapsed && completed && <div className="search-task-results">{selectedRun.results.map((result, resultIndex) => {
               const detailUrl = resultDetailUrl(result);
-              const importKey = `${run.id}:${result.offerId}`;
-              return <article className={`search-task-result ${result.imported ? "imported" : ""}`} key={`${run.id}-${result.offerId || resultIndex}`}>
+              const importKey = `${selectedRun.id}:${result.offerId}`;
+              return <article className={`search-task-result ${result.imported ? "imported" : ""}`} key={`${selectedRun.id}-${result.offerId || resultIndex}`}>
                 <button className="search-task-result-image" type="button" onClick={() => result.imageUrl && setCompareState({ originalUrl, resultUrl: result.imageUrl, title: result.title || result.offerId || "图片对比" })} disabled={!result.imageUrl} aria-label="对比图片"><ImageIcon size={24} aria-hidden="true" />{result.imageUrl && <img src={proxiedImageUrl(result.imageUrl)} alt={result.title || "1688 商品图片"} loading="lazy" />}{result.imported && <span>已导入</span>}</button>
                 <div className="search-task-result-copy"><strong>{result.title || result.offerId || "未命名商品"}</strong><small>{result.supplierName || "1688"}{result.location ? ` · ${result.location}` : ""}</small><div><b>{formatPrice(result)}</b>{result.sales != null && <span>销量 {result.sales}</span>}{result.offerId && <code>{result.offerId}</code>}</div></div>
-                <div className="search-task-result-actions"><button type="button" onClick={() => result.offerId && void importResults(task.id, run.id, [result.offerId])} disabled={!result.offerId || result.imported || Boolean(importingKey)}>{result.imported ? <CheckCircle2 size={14} /> : <PackagePlus size={14} />}{result.imported ? "已导入" : importingKey === importKey ? "导入中" : "导入到商品库"}</button><button type="button" onClick={() => void openDetail(result, run)} disabled={!result.offerId}><FileSearch size={14} />查询详情</button><button type="button" onClick={() => result.imageUrl && setCompareState({ originalUrl, resultUrl: result.imageUrl, title: result.title || result.offerId || "图片对比" })} disabled={!result.imageUrl}><Images size={14} />对比图片</button>{detailUrl && <a href={detailUrl} target="_blank" rel="noreferrer" aria-label="打开 1688 商品页" title="打开 1688 商品页"><ExternalLink size={14} /></a>}</div>
+                <div className="search-task-result-actions"><button type="button" onClick={() => result.offerId && void importResults(task.id, selectedRun.id, [result.offerId])} disabled={!result.offerId || result.imported || Boolean(importingKey)}>{result.imported ? <CheckCircle2 size={14} /> : <PackagePlus size={14} />}{result.imported ? "已导入" : importingKey === importKey ? "导入中" : "导入到商品库"}</button><button type="button" onClick={() => void openDetail(task, result, selectedRun)} disabled={!result.offerId}><FileSearch size={14} />查询详情</button><button type="button" onClick={() => result.imageUrl && setCompareState({ originalUrl, resultUrl: result.imageUrl, title: result.title || result.offerId || "图片对比" })} disabled={!result.imageUrl}><Images size={14} />对比图片</button>{detailUrl && <a href={detailUrl} target="_blank" rel="noreferrer" aria-label="打开 1688 商品页" title="打开 1688 商品页"><ExternalLink size={14} />打开1688</a>}</div>
               </article>;
-            })}{run.results.length === 0 && <div className="task-run-empty"><Search size={20} /><span>这一页没有查询到匹配商品。</span></div>}</div>}
+            })}{selectedRun.results.length === 0 && <div className="task-run-empty"><Search size={20} /><span>这一页没有查询到匹配商品。</span></div>}</div>}
           </section>;
         })}</div>}</section>
       </article>;
@@ -263,7 +300,8 @@ export function SearchTasksPage({
 
     {total > 0 && <footer className="search-task-pagination"><span>{firstItem}-{lastItem} / {total}</span><nav aria-label="查询任务分页"><button className="icon-button" type="button" disabled={page <= 1 || loading} onClick={() => onPageChange(page - 1)} aria-label="上一页" title="上一页"><ChevronLeft size={18} /></button><div className="search-task-page-numbers">{paginationItems(page, pageCount).map((item) => typeof item === "number" ? <button className={item === page ? "active" : ""} type="button" key={item} onClick={() => onPageChange(item)} disabled={loading} aria-label={`第 ${item} 页`} aria-current={item === page ? "page" : undefined}>{item}</button> : <span key={item}>...</span>)}</div><button className="icon-button" type="button" disabled={page >= pageCount || loading} onClick={() => onPageChange(page + 1)} aria-label="下一页" title="下一页"><ChevronRight size={18} /></button></nav></footer>}
 
-    {detailState && <SearchResultDetailModal {...detailState} onClose={() => setDetailState(null)} />}
+    {detailState && <SearchResultDetailModal {...detailState} onRefresh={() => { const run = detailState.run ?? detailState.task.runs.find((item) => item.results.some((candidate) => candidate.offerId === detailState.result.offerId)); if (run) void openDetail(detailState.task, detailState.result, run, true); }} onClose={() => setDetailState(null)} />}
     {compareState && <ImageCompareModal {...compareState} onClose={() => setCompareState(null)} />}
+    {previewState && <ImagePreviewModal {...previewState} onClose={() => setPreviewState(null)} />}
   </section>;
 }

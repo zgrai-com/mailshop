@@ -11,6 +11,13 @@ type AiSettingsRow = {
   updated_at: string | null;
 };
 
+function environmentCredentials(env: Env): AiSettingsInput | null {
+  const baseUrl = String(env.SERVER_AI_BASE_URL || env.AI_BASE_URL || "").trim();
+  const apiKey = String(env.SERVER_AI_API_KEY || env.AI_API_KEY || "").trim();
+  const modelId = String(env.SERVER_AI_MODEL_ID || env.AI_MODEL_ID || "").trim();
+  return baseUrl && apiKey && modelId ? { baseUrl, apiKey, modelId } : null;
+}
+
 export type AiClassification = {
   id: string;
   keep: boolean;
@@ -61,7 +68,17 @@ export async function getAiSettings(env: Env): Promise<{
 }> {
   const row = await readSettingsRow(env);
   const configured = Boolean(row?.base_url_ciphertext && row.api_key_ciphertext && row.model_id_ciphertext);
-  if (!configured) return { configured: false, baseUrl: "", apiKeyHint: null, modelId: null, updatedAt: row?.updated_at ?? null };
+  if (!configured) {
+    const credentials = environmentCredentials(env);
+    if (!credentials) return { configured: false, baseUrl: "", apiKeyHint: null, modelId: null, updatedAt: row?.updated_at ?? null };
+    return {
+      configured: true,
+      baseUrl: credentials.baseUrl,
+      apiKeyHint: credentials.apiKey.length > 10 ? `${credentials.apiKey.slice(0, 4)}...${credentials.apiKey.slice(-4)}` : "server environment",
+      modelId: credentials.modelId,
+      updatedAt: null,
+    };
+  }
   const [baseUrl, modelId, apiKey] = await Promise.all([
     decryptSetting(env, row!.base_url_ciphertext!, "ai_settings_invalid"),
     decryptSetting(env, row!.model_id_ciphertext!, "ai_settings_invalid"),
@@ -97,6 +114,8 @@ export async function saveAiSettings(env: Env, input: AiSettingsInput, userId: s
 
 async function readCredentials(env: Env): Promise<AiSettingsInput> {
   const row = await readSettingsRow(env);
+  const fallback = environmentCredentials(env);
+  if (fallback && (!row?.base_url_ciphertext || !row.api_key_ciphertext || !row.model_id_ciphertext)) return fallback;
   if (!row?.base_url_ciphertext || !row.api_key_ciphertext || !row.model_id_ciphertext) {
     throw new ApiError(503, "AI 模型尚未配置", "ai_not_configured");
   }
