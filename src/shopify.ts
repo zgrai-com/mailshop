@@ -47,6 +47,259 @@ type ShopifyProduct = {
   images: Array<{ r2Key?: string | null; url?: string | null; contentType?: string | null; altText?: string | null }>;
 };
 
+export type ShopifyProductListItem = {
+  id: string;
+  title: string;
+  handle: string | null;
+  status: string;
+  vendor: string | null;
+  productType: string | null;
+  updatedAt: string | null;
+  publishedAt: string | null;
+  totalInventory: number | null;
+  priceMin: number | null;
+  priceMax: number | null;
+  currency: string;
+  featuredImage: { url: string; altText: string | null } | null;
+  variantCount: number;
+  tags: string[];
+};
+
+export type ShopifyProductDetail = ShopifyProductListItem & {
+  descriptionHtml: string;
+  templateSuffix: string | null;
+  giftCard: boolean;
+  seo: { title: string | null; description: string | null };
+  options: Array<{ name: string; values: string[] }>;
+  images: Array<{ id: string; url: string; altText: string | null; position: number }>;
+  variants: Array<{
+    id: string;
+    title: string;
+    sku: string | null;
+    barcode: string | null;
+    price: number | null;
+    compareAtPrice: number | null;
+    inventoryQuantity: number | null;
+    selectedOptions: Array<{ name: string; value: string }>;
+    imageUrl: string | null;
+  }>;
+};
+
+export type ShopifyProductListQuery = {
+  storeId: string;
+  search: string;
+  status: "all" | "ACTIVE" | "DRAFT" | "ARCHIVED" | "UNLISTED";
+  productType: string;
+  vendor: string;
+  inventory: "all" | "in_stock" | "out_of_stock";
+  sortKey: "TITLE" | "UPDATED_AT" | "CREATED_AT" | "INVENTORY_TOTAL" | "PRICE" | "PRODUCT_TYPE" | "VENDOR";
+  reverse: boolean;
+  first: number;
+  after: string | null;
+};
+
+export type ShopifyProductUpdateInput = {
+  storeId: string;
+  productId: string;
+  title: string;
+  descriptionHtml: string;
+  handle: string;
+  vendor: string;
+  productType: string;
+  tags: string[];
+  status: "ACTIVE" | "DRAFT" | "ARCHIVED" | "UNLISTED";
+  templateSuffix: string;
+  seoTitle: string;
+  seoDescription: string;
+  mediaUrls: string[];
+  variants: Array<{
+    id: string;
+    price: string;
+    compareAtPrice: string;
+    sku: string;
+    barcode: string;
+  }>;
+};
+
+const PRODUCT_FIELDS = `
+  id title handle status vendor productType updatedAt publishedAt totalInventory tags
+  descriptionHtml templateSuffix
+  priceRangeV2 { minVariantPrice { amount currencyCode } maxVariantPrice { amount currencyCode } }
+  featuredImage { url altText }
+  seo { title description }
+  options { name optionValues { name } }
+  images(first: 250) { nodes { id url altText } }
+  variants(first: 250) {
+    nodes {
+      id title sku barcode price compareAtPrice inventoryQuantity
+      selectedOptions { name value }
+      image { url }
+    }
+  }
+`;
+
+type RawShopifyProduct = {
+  id: string;
+  title: string;
+  handle?: string | null;
+  status?: string | null;
+  vendor?: string | null;
+  productType?: string | null;
+  updatedAt?: string | null;
+  publishedAt?: string | null;
+  totalInventory?: number | null;
+  tags?: string[];
+  descriptionHtml?: string | null;
+  templateSuffix?: string | null;
+  priceRangeV2?: { minVariantPrice?: { amount?: string; currencyCode?: string }; maxVariantPrice?: { amount?: string } };
+  featuredImage?: { url?: string; altText?: string | null } | null;
+  seo?: { title?: string | null; description?: string | null } | null;
+  options?: Array<{ name?: string; optionValues?: Array<{ name?: string }> }>;
+  images?: { nodes?: Array<{ id: string; url: string; altText?: string | null }> };
+  variants?: { nodes?: Array<{ id: string; title: string; sku?: string | null; barcode?: string | null; price?: string | null; compareAtPrice?: string | null; inventoryQuantity?: number | null; selectedOptions?: Array<{ name: string; value: string }>; image?: { url?: string } | null }> };
+};
+
+function numberOrNull(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function mapShopifyProduct(raw: RawShopifyProduct): ShopifyProductDetail {
+  const min = numberOrNull(raw.priceRangeV2?.minVariantPrice?.amount);
+  const max = numberOrNull(raw.priceRangeV2?.maxVariantPrice?.amount);
+  const variants = raw.variants?.nodes ?? [];
+  return {
+    id: raw.id,
+    title: raw.title,
+    handle: raw.handle ?? null,
+    status: raw.status ?? "DRAFT",
+    vendor: raw.vendor ?? null,
+    productType: raw.productType ?? null,
+    updatedAt: raw.updatedAt ?? null,
+    publishedAt: raw.publishedAt ?? null,
+    totalInventory: raw.totalInventory ?? null,
+    priceMin: min,
+    priceMax: max,
+    currency: raw.priceRangeV2?.minVariantPrice?.currencyCode ?? "USD",
+    featuredImage: raw.featuredImage?.url ? { url: raw.featuredImage.url, altText: raw.featuredImage.altText ?? null } : null,
+    variantCount: variants.length,
+    tags: raw.tags ?? [],
+    descriptionHtml: raw.descriptionHtml ?? "",
+    templateSuffix: raw.templateSuffix ?? null,
+    // Shopify's current Product schema no longer exposes `giftCard`.
+    // Keep the response shape backwards-compatible for existing clients.
+    giftCard: false,
+    seo: { title: raw.seo?.title ?? null, description: raw.seo?.description ?? null },
+    options: (raw.options ?? []).map((option) => ({ name: option.name ?? "", values: (option.optionValues ?? []).map((value) => value.name ?? "").filter(Boolean) })).filter((option) => option.name),
+    images: (raw.images?.nodes ?? []).map((image, index) => ({ id: image.id, url: image.url, altText: image.altText ?? null, position: index })),
+    variants: variants.map((variant) => ({
+      id: variant.id,
+      title: variant.title,
+      sku: variant.sku ?? null,
+      barcode: variant.barcode ?? null,
+      price: numberOrNull(variant.price),
+      compareAtPrice: numberOrNull(variant.compareAtPrice),
+      inventoryQuantity: variant.inventoryQuantity ?? null,
+      selectedOptions: variant.selectedOptions ?? [],
+      imageUrl: variant.image?.url ?? null,
+    })),
+  };
+}
+
+function shopifyProductSearch(input: ShopifyProductListQuery): string | null {
+  const parts: string[] = [];
+  if (input.search.trim()) parts.push(input.search.trim());
+  if (input.status !== "all") parts.push(`status:${input.status.toLowerCase()}`);
+  if (input.productType.trim()) parts.push(`product_type:\"${input.productType.trim().replaceAll('"', '\\\"')}\"`);
+  if (input.vendor.trim()) parts.push(`vendor:\"${input.vendor.trim().replaceAll('"', '\\\"')}\"`);
+  if (input.inventory === "in_stock") parts.push("inventory_total:>0");
+  if (input.inventory === "out_of_stock") parts.push("inventory_total:<=0");
+  return parts.length ? parts.join(" ") : null;
+}
+
+export async function listShopifyProducts(env: Env, userId: string, input: ShopifyProductListQuery): Promise<{ products: ShopifyProductListItem[]; pageInfo: { hasNextPage: boolean; endCursor: string | null }; store: ShopifyStoreSummary }> {
+  const store = await getStoreRow(env, input.storeId, userId);
+  const credentials = await decryptCredentials(env, store);
+  const token = await getAccessToken(store, credentials);
+  if (!token.scopes.includes("read_products") && !token.scopes.includes("write_products")) {
+    throw new ApiError(403, "Shopify 应用缺少 read_products 权限，请更新应用权限并重新安装", "shopify_scope_missing");
+  }
+  const graphqlSortKey = input.sortKey === "PRICE" ? "UPDATED_AT" : input.sortKey;
+  const data = await graphql<{ products: { nodes: RawShopifyProduct[]; pageInfo: { hasNextPage: boolean; endCursor?: string | null } } }>(store, token.accessToken, `query Products($first: Int!, $after: String, $query: String, $sortKey: ProductSortKeys!, $reverse: Boolean!) {
+    products(first: $first, after: $after, query: $query, sortKey: $sortKey, reverse: $reverse) { nodes { ${PRODUCT_FIELDS} } pageInfo { hasNextPage endCursor } }
+  }`, { first: input.first, after: input.after, query: shopifyProductSearch(input), sortKey: graphqlSortKey, reverse: input.reverse });
+  await updateStoreHealth(env, store.id, "active", null);
+  return {
+    products: data.products.nodes.map((product) => mapShopifyProduct(product)),
+    pageInfo: { hasNextPage: data.products.pageInfo.hasNextPage, endCursor: data.products.pageInfo.endCursor ?? null },
+    store: toSummary(await getStoreRow(env, store.id, userId), credentials),
+  };
+}
+
+export async function getShopifyProduct(env: Env, userId: string, storeId: string, productId: string): Promise<{ product: ShopifyProductDetail; store: ShopifyStoreSummary }> {
+  const store = await getStoreRow(env, storeId, userId);
+  const credentials = await decryptCredentials(env, store);
+  const token = await getAccessToken(store, credentials);
+  const data = await graphql<{ product: RawShopifyProduct | null }>(store, token.accessToken, `query Product($id: ID!) { product(id: $id) { ${PRODUCT_FIELDS} } }`, { id: productId });
+  if (!data.product) throw new ApiError(404, "Shopify 商品不存在", "shopify_product_not_found");
+  return { product: mapShopifyProduct(data.product), store: toSummary(store, credentials) };
+}
+
+export async function updateShopifyProduct(env: Env, userId: string, input: ShopifyProductUpdateInput): Promise<{ product: ShopifyProductDetail }> {
+  const store = await getStoreRow(env, input.storeId, userId);
+  const credentials = await decryptCredentials(env, store);
+  const token = await getAccessToken(store, credentials);
+  const productInput: Record<string, unknown> = {
+    id: input.productId,
+    title: input.title,
+    descriptionHtml: input.descriptionHtml,
+    handle: input.handle || null,
+    vendor: input.vendor,
+    productType: input.productType,
+    tags: input.tags,
+    status: input.status,
+    templateSuffix: input.templateSuffix || null,
+    seo: { title: input.seoTitle || null, description: input.seoDescription || null },
+  };
+  const data = await graphql<{ productUpdate: { product: RawShopifyProduct | null; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductUpdate($product: ProductUpdateInput!) {
+    productUpdate(product: $product) { product { ${PRODUCT_FIELDS} } userErrors { field message code } }
+  }`, { product: productInput });
+  const updateError = userErrors(data.productUpdate.userErrors);
+  if (updateError || !data.productUpdate.product) throw new ApiError(502, updateError || "Shopify 商品更新失败", "shopify_product_update_failed");
+  const variantUpdates = input.variants.filter((variant) => variant.id).map((variant) => ({
+    id: variant.id,
+    price: variant.price || null,
+    compareAtPrice: variant.compareAtPrice || null,
+    sku: variant.sku || null,
+    barcode: variant.barcode || null,
+  }));
+  if (variantUpdates.length) {
+    const variantResult = await graphql<{ productVariantsBulkUpdate: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message code } }
+    }`, { productId: input.productId, variants: variantUpdates });
+    const variantError = userErrors(variantResult.productVariantsBulkUpdate.userErrors);
+    if (variantError) throw new ApiError(502, variantError, "shopify_variant_update_failed");
+  }
+  if (input.mediaUrls.length) {
+    const mediaResult = await graphql<{ productCreateMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+      productCreateMedia(productId: $productId, media: $media) { userErrors { field message code } }
+    }`, { productId: input.productId, media: input.mediaUrls.map((originalSource) => ({ originalSource, mediaContentType: "IMAGE" })) });
+    const mediaError = userErrors(mediaResult.productCreateMedia.userErrors);
+    if (mediaError) throw new ApiError(502, mediaError, "shopify_media_create_failed");
+  }
+  await updateStoreHealth(env, store.id, "active", null);
+  return getShopifyProduct(env, userId, input.storeId, input.productId);
+}
+
+export async function deleteShopifyProduct(env: Env, userId: string, storeId: string, productId: string): Promise<void> {
+  const store = await getStoreRow(env, storeId, userId);
+  const credentials = await decryptCredentials(env, store);
+  const token = await getAccessToken(store, credentials);
+  const data = await graphql<{ productDelete: { deletedProductId?: string | null; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDelete($input: ProductDeleteInput!) { productDelete(input: $input) { deletedProductId userErrors { field message code } } }`, { input: { id: productId } });
+  const error = userErrors(data.productDelete.userErrors);
+  if (error) throw new ApiError(502, error, "shopify_product_delete_failed");
+}
+
 function asShopifyProduct(product: Awaited<ReturnType<typeof getProduct>>): ShopifyProduct {
   const value = product as Record<string, unknown>;
   const variants = Array.isArray(value.variants) ? value.variants : [];
@@ -569,13 +822,13 @@ export async function saveShopifySettings(env: Env, userId: string, input: Shopi
               client_id_ciphertext = ?, client_secret_ciphertext = ?, last_error = NULL,
               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ? AND owner_user_id = ?`,
-    ).bind(input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["write_products"]), clientId, clientSecret, id, userId).run();
+    ).bind(input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["read_products", "write_products"]), clientId, clientSecret, id, userId).run();
   } else {
     await env.DB.prepare(
       `INSERT INTO shopify_stores
          (id, owner_user_id, shop_domain, display_name, status, api_version, scopes_json, client_id_ciphertext, client_secret_ciphertext, last_error, updated_at)
        VALUES (?, ?, ?, ?, 'planned', ?, ?, ?, ?, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
-    ).bind(id, userId, shopDomain, input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["write_products"]), clientId, clientSecret).run();
+    ).bind(id, userId, shopDomain, input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["read_products", "write_products"]), clientId, clientSecret).run();
   }
   return toSummary(await getStoreRow(env, id, userId), { clientId: input.clientId, clientSecret: input.clientSecret });
 }

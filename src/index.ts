@@ -15,7 +15,16 @@ import {
   verifyPassword,
   type SessionUser,
 } from "./auth";
-import { chargeImageSearch, getCreditBalance, listCreditTransactions, refundImageSearch } from "./credits";
+import {
+  chargeAiRequest,
+  chargeImageSearch,
+  chargeProductDetail,
+  getCreditBalance,
+  listCreditTransactions,
+  refundAiRequest,
+  refundImageSearch,
+  refundProductDetail,
+} from "./credits";
 import { finishGoogleLogin, getGoogleSettings, googleLoginConfigured, saveGoogleSettings, startGoogleLogin } from "./google-auth";
 import {
   addUploadedImage,
@@ -24,6 +33,7 @@ import {
   assertProductAccess,
   completeSearchTask,
   dashboardSummary,
+  deleteProduct,
   deleteSearchTask,
   failSearchTask,
   getProduct,
@@ -65,7 +75,7 @@ import {
 import { handleImageProxy } from "./image-proxy";
 import { classifyImageCandidates, getAiSettings, saveAiSettings } from "./ai";
 import { allowedExtensionOrigins, extensionOriginFromRequest } from "./extension-origin";
-import { deleteShopifyStore, getShopifySettings, publishProductToShopify, saveShopifySettings, testShopifyStore } from "./shopify";
+import { deleteShopifyProduct, deleteShopifyStore, getShopifyProduct, getShopifySettings, listShopifyProducts, publishProductToShopify, saveShopifySettings, testShopifyStore, updateShopifyProduct } from "./shopify";
 import {
   bootstrapSchema,
   crawlerOfferLinkSchema,
@@ -90,6 +100,8 @@ import {
   aiCandidatesRequestSchema,
   shopifySettingsSchema,
   shopifyPublishSchema,
+  shopifyProductListQuerySchema,
+  shopifyProductUpdateSchema,
 } from "./validation";
 import type { SearchTaskRunInput } from "./validation";
 
@@ -371,10 +383,23 @@ async function handlePublicExtensionAi(request: Request, env: Env): Promise<Resp
     throw new ApiError(403, "插件客户端标识无效", "extension_client_forbidden");
   }
   if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
-  await authenticate(request, env);
+  const user = await authenticate(request, env);
   const input = await readJson(request, aiCandidatesRequestSchema);
-  const result = await classifyImageCandidates(env, input.candidates, input.pageSnapshot ?? null, input.stage, input.regionSnapshots);
-  return json({ ok: true, ...result });
+  const serverAi = await getAiSettings(env);
+  if (!serverAi.configured) throw new ApiError(503, "AI 模型尚未配置", "ai_not_configured");
+  const charge = await chargeAiRequest(env, user.id, {
+    source: "extension",
+    stage: input.stage,
+    candidateCount: input.candidates.length,
+    regionCount: input.regionSnapshots.length,
+  });
+  try {
+    const result = await classifyImageCandidates(env, input.candidates, input.pageSnapshot ?? null, input.stage, input.regionSnapshots);
+    return json({ ok: true, credits: { balance: charge.balance, charged: charge.cost }, ...result });
+  } catch (error) {
+    await refundAiRequest(env, user.id, charge);
+    throw error;
+  }
 }
 
 async function handlePublicExtensionLogout(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -419,6 +444,12 @@ function shopifyStoreTestRoute(pathname: string): { storeId: string } | null {
 function shopifyStoreRoute(pathname: string): { storeId: string } | null {
   const match = pathname.match(/^\/api\/integrations\/shopify\/stores\/([0-9a-f-]{36})$/iu);
   return match ? { storeId: match[1] } : null;
+}
+
+function shopifyProductRoute(pathname: string): { storeId: string; productId?: string } | null {
+  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products(?:\/([^/]+))?$/iu);
+  if (!match) return null;
+  return { storeId: match[1], productId: match[2] ? decodeURIComponent(match[2]) : undefined };
 }
 
 function oneboundItemRoute(pathname: string): { offerId: string } | null {
@@ -756,6 +787,29 @@ async function handleAuthenticatedApi(
     }
     return methodNotAllowed(["GET", "PUT"]);
   }
+  const shopifyProduct = shopifyProductRoute(url.pathname);
+  if (shopifyProduct) {
+    if (!shopifyProduct.productId) {
+      if (request.method !== "GET") return methodNotAllowed(["GET"]);
+      const query = shopifyProductListQuerySchema.parse({ ...parseQuery(url), storeId: shopifyProduct.storeId });
+      return json({ ok: true, ...(await listShopifyProducts(env, user.id, query)) });
+    }
+    if (request.method === "GET") {
+      return json({ ok: true, ...(await getShopifyProduct(env, user.id, shopifyProduct.storeId, shopifyProduct.productId)) });
+    }
+    if (request.method === "PATCH") {
+      const input = await readJson(request, shopifyProductUpdateSchema);
+      const result = await updateShopifyProduct(env, user.id, input);
+      ctx.waitUntil(recordAudit(request, env, user.id, "shopify_product.update", "shopify_product", input.productId, { storeId: input.storeId }));
+      return json({ ok: true, ...result });
+    }
+    if (request.method === "DELETE") {
+      await deleteShopifyProduct(env, user.id, shopifyProduct.storeId, shopifyProduct.productId);
+      ctx.waitUntil(recordAudit(request, env, user.id, "shopify_product.delete", "shopify_product", shopifyProduct.productId, { storeId: shopifyProduct.storeId }));
+      return json({ ok: true, deleted: true });
+    }
+    return methodNotAllowed(["GET", "PATCH", "DELETE"]);
+  }
   const shopifyStoreTest = shopifyStoreTestRoute(url.pathname);
   if (shopifyStoreTest) {
     if (request.method !== "POST") return methodNotAllowed(["POST"]);
@@ -779,7 +833,20 @@ async function handleAuthenticatedApi(
   if (oneboundItem) {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
     const options = oneboundRequestOptionsSchema.parse(parseQuery(url));
-    return json({ ok: true, item: await getOneBoundItem(env, oneboundItem.offerId, options) });
+    const forceRefresh = url.searchParams.get("fresh") === "1";
+    const charge = await chargeProductDetail(env, user.id, {
+      offerId: oneboundItem.offerId,
+      cache: options.cache,
+      lang: options.lang,
+      forceRefresh,
+    });
+    try {
+      const item = await getOneBoundItem(env, oneboundItem.offerId, options, forceRefresh);
+      return json({ ok: true, credits: { balance: charge.balance, charged: charge.cost }, item });
+    } catch (error) {
+      await refundProductDetail(env, user.id, charge);
+      throw error;
+    }
   }
   if (url.pathname === "/api/uploads") {
     return request.method === "POST"
@@ -886,9 +953,10 @@ async function handleAuthenticatedApi(
       return json({ ok: true, product: await getProduct(env, product.productId) });
     }
     if (request.method === "DELETE") {
-      await patchProduct(env, product.productId, { status: "archived" });
-      ctx.waitUntil(recordAudit(request, env, user.id, "product.archive", "product", product.productId));
-      return json({ ok: true });
+      const r2Keys = await deleteProduct(env, product.productId);
+      ctx.waitUntil(Promise.all(r2Keys.map((key) => env.PRODUCT_IMAGES.delete(key))));
+      ctx.waitUntil(recordAudit(request, env, user.id, "product.delete", "product", product.productId));
+      return json({ ok: true, deleted: true });
     }
     return methodNotAllowed(["GET", "PATCH", "DELETE"]);
   }

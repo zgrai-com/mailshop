@@ -1,3 +1,7 @@
 INGEST_API_KEY=replace-with-a-long-random-key
 BOOTSTRAP_TOKEN=replace-with-a-one-time-random-token
 SETTINGS_ENCRYPTION_KEY=replace-with-a-separate-long-random-key
+# Optional server-managed AI fallback (used when no AI settings are saved in D1).
+# SERVER_AI_BASE_URL=https://api.openai.com/v1
+# SERVER_AI_API_KEY=replace-with-server-ai-key
+# SERVER_AI_MODEL_ID=gpt-4o-mini

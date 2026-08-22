@@ -7,6 +7,10 @@ const reasonLabels: Record<string, string> = {
   "account.migration": "初始积分",
   "image_search.charge": "以图搜商品",
   "image_search.refund": "搜图失败退还",
+  "ai.charge": "AI 请求",
+  "ai.refund": "AI 请求失败退还",
+  "product_detail.charge": "商品详情",
+  "product_detail.refund": "详情请求失败退还",
 };
 
 type Props = { balance: number; transactions: CreditTransaction[]; loading: boolean };
@@ -17,7 +21,7 @@ export function CreditsPage({ balance, transactions, loading }: Props) {
       <header className="page-heading"><div><span>CREDITS</span><h1>积分管理</h1><p>查看可用积分与最近收支记录</p></div></header>
       <section className="credit-summary-band">
         <div><span className="credit-summary-icon"><Coins size={22} /></span><div><small>当前可用</small><strong>{balance.toLocaleString()}</strong><span>积分</span></div></div>
-        <dl><div><dt>以图搜商品</dt><dd>10 积分 / 次</dd></div><div><dt>失败请求</dt><dd>自动退还</dd></div></dl>
+        <dl><div><dt>以图搜商品</dt><dd>20 积分 / 次</dd></div><div><dt>AI 请求</dt><dd>5 积分 / 次</dd></div><div><dt>商品详情</dt><dd>5 积分 / 次</dd></div><div><dt>失败请求</dt><dd>自动退还</dd></div></dl>
       </section>
       <section className="credit-ledger">
         <header><div><span>TRANSACTIONS</span><h2>积分流水</h2></div><small>最近 100 条</small></header>

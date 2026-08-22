@@ -180,11 +180,14 @@ async function saveSearchOptions(options) {
 }
 
 function normalizeAiUsage(value = {}) {
+  const baseUrl = String(value.baseUrl || "").trim().slice(0, 2_048);
+  const apiKey = String(value.apiKey || "").trim().slice(0, 2_048);
+  const modelId = String(value.modelId || "").trim().slice(0, 255);
   return {
     mode: value.mode === "custom" ? "custom" : "server",
-    baseUrl: String(value.baseUrl || "").trim().slice(0, 2_048),
-    apiKey: String(value.apiKey || "").trim().slice(0, 2_048),
-    modelId: String(value.modelId || "").trim().slice(0, 255),
+    baseUrl,
+    apiKey,
+    modelId,
   };
 }
 
@@ -716,19 +719,21 @@ async function classifyPageImagesWithCustom(candidates, config, pageSnapshot, di
 
 async function classifyPageImages(candidates, pageSnapshot = null, diagnostics = {}, stage = "regions", regionSnapshots = []) {
   const config = await getAiUsage();
-  if (stage === "regions") await requireHtmlPageSnapshot(candidates, pageSnapshot, diagnostics, config.mode === "custom" ? "custom" : "server");
-  return config.mode === "custom"
+  const useCustom = config.mode === "custom" && Boolean(config.baseUrl && config.apiKey && config.modelId);
+  if (stage === "regions") await requireHtmlPageSnapshot(candidates, pageSnapshot, diagnostics, useCustom ? "custom" : "server");
+  return useCustom
     ? classifyPageImagesWithCustom(candidates, config, pageSnapshot, diagnostics, stage, regionSnapshots)
     : classifyPageImagesWithServer(candidates, pageSnapshot, diagnostics, stage, regionSnapshots);
 }
 
 async function testAiUsage(value, candidates = [], pageSnapshot = null) {
   const config = normalizeAiUsage(value);
+  const useCustom = config.mode === "custom" && Boolean(config.baseUrl && config.apiKey && config.modelId);
   const startedAt = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => abortAiRequest(controller, AI_TEST_TIMEOUT_MS), AI_TEST_TIMEOUT_MS);
   try {
-    if (config.mode === "server") {
+    if (!useCustom) {
       const requestUrl = candidates.length
         ? `${apiOrigin(DEFAULT_API_URL)}${AI_CLASSIFY_PATH}`
         : `${apiOrigin(DEFAULT_API_URL)}/api/health`;
@@ -857,7 +862,7 @@ async function runTask(taskId, imageId) {
     if (!task) return;
     const account = await fetchExtensionAccount(DEFAULT_API_URL);
     if (!account.authenticated) throw new Error("请先登录 Mailshop，再开始搜图");
-    if (Number(account.credits?.balance || 0) < 10) throw new Error("积分不足，搜图需要 10 积分");
+    if (Number(account.credits?.balance || 0) < 20) throw new Error("积分不足，搜图需要 20 积分");
     const selectedImage = (task.images || []).find((image) => image.id === imageId);
     if (!selectedImage) throw new Error("请先从任务图片中选择一张图片");
     await updateTask(taskId, { status: "running", error: null, selectedImageId: imageId, selectedImageUrl: selectedImage.url, previewUrl: selectedImage.url });

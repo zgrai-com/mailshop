@@ -1,4 +1,4 @@
-import { getProductImage, upsertOfferLink, upsertProduct, type OneBoundOfferDetailData } from "./db";
+import { getCachedOneBoundItem, getProductImage, putCachedOneBoundItem, upsertOfferLink, upsertProduct, type OneBoundOfferDetailData } from "./db";
 import { ApiError } from "./http";
 import { validateImageProxyUrl } from "./image-proxy";
 import type { OfferLinkInput } from "./validation";
@@ -69,6 +69,27 @@ export type OneBoundItemPreview = {
   categoryId: string | null;
   location: string | null;
   shortDescription: string | null;
+  descriptionHtml: string | null;
+  itemWeight: string | null;
+  itemSize: string | null;
+  shippingTo: string | null;
+  videoUrl: string | null;
+  sellerNick: string | null;
+  variants: Array<{
+    externalId: string | null;
+    sku: string | null;
+    name: string | null;
+    imageUrl: string | null;
+    price: number | null;
+    stock: number | null;
+    attributes: Record<string, unknown>;
+    raw: OneBoundItem;
+  }>;
+  propertyImages: Array<{ propertiesKey: string | null; url: string }>;
+  videos: Array<{ url: string; posterUrl: string | null; title: string | null }>;
+  rawResponse: Record<string, unknown>;
+  cachedAt: string | null;
+  fromCache: boolean;
   properties: Array<{ name: string; value: string }>;
   priceTiers: Array<{ minQuantity: number | null; price: number | null; originalPrice: number | null }>;
   raw: OneBoundItem;
@@ -749,7 +770,11 @@ export function parseOneBoundItemPayload(payload: Record<string, unknown>, reque
       const url = asString(raw.url ?? raw.pic_url);
       return url ? [{ propertiesKey: asString(raw.properties ?? raw.property), url, raw }] : [];
     });
-  const descriptionImageValues = Array.isArray(item.desc_img) ? item.desc_img : [];
+  const descriptionImageValues = Array.isArray(item.desc_img)
+    ? item.desc_img
+    : Array.isArray(item.description_images)
+      ? item.description_images
+      : [];
   const descriptionImages = descriptionImageValues.flatMap((raw) => {
     const url = asString(raw) ?? asString(asRecord(raw)?.url ?? asRecord(raw)?.pic_url);
     return url ? [{ url, raw }] : [];
@@ -796,10 +821,20 @@ export function parseOneBoundItemPayload(payload: Record<string, unknown>, reque
         raw,
       }] : [];
     });
+  const variantImage = (raw: OneBoundItem): string | null => {
+    const direct = asString(raw.sku_img ?? raw.pic_url ?? raw.image ?? raw.img ?? raw.image_url);
+    if (direct) return direct;
+    const propertiesKey = asString(raw.properties ?? raw.property);
+    if (!propertiesKey) return null;
+    return propertyImages.find((image) => image.propertiesKey === propertiesKey)?.url
+      ?? propertyImages.find((image) => image.propertiesKey && propertiesKey.split(';').some((part) => image.propertiesKey?.includes(part)))?.url
+      ?? null;
+  };
   const variants = skuItems.map((raw, index) => ({
     externalId: asString(raw.sku_id ?? raw.spec_id ?? raw.properties) ?? `sku-${index + 1}`,
     sku: asString(raw.sku_id),
     name: asString(raw.properties_name ?? raw.name),
+    imageUrl: variantImage(raw),
     attributes: {
       properties: raw.properties ?? null,
       propertiesName: raw.properties_name ?? null,
@@ -816,6 +851,14 @@ export function parseOneBoundItemPayload(payload: Record<string, unknown>, reque
   }));
   const originalPrice = asNumber(item.orginal_price ?? item.original_price);
   const videoUrl = videos[0]?.url ?? null;
+  const descriptionHtml = asString(
+    item.desc
+      ?? item.description
+      ?? item.desc_html
+      ?? item.description_html
+      ?? item.detail_desc
+      ?? item.detail_description,
+  );
 
   const linkInput: OfferLinkInput = {
     offer: {
@@ -857,7 +900,7 @@ export function parseOneBoundItemPayload(payload: Record<string, unknown>, reque
       itemWeight: valueText(item.item_weight),
       itemSize: valueText(item.item_size),
       shopId,
-      descriptionHtml: asString(item.desc),
+       descriptionHtml,
       videoUrl,
       sampleId: asString(item.sample_id),
       shippingTo: valueText(item.shipping_to),
@@ -917,6 +960,27 @@ export function parseOneBoundItemPayload(payload: Record<string, unknown>, reque
       categoryId: detail.main.categoryId,
       location: detail.main.location,
       shortDescription: detail.main.shortDescription,
+      descriptionHtml: detail.main.descriptionHtml,
+      itemWeight: detail.main.itemWeight,
+      itemSize: detail.main.itemSize,
+      shippingTo: detail.main.shippingTo,
+      videoUrl: detail.main.videoUrl,
+      sellerNick: detail.main.sellerNick,
+      variants: variants.map((variant) => ({
+        externalId: variant.externalId,
+        sku: variant.sku,
+        name: variant.name,
+        imageUrl: variant.imageUrl,
+        price: variant.price,
+        stock: variant.stock,
+        attributes: variant.attributes,
+        raw: variant.raw,
+      })),
+      propertyImages: propertyImages.map(({ propertiesKey, url }) => ({ propertiesKey, url })),
+      videos: videos.map(({ url, posterUrl, title }) => ({ url, posterUrl, title })),
+      rawResponse: payload,
+      cachedAt: null,
+      fromCache: false,
       properties: properties.map(({ name, value }) => ({ name, value })),
       priceTiers: priceTiers.map(({ minQuantity, price, originalPrice: tierOriginalPrice }) => ({
         minQuantity,
@@ -979,8 +1043,17 @@ export async function getOneBoundItem(
   env: Env,
   offerId: string,
   options: OneBoundRequestOptions,
+  forceRefresh = false,
 ): Promise<OneBoundItemPreview> {
-  return (await callItemGet(await readCredentials(env), offerId, options)).preview;
+  const cached = forceRefresh ? null : await getCachedOneBoundItem(env, offerId);
+  if (cached) {
+    return { ...(cached.payload as OneBoundItemPreview), cachedAt: cached.fetchedAt, fromCache: true };
+  }
+  const parsed = await callItemGet(await readCredentials(env), offerId, forceRefresh ? { ...options, cache: "no" } : options);
+  const fetchedAt = new Date().toISOString();
+  const preview = { ...parsed.preview, cachedAt: fetchedAt, fromCache: false };
+  await putCachedOneBoundItem(env, offerId, preview);
+  return preview;
 }
 
 function itemFailure(offerId: string, caught: unknown): {

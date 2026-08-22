@@ -264,7 +264,7 @@ export function ImageSearchModal({ product, image, onClose, onSaved }: Props) {
     >
       <header className="image-search-header">
         <div><span>1688 IMAGE SEARCH</span><h2 id="image-search-title">以图搜商品</h2></div>
-        <div className="image-search-header-meta"><span className="mono">{product.externalId}</span><span className="credit-cost-label">本次消耗 10 积分</span><button className="icon-button" type="button" onClick={onClose} aria-label="关闭搜图弹窗" title="关闭"><X size={19} /></button></div>
+        <div className="image-search-header-meta"><span className="mono">{product.externalId}</span><span className="credit-cost-label">本次消耗 20 积分</span><button className="icon-button" type="button" onClick={onClose} aria-label="关闭搜图弹窗" title="关闭"><X size={19} /></button></div>
       </header>
 
       <div className="image-search-layout">

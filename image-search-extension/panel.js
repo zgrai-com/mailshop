@@ -59,11 +59,14 @@ elements.ai_settings_mount.append(elements.ai_usage_panel);
 elements.ai_usage_panel.hidden = false;
 
 function hasSearchCredits() {
-  return Boolean(state.account?.authenticated && Number(state.account.credits?.balance) >= 10);
+  return Boolean(state.account?.authenticated && Number(state.account.credits?.balance) >= 20);
 }
 
 function hasAiUsageConfiguration() {
-  return state.aiUsage.mode === "server" || Boolean(state.aiUsage.baseUrl && state.aiUsage.apiKey && state.aiUsage.modelId);
+  return state.aiUsage.mode === "server"
+    || !state.aiUsage.baseUrl
+    || !state.aiUsage.apiKey
+    || !state.aiUsage.modelId;
 }
 
 function renderView() {
@@ -85,7 +88,7 @@ function renderAccount() {
       ? state.account.user?.displayName || state.account.user?.email || state.account.user?.username || "已登录"
       : "尚未登录 Mailshop";
   elements.account_meta.textContent = signedIn
-    ? `${state.account.user?.email || "普通用户"} · 创建任务免费，搜索时扣 10 分`
+    ? `${state.account.user?.email || "普通用户"} · 创建任务免费，搜索时扣 20 分`
     : "登录后可采集商品并管理服务器数据";
   elements.account_balance.textContent = `${balance.toLocaleString("zh-CN")} 分`;
   elements.account_balance.hidden = !signedIn;
@@ -148,7 +151,7 @@ function requireAuthenticated() {
 function requireSearchAccess() {
   if (!requireAuthenticated()) return false;
   if (!hasSearchCredits()) {
-    showNotice("积分不足，搜图需要 10 积分", "error");
+    showNotice("积分不足，搜图需要 20 积分", "error");
     return false;
   }
   return true;
@@ -1342,7 +1345,7 @@ function createTaskCard(task) {
   const searchFooter = document.createElement("footer");
   searchFooter.className = "task-search-footer";
   const searchCost = document.createElement("span");
-  searchCost.textContent = "执行搜索将扣除 10 积分";
+  searchCost.textContent = "执行搜索将扣除 20 积分";
   const searchButton = document.createElement("button");
   searchButton.className = "button primary compact";
   searchButton.type = "button";
@@ -1477,7 +1480,7 @@ function renderStores() {
 }
 
 function creditReason(reason) {
-  return ({ "image_search.charge": "1688 图片搜索", "image_search.refund": "搜索失败退款", "admin.credit_adjust": "管理员调整" })[reason] || reason || "积分变动";
+  return ({ "image_search.charge": "1688 图片搜索", "image_search.refund": "搜索失败退款", "ai.charge": "AI 请求", "ai.refund": "AI 请求失败退款", "product_detail.charge": "商品详情", "product_detail.refund": "详情请求失败退款", "admin.credit_adjust": "管理员调整" })[reason] || reason || "积分变动";
 }
 
 function renderCredits() {
@@ -1485,7 +1488,7 @@ function renderCredits() {
   elements.credits_balance_card.replaceChildren();
   const label = document.createElement("span"); label.textContent = "当前可用积分";
   const balance = document.createElement("strong"); balance.textContent = Number(credits.balance || 0).toLocaleString("zh-CN");
-  const note = document.createElement("small"); note.textContent = `可执行 ${Math.floor(Number(credits.balance || 0) / 10)} 次 1688 图片搜索`;
+  const note = document.createElement("small"); note.textContent = `可执行 ${Math.floor(Number(credits.balance || 0) / 20)} 次 1688 图片搜索`;
   elements.credits_balance_card.append(label, balance, note);
   elements.credits_list.replaceChildren();
   const transactions = Array.isArray(credits.transactions) ? credits.transactions : [];

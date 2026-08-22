@@ -32,10 +32,12 @@ import { ImageSearchModal } from "./components/ImageSearchModal";
 import { ProductModal } from "./components/ProductModal";
 import { SettingsPage } from "./components/SettingsPage";
 import { ShopifyStoresPage } from "./components/ShopifyStoresPage";
+import { ShopifyProductsPage } from "./components/ShopifyProductsPage";
 import { UserManager } from "./components/UserManager";
 import { UserDashboard } from "./components/UserDashboard";
 import { CreditsPage } from "./components/CreditsPage";
 import { SearchTasksPage } from "./components/SearchTasksPage";
+import { proxiedImageUrl } from "./media";
 import type {
   DashboardSummary,
   ProductDetail as ProductDetailType,
@@ -51,11 +53,12 @@ import type {
   User,
 } from "./types";
 
-type View = "dashboard" | "products" | "tasks" | "credits" | "accounts" | "settings" | "shopify";
+type View = "dashboard" | "products" | "shopify-products" | "tasks" | "credits" | "accounts" | "settings" | "shopify";
 
 const viewPaths: Record<View, string> = {
   dashboard: "/dashboard",
   products: "/products",
+  "shopify-products": "/shopify/products",
   tasks: "/tasks",
   credits: "/credits",
   shopify: "/shopify",
@@ -121,10 +124,6 @@ function formatOfferPrice(priceMin: number | null | undefined, priceMax: number 
   const format = (value: number) => new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
   if (priceMax == null || priceMin === priceMax) return format(priceMin ?? priceMax ?? 0);
   return `${format(priceMin ?? 0)} – ${format(priceMax)}`;
-}
-
-function proxiedImageUrl(url: string): string {
-  return url.startsWith("/") ? url : `/api/image-proxy${toQuery({ url })}`;
 }
 
 export default function App() {
@@ -257,6 +256,7 @@ export default function App() {
     const titles: Record<View, string> = {
       dashboard: "仪表台",
       products: "商品管理",
+      "shopify-products": "Shopify 商品",
       tasks: "查询任务",
       credits: "积分管理",
       shopify: "Shopify 店铺",
@@ -743,10 +743,31 @@ export default function App() {
   async function archiveProduct() {
     if (!selectedProduct) return;
     try {
-      await api(`/api/products/${selectedProduct.id}`, { method: "DELETE" });
+      await api(`/api/products/${selectedProduct.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "archived" }),
+      });
       setSelectedProduct(null);
       await Promise.all([loadProducts(), loadSummary()]);
       notify("success", "商品已归档");
+    } catch (caught) {
+      handleApiError(caught);
+    }
+  }
+
+  async function deleteProduct() {
+    if (!selectedProduct) return;
+    if (!window.confirm(`确定永久删除商品“${selectedProduct.title}”吗？此操作不可恢复。`)) return;
+    try {
+      await api(`/api/products/${selectedProduct.id}`, { method: "DELETE" });
+      setSelectedProduct(null);
+      setExpandedProducts((current) => {
+        const next = { ...current };
+        delete next[selectedProduct.id];
+        return next;
+      });
+      await Promise.all([loadProducts(), loadSummary()]);
+      notify("success", "商品已删除");
     } catch (caught) {
       handleApiError(caught);
     }
@@ -780,7 +801,8 @@ export default function App() {
         <header className="sidebar-brand"><span className="sidebar-mark"><PackageSearch size={20} /></span><div><strong>MAILSHOP</strong><small>商品中台</small></div><button className="icon-button mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭导航"><X size={18} /></button></header>
         <nav className="sidebar-nav" aria-label="主导航">
           <a className={view === "dashboard" ? "active" : ""} href={viewPaths.dashboard} onClick={(event) => handleNavigation(event, "dashboard")}><LayoutDashboard size={18} /><span>仪表台</span></a>
-          <a className={view === "products" ? "active" : ""} href={viewPaths.products} onClick={(event) => handleNavigation(event, "products")}><PackageSearch size={18} /><span>商品管理</span>{summary?.searchingCount ? <em>{summary.searchingCount}</em> : null}</a>
+          <a className={view === "products" ? "active" : ""} href={viewPaths.products} onClick={(event) => handleNavigation(event, "products")}><PackageSearch size={18} /><span>采集商品</span>{summary?.searchingCount ? <em>{summary.searchingCount}</em> : null}</a>
+          <a className={view === "shopify-products" ? "active" : ""} href={viewPaths["shopify-products"]} onClick={(event) => handleNavigation(event, "shopify-products")}><Store size={18} /><span>Shopify 商品</span>{shopifyStores.length ? <em>{shopifyStores.length}</em> : null}</a>
           <a className={view === "credits" ? "active" : ""} href={viewPaths.credits} onClick={(event) => handleNavigation(event, "credits")}><Coins size={18} /><span>积分管理</span></a>
           <a className={view === "tasks" ? "active" : ""} href={viewPaths.tasks} onClick={(event) => handleNavigation(event, "tasks")}><ListChecks size={18} /><span>查询任务</span></a>
           <a className={view === "shopify" ? "active" : ""} href={viewPaths.shopify} onClick={(event) => handleNavigation(event, "shopify")}><Store size={18} /><span>Shopify 店铺</span>{shopifyStores.length ? <em>{shopifyStores.length}</em> : null}</a>
@@ -851,7 +873,7 @@ export default function App() {
                               else void toggleProductRow(product.id);
                             }}
                           >
-                            <td><div className="product-cell"><span className={`row-chevron ${expanded ? "expanded" : ""}`}>{product.sourcePlatform !== "1688" && <ChevronDown size={15} />}</span><span className="product-thumb">{product.thumbnailUrl ? <img src={product.thumbnailUrl} alt="" /> : <Boxes size={19} />}</span><span className="product-primary"><strong>{product.title}</strong><small>{product.vendor || product.externalId}</small></span><button className="button quiet compact mobile-row-detail-button" type="button" onClick={(event) => { event.stopPropagation(); void selectProduct(product.id); }}>详情</button></div></td>
+                            <td><div className="product-cell"><span className={`row-chevron ${expanded ? "expanded" : ""}`}>{product.sourcePlatform !== "1688" && <ChevronDown size={15} />}</span><span className="product-thumb">{product.thumbnailUrl ? <img src={proxiedImageUrl(product.thumbnailUrl)} alt="" /> : <Boxes size={19} />}</span><span className="product-primary"><strong>{product.title}</strong><small>{product.vendor || product.externalId}</small></span><button className="button quiet compact mobile-row-detail-button" type="button" onClick={(event) => { event.stopPropagation(); void selectProduct(product.id); }}>详情</button></div></td>
                             <td><span className={`source-badge ${product.sourcePlatform}`}>{product.sourcePlatform}</span><small className="cell-subtext">{product.sourceStore || "—"}</small></td>
                             <td>{formatPrice(product)}</td>
                             <td><span className="count-pair"><b>{product.variantCount}</b> SKU</span><small className="cell-subtext">{product.imageCount} 张图</small></td>
@@ -874,9 +896,11 @@ export default function App() {
                 <footer className="pagination"><button className="icon-button" type="button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)} aria-label="上一页"><ChevronLeft size={18} /></button><span>{page} / {pageCount}</span><button className="icon-button" type="button" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)} aria-label="下一页"><ChevronRight size={18} /></button></footer>
               </div>
 
-              <ProductDetail product={selectedProduct} shopifyStores={shopifyStores} loading={loadingDetail} saving={saving} onClose={() => setSelectedProduct(null)} onPatch={patchSelected} onOpenOffer={() => setOfferModalOpen(true)} onRemoveOffer={removeOffer} onUpload={uploadImage} onImageSearch={searchImage} onPublishShopify={publishSelectedToShopify} onArchive={archiveProduct} />
+              <ProductDetail product={selectedProduct} shopifyStores={shopifyStores} loading={loadingDetail} saving={saving} onClose={() => setSelectedProduct(null)} onPatch={patchSelected} onOpenOffer={() => setOfferModalOpen(true)} onRemoveOffer={removeOffer} onUpload={uploadImage} onImageSearch={searchImage} onPublishShopify={publishSelectedToShopify} onArchive={archiveProduct} onDelete={deleteProduct} />
             </section>
           </section>
+        ) : view === "shopify-products" ? (
+          <ShopifyProductsPage stores={shopifyStores} onError={handleApiError} onNotify={(message) => notify("success", message)} />
         ) : view === "shopify" ? (
           <ShopifyStoresPage stores={shopifyStores} loading={loadingSettings} saving={saving} onSave={saveShopifySettings} onTest={testShopifyStore} onDelete={deleteShopifyStore} />
         ) : view === "accounts" && user.role === "admin" ? (

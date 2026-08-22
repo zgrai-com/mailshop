@@ -18,6 +18,8 @@ import {
 import { ChangeEvent, useEffect, useState } from "react";
 
 import type { ProductDetail as ProductDetailType, ProductImage, ProductStatus, ShopifyStore } from "../types";
+import { HtmlContent } from "./HtmlContent";
+import { proxiedImageUrl } from "../media";
 
 const statusLabels: Record<ProductStatus, string> = {
   new: "待整理",
@@ -40,6 +42,7 @@ type Props = {
   onImageSearch: (image: ProductImage) => void;
   onPublishShopify: (storeId: string) => Promise<void>;
   onArchive: () => Promise<void>;
+  onDelete: () => Promise<void>;
 };
 
 function formatMoney(value: number | null | undefined, currency: string): string {
@@ -87,6 +90,7 @@ export function ProductDetail({
   onImageSearch,
   onPublishShopify,
   onArchive,
+  onDelete,
 }: Props) {
   const [activeImage, setActiveImage] = useState(0);
   const [notes, setNotes] = useState("");
@@ -126,11 +130,14 @@ export function ProductDetail({
   if (!product) return null;
 
   const activeProductImage = product.images[activeImage];
-  const currentImage = activeProductImage?.displayUrl ?? activeProductImage?.url;
+  const currentImage = proxiedImageUrl(activeProductImage?.displayUrl ?? activeProductImage?.url);
   const specificationRows = objectRows(product.attributes.specifications, "name", "value_name");
   const customFieldRows = objectRows(product.attributes.customFields, "field", "value");
   const propertyRows = objectRows(product.attributes.properties, "name", "value");
   const productCategories = categoryNames(product.categories);
+  const descriptionImages = Array.isArray(product.content.descriptionImages)
+    ? product.content.descriptionImages.filter((item): item is string => typeof item === "string")
+    : [];
   const shopifyStore = activeShopifyStores.find((store) => store.id === selectedShopifyStoreId) ?? null;
   const shopifySyncLabel = product.syncState === "synced" ? "已同步" : product.syncState === "pending" ? "同步中" : product.syncState === "failed" ? "失败" : "未同步";
 
@@ -149,7 +156,7 @@ export function ProductDetail({
         </header>
         <div className="image-panel-scroll">
           {product.images.length ? <div className="image-card-grid">{product.images.map((image, index) => {
-            const imageUrl = image.displayUrl ?? image.url ?? "";
+            const imageUrl = proxiedImageUrl(image.displayUrl ?? image.url);
             return <article className={`image-card ${activeImage === index ? "active" : ""}`} key={image.id}>
               <button className="image-card-preview" type="button" onClick={() => setActiveImage(index)} aria-label={`查看第 ${index + 1} 张图片`}>
                 <img src={imageUrl} alt={image.altText || `${product.title} ${index + 1}`} />
@@ -238,6 +245,11 @@ export function ProductDetail({
           {product.shortDescription1688 && <p>{product.shortDescription1688}</p>}
         </section>}
 
+        {(product.descriptionHtml || descriptionImages.length > 0) && <section className="detail-section">
+          <div className="section-heading"><div><span>DESCRIPTION</span><h3>商品详情</h3></div></div>
+          <HtmlContent className="product-description-html" html={product.descriptionHtml} images={descriptionImages} />
+        </section>}
+
         {(propertyRows.length > 0 || specificationRows.length > 0 || customFieldRows.length > 0) && <section className="detail-section">
           <div className="section-heading"><div><span>ATTRIBUTES</span><h3>商品属性与尺码</h3></div><span className="section-count">{propertyRows.length + specificationRows.length + customFieldRows.length}</span></div>
           {propertyRows.length > 0 && <dl className="attribute-list">{propertyRows.map((row, index) => <div key={`${row.label}-${index}`}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>}
@@ -253,7 +265,7 @@ export function ProductDetail({
 
         {product.sourcePlatform !== "1688" && <section className="detail-section">
           <div className="section-heading"><div><span>SOURCING</span><h3>1688 候选货源</h3></div><button className="icon-button" type="button" onClick={onOpenOffer} aria-label="添加候选货源" title="添加候选货源"><Link2 size={18} /></button></div>
-          {product.offers.length ? <div className="offer-list">{product.offers.map((offer) => <article className="offer-item" key={offer.linkId}><div className="offer-thumb">{offer.thumbnailUrl ? <img src={offer.thumbnailUrl} alt="" /> : <PackageOpen size={20} />}</div><div className="offer-content"><div className="offer-topline"><span className={`match-badge ${offer.matchStatus}`}>{offer.matchStatus === "selected" ? "已选定" : offer.matchStatus === "rejected" ? "已排除" : "候选"}</span><span className="mono">{offer.offerId}</span></div><h4>{offer.title}</h4><p>{offer.supplierName || "供应商待补充"}</p><div className="offer-price">{priceRange(offer.priceMin, offer.priceMax, offer.currency)}{offer.minOrderQuantity ? <small>{offer.minOrderQuantity}{offer.unit || "件"}起批</small> : null}</div><div className="offer-footer">{offer.url ? <a href={offer.url} target="_blank" rel="noreferrer">查看 1688 <ArrowUpRight size={13} /></a> : <span /> }<button className="icon-button danger" type="button" onClick={async () => { setRemovingLink(offer.linkId); try { await onRemoveOffer(offer.linkId); } finally { setRemovingLink(null); } }} disabled={removingLink === offer.linkId} aria-label="移除关联" title="移除关联">{removingLink === offer.linkId ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}</button></div></div></article>)}</div> : <div className="compact-empty"><PackageOpen size={18} />尚未关联 1688 商品</div>}
+          {product.offers.length ? <div className="offer-list">{product.offers.map((offer) => <article className="offer-item" key={offer.linkId}><div className="offer-thumb">{offer.thumbnailUrl ? <img src={proxiedImageUrl(offer.thumbnailUrl)} alt="" /> : <PackageOpen size={20} />}</div><div className="offer-content"><div className="offer-topline"><span className={`match-badge ${offer.matchStatus}`}>{offer.matchStatus === "selected" ? "已选定" : offer.matchStatus === "rejected" ? "已排除" : "候选"}</span><span className="mono">{offer.offerId}</span></div><h4>{offer.title}</h4><p>{offer.supplierName || "供应商待补充"}</p><div className="offer-price">{priceRange(offer.priceMin, offer.priceMax, offer.currency)}{offer.minOrderQuantity ? <small>{offer.minOrderQuantity}{offer.unit || "件"}起批</small> : null}</div><div className="offer-footer">{offer.url ? <a href={offer.url} target="_blank" rel="noreferrer">查看 1688 <ArrowUpRight size={13} /></a> : <span /> }<button className="icon-button danger" type="button" onClick={async () => { setRemovingLink(offer.linkId); try { await onRemoveOffer(offer.linkId); } finally { setRemovingLink(null); } }} disabled={removingLink === offer.linkId} aria-label="移除关联" title="移除关联">{removingLink === offer.linkId ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}</button></div></div></article>)}</div> : <div className="compact-empty"><PackageOpen size={18} />尚未关联 1688 商品</div>}
         </section>}
 
         <section className="detail-section notes-section">
@@ -263,7 +275,8 @@ export function ProductDetail({
         </section>
 
         <section className="detail-danger-zone">
-          <button className="button danger-text" type="button" onClick={onArchive}><Archive size={16} />归档商品</button>
+          <button className="button quiet" type="button" onClick={onArchive}><Archive size={16} />归档商品</button>
+          <button className="button danger-text" type="button" onClick={onDelete}><Trash2 size={16} />删除商品</button>
         </section>
       </div>
       </aside>

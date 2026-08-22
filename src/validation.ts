@@ -62,6 +62,44 @@ export const shopifyPublishSchema = z.object({
   storeId: z.string().uuid(),
 });
 
+export const shopifyProductListQuerySchema = z.object({
+  storeId: z.string().uuid(),
+  search: z.string().trim().max(200).default(""),
+  status: z.enum(["all", "ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED"]).default("all"),
+  productType: z.string().trim().max(255).default(""),
+  vendor: z.string().trim().max(255).default(""),
+  inventory: z.enum(["all", "in_stock", "out_of_stock"]).default("all"),
+  sortKey: z.enum(["TITLE", "UPDATED_AT", "CREATED_AT", "INVENTORY_TOTAL", "PRICE", "PRODUCT_TYPE", "VENDOR"]).default("UPDATED_AT"),
+  reverse: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  first: z.coerce.number().int().min(10).max(100).default(25),
+  after: z.string().trim().max(500).nullable().optional().transform((value) => value || null),
+});
+
+const shopifyVariantUpdateSchema = z.object({
+  id: z.string().min(1).max(255),
+  price: z.string().trim().max(32).default(""),
+  compareAtPrice: z.string().trim().max(32).default(""),
+  sku: z.string().trim().max(255).default(""),
+  barcode: z.string().trim().max(255).default(""),
+});
+
+export const shopifyProductUpdateSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  title: z.string().trim().min(1).max(255),
+  descriptionHtml: z.string().max(500_000).default(""),
+  handle: z.string().trim().max(255).default(""),
+  vendor: z.string().trim().max(255).default(""),
+  productType: z.string().trim().max(255).default(""),
+  tags: z.array(z.string().trim().min(1).max(100)).max(250).default([]),
+  status: z.enum(["ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED"]).default("DRAFT"),
+  templateSuffix: z.string().trim().max(255).default(""),
+  seoTitle: z.string().trim().max(70).default(""),
+  seoDescription: z.string().trim().max(320).default(""),
+  mediaUrls: z.array(z.string().trim().url().max(2_048)).max(50).default([]),
+  variants: z.array(shopifyVariantUpdateSchema).max(250).default([]),
+});
+
 const aiCandidateSchema = z.object({
   id: z.string().trim().min(1).max(160),
   url: z.string().trim().url().max(2_048),
