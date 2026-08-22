@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "account_id": "d0181646eb85979ef4e605dd57955bda",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mailshop-products",
+      "database_id": "dd7ca6b3-7eb8-460d-8beb-8f35a609d51d"
+    }
+  ]
+}
