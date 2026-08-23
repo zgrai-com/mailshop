@@ -83,6 +83,35 @@ export type ShopifyRemoteProduct = {
   }>;
 };
 
+export type ShopifyLocale = {
+  locale: string;
+  name: string;
+  primary: boolean;
+  published: boolean;
+};
+
+export type ShopifyTranslatableContent = {
+  key: string;
+  value: string;
+  digest: string;
+  locale: string;
+};
+
+export type ShopifyTranslation = {
+  key: string;
+  value: string;
+  locale: string;
+  outdated: boolean;
+  marketId?: string | null;
+  marketName?: string | null;
+};
+
+export type ShopifyProductTranslations = {
+  locales: ShopifyLocale[];
+  translatableContent: ShopifyTranslatableContent[];
+  translations: ShopifyTranslation[];
+};
+
 export type CreditTransaction = {
   id: string;
   amount: number;
