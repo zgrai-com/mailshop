@@ -800,20 +800,23 @@ async function handleAuthenticatedApi(
   if (shopifyTranslationRoute) {
     if (request.method === "GET") {
       const query = shopifyProductTranslationsQuerySchema.parse(parseQuery(url));
-      return json({ ok: true, ...(await getShopifyProductTranslations(env, user.id, shopifyTranslationRoute.storeId, shopifyTranslationRoute.productId, query.locale)) });
+      return json({ ok: true, ...(await getShopifyProductTranslations(env, user.id, shopifyTranslationRoute.storeId, shopifyTranslationRoute.productId, query.locale, query.marketId)) });
     }
     if (request.method === "POST" && shopifyTranslationRoute.action === "ai") {
       const parsed = await readJson(request, shopifyProductTranslationAiSchema);
       if (parsed.storeId !== shopifyTranslationRoute.storeId || parsed.productId !== shopifyTranslationRoute.productId) {
         throw new ApiError(422, "翻译请求的店铺或商品不匹配当前路由", "shopify_translation_resource_mismatch");
       }
-      const current = await getShopifyProductTranslations(env, user.id, parsed.storeId, parsed.productId, parsed.locale);
-      const contentByKey = new Map(current.translatableContent.map((item) => [item.key, item] as const));
-      const existingByKey = new Map(current.translations.map((item) => [item.key, item.value] as const));
+      const current = await getShopifyProductTranslations(env, user.id, parsed.storeId, parsed.productId, parsed.locale, parsed.marketId);
+      const translationIdentity = (resourceId: string, key: string) => `${resourceId}\u0000${key}`;
+      const contentByKey = new Map(current.translatableContent.map((item) => [translationIdentity(item.resourceId, item.key), item] as const));
+      const existingByKey = new Map(current.translations.map((item) => [translationIdentity(item.resourceId, item.key), item.value] as const));
       const fields = parsed.fields.map((field) => {
-        const source = contentByKey.get(field.key);
+        const resourceId = field.resourceId || parsed.productId;
+        const identity = translationIdentity(resourceId, field.key);
+        const source = contentByKey.get(identity);
         if (!source) throw new ApiError(422, "Shopify 不允许翻译字段：" + field.key, "shopify_translation_key_invalid");
-        return { ...field, sourceValue: source.value, existingValue: existingByKey.get(field.key), digest: source.digest };
+        return { ...field, resourceId: source.resourceId, resourceType: source.resourceType, resourceLabel: source.resourceLabel, sourceValue: source.value, existingValue: field.existingValue ?? existingByKey.get(identity), digest: source.digest };
       });
       const charge = await chargeAiRequest(env, user.id, { feature: "shopify_translation", storeId: parsed.storeId, productId: parsed.productId, locale: parsed.locale, fieldCount: fields.length });
       try {

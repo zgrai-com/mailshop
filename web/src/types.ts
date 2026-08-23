@@ -90,7 +90,15 @@ export type ShopifyLocale = {
   published: boolean;
 };
 
+export type ShopifyMarket = {
+  id: string;
+  name: string;
+};
+
 export type ShopifyTranslatableContent = {
+  resourceId: string;
+  resourceType: string;
+  resourceLabel: string;
   key: string;
   value: string;
   digest: string;
@@ -98,6 +106,9 @@ export type ShopifyTranslatableContent = {
 };
 
 export type ShopifyTranslation = {
+  resourceId: string;
+  resourceType: string;
+  resourceLabel: string;
   key: string;
   value: string;
   locale: string;
@@ -108,17 +119,25 @@ export type ShopifyTranslation = {
 
 export type ShopifyProductTranslations = {
   locales: ShopifyLocale[];
+  markets: ShopifyMarket[];
+  marketId: string | null;
+  missingScopes: string[];
   translatableContent: ShopifyTranslatableContent[];
   translations: ShopifyTranslation[];
 };
 
 export type ShopifyTranslationDraft = {
+  resourceId: string;
+  resourceType: string;
+  resourceLabel: string;
   key: string;
   sourceValue: string;
   value: string;
+  originalValue: string;
   digest: string;
   changed: boolean;
   outdated?: boolean;
+  marketId?: string | null;
 };
 
 export type ShopifyTranslationAiResult = {

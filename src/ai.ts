@@ -3,7 +3,7 @@ import { decryptSetting, encryptSetting } from "./settings-crypto";
 import type { AiCandidate, AiPageRegion, AiPageSnapshot, AiSettingsInput, ShopifyProductTranslationAiInput } from "./validation";
 
 const AI_REQUEST_TIMEOUT_MS = 300_000;
-export const SHOPIFY_TRANSLATION_PROMPT_VERSION = "shopify-product-translation-v1";
+export const SHOPIFY_TRANSLATION_PROMPT_VERSION = "shopify-product-translation-v2";
 
 type AiSettingsRow = {
   base_url_ciphertext: string | null;
@@ -384,72 +384,82 @@ async function requestCompletion(credentials: AiSettingsInput, body: Record<stri
   }
 }
 
-type ShopifyTranslationResult = { key: string; value: string };
+type ShopifyTranslationResult = { id: string; value: string };
 
 function protectedTokens(value: string): string[] {
-  const matches = value.match(/(?:https?:\/\/[^\s"'<>]+|\{\{[^}]+\}\}|\{%[^%]+%\}|\b[A-Z0-9][A-Z0-9._/-]{2,}\b|\$\{[^}]+\})/gu) ?? [];
+  const matches = value.match(/(?:<[^>]+>|https?:\/\/[^\s"'<>]+|\{\{[^}]+\}\}|\{%[^%]+%\}|\$\{[^}]+\}|%\{[^}]+\}|\b[A-Z0-9][A-Z0-9._/-]{2,}\b)/gu) ?? [];
   return [...new Set(matches)];
 }
 
-function preservesProtectedTokens(source: string, translated: string): boolean {
+export function preservesShopifyProtectedTokens(source: string, translated: string): boolean {
   const target = translated.toLowerCase();
   return protectedTokens(source).every((token) => target.includes(token.toLowerCase()));
 }
 
-function translationPrompt(input: ShopifyProductTranslationAiInput): string {
-  const fields = input.fields.map((field) => ({ key: field.key, sourceValue: field.sourceValue, existingValue: field.existingValue ?? null }));
+export function buildShopifyTranslationPrompt(input: ShopifyProductTranslationAiInput): string {
+  const fields = input.fields.map((field, index) => ({ id: String(index), resourceType: field.resourceType ?? "Product", resourceLabel: field.resourceLabel ?? "商品", key: field.key, sourceValue: field.sourceValue, existingValue: field.existingValue ?? null }));
   return [
     "Prompt version: " + SHOPIFY_TRANSLATION_PROMPT_VERSION,
-    "你是 Shopify 商品页的专业本地化编辑，不是逐词翻译器。请将输入字段翻译成目标语言/地区自然、可信、适合电商转化的文案。",
+    "你是资深 Shopify 商品本地化编辑和目标语言母语审校，不做逐词直译。你的目标是在不改变任何商品事实的前提下，让文案像当地优秀电商品牌原创撰写。",
     "目标 locale：" + input.locale,
     "语气要求：" + input.style,
     input.glossary.trim() ? "术语表（优先遵守，品牌词不要擅自改写）：" + input.glossary.trim() : "没有额外术语表。",
+    "工作方法（只在内部执行，不要输出分析、候选或分数）：",
+    "- 每个字段先拟定两个候选：一个偏忠实准确，一个偏母语化编辑。",
+    "- 分别按事实忠实度、母语自然度、电商表达清晰度、结构与受保护内容完整度四项 1-10 分评估；任一事实或结构错误的候选直接淘汰，输出总分更高者。",
+    "字段策略：title 简洁顺口并把核心商品名放前面；body_html 保留排版并自然组织卖点；meta_title/meta_description 面向真实搜索阅读，不堆砌关键词；handle 生成简洁、可读、适合 URL 的本地化 slug；product_type 和选项值使用当地消费者熟悉的品类词。",
     "严格规则：",
-    "1. 只返回输入中已有的 key，每个 key 恰好返回一次；不得新增字段、解释、Markdown 或代码围栏。",
+    "1. 只返回输入中已有的 id，每个 id 恰好返回一次；key 和资源信息只用于理解上下文，不得作为输出标识。不得新增字段、解释、Markdown 或代码围栏。",
     "2. 保留商品事实、数字、货币、尺寸、单位、SKU、品牌、型号、URL、Liquid 变量、占位符和 HTML 标签；不要翻译代码、链接、变量或 SKU。",
-    "3. body_html/descriptionHtml 必须保留原 HTML 标签、层级、列表和链接结构，只翻译可见文本；不要插入新标签或删除标签。",
-    "4. title 要简洁自然；SEO 标题/描述要像真实搜索结果，不堆砌关键词；不能增加原文没有的功效、认证、折扣、承诺、规格或售后信息。",
-    "5. 对已有翻译进行润色时，以 sourceValue 的事实为准；无法安全判断时返回 sourceValue，不要猜测。",
-    "输出严格 JSON：{\"translations\":[{\"key\":\"原 key\",\"value\":\"翻译后的字符串\"}]}",
+    "3. body_html/descriptionHtml 必须逐字保留全部 HTML 标签及属性、层级、列表、链接和换行结构，只翻译可见文本；不要插入、删除、重排或改写标签。",
+    "4. 不能增加原文没有的功效、认证、折扣、稀缺性、承诺、规格、材质、适用人群或售后信息，也不要用夸张营销套话补足短文案。",
+    "5. 品牌、系列名和型号默认保持原文；只有术语表明确要求时才改写。数值与单位之间的本地排版可以调整，但数值和单位含义不得变化。",
+    "6. 对已有翻译进行润色时，以 sourceValue 的事实为唯一依据；已有译文只作为术语和语气参考。无法安全判断时返回 sourceValue，不要猜测。",
+    "7. 输出前再次检查所有 id、HTML、URL、Liquid、占位符、SKU、数字、货币、尺寸、单位、品牌和型号均完整无误。",
+    "输出严格 JSON：{\"translations\":[{\"id\":\"输入 id\",\"value\":\"翻译后的字符串\"}]}",
     JSON.stringify({ fields }),
-  ].join("\\n");
+  ].join("\n");
 }
 
 export async function translateShopifyContent(env: Env, input: ShopifyProductTranslationAiInput): Promise<{
   locale: string;
-  translations: Array<{ key: string; value: string; sourceValue: string; digest: string; changed: boolean }>;
+  translations: Array<{ resourceId: string; resourceType: string; resourceLabel: string; key: string; value: string; sourceValue: string; originalValue: string; digest: string; changed: boolean }>;
   promptVersion: string;
 }> {
   const credentials = await readCredentials(env);
   const result = await requestCompletion(credentials, {
     model: credentials.modelId,
     max_output_tokens: Math.min(12_000, Math.max(1_500, input.fields.reduce((total, field) => total + Math.min(field.sourceValue.length, 1_500), 0))),
-    input: [{ role: "user", content: [{ type: "input_text", text: translationPrompt(input) }] }],
+    input: [{ role: "user", content: [{ type: "input_text", text: buildShopifyTranslationPrompt(input) }] }],
   });
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "AI 翻译失败（HTTP " + result.response.status + "）"), "shopify_translation_ai_failed");
   if (!result.payload) throw new ApiError(502, "AI 翻译没有返回内容", "shopify_translation_ai_empty");
   const parsed = parseModelJson(responseOutputText(result.payload));
   const raw = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { translations?: unknown }).translations : parsed;
-  const byKey = new Map<string, ShopifyTranslationResult>();
+  const byId = new Map<string, ShopifyTranslationResult>();
   for (const item of Array.isArray(raw) ? raw : []) {
     if (!item || typeof item !== "object") continue;
     const value = item as Record<string, unknown>;
-    const key = typeof value.key === "string" ? value.key.trim() : "";
+    const id = typeof value.id === "string" ? value.id.trim() : "";
     const translated = typeof value.value === "string" ? value.value : null;
-    if (key && translated !== null && !byKey.has(key)) byKey.set(key, { key, value: translated });
+    if (id && translated !== null && !byId.has(id)) byId.set(id, { id, value: translated });
   }
   return {
     locale: input.locale,
     promptVersion: SHOPIFY_TRANSLATION_PROMPT_VERSION,
-    translations: input.fields.map((field) => {
-      const candidate = byKey.get(field.key)?.value?.trim() ?? "";
-      const safeValue = candidate && preservesProtectedTokens(field.sourceValue, candidate) ? candidate : field.sourceValue;
+    translations: input.fields.map((field, index) => {
+      const candidate = byId.get(String(index))?.value?.trim() ?? "";
+      const safeValue = candidate && preservesShopifyProtectedTokens(field.sourceValue, candidate) ? candidate : field.existingValue ?? "";
       return {
+        resourceId: field.resourceId ?? input.productId,
+        resourceType: field.resourceType ?? "Product",
+        resourceLabel: field.resourceLabel ?? "商品",
         key: field.key,
         value: safeValue,
         sourceValue: field.sourceValue,
+        originalValue: field.existingValue ?? "",
         digest: field.digest ?? "",
-        changed: safeValue !== field.sourceValue,
+        changed: safeValue !== (field.existingValue ?? ""),
       };
     }),
   };

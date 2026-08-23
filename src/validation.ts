@@ -101,6 +101,9 @@ export const shopifyProductUpdateSchema = z.object({
 });
 
 const shopifyTranslationFieldSchema = z.object({
+  resourceId: z.string().trim().min(1).max(255).optional(),
+  resourceType: z.string().trim().max(100).optional(),
+  resourceLabel: z.string().trim().max(255).optional(),
   key: z.string().trim().min(1).max(255),
   sourceValue: z.string().max(500_000),
   existingValue: z.string().max(500_000).optional(),
@@ -108,6 +111,7 @@ const shopifyTranslationFieldSchema = z.object({
 });
 
 const shopifyTranslationPublishItemSchema = z.object({
+  resourceId: z.string().trim().min(1).max(255).optional(),
   key: z.string().trim().min(1).max(255),
   value: z.string().max(500_000),
   translatableContentDigest: z.string().trim().min(1).max(255),
@@ -116,12 +120,14 @@ const shopifyTranslationPublishItemSchema = z.object({
 
 export const shopifyProductTranslationsQuerySchema = z.object({
   locale: z.string().trim().regex(/^[a-z]{2,3}(?:-[A-Z]{2,4})?$/u, "locale 格式无效").optional(),
+  marketId: z.string().trim().max(255).optional(),
 });
 
 export const shopifyProductTranslationAiSchema = z.object({
   storeId: z.string().uuid(),
   productId: z.string().min(1).max(255),
   locale: z.string().trim().regex(/^[a-z]{2,3}(?:-[A-Z]{2,4})?$/u, "locale 格式无效"),
+  marketId: z.string().trim().max(255).optional(),
   fields: z.array(shopifyTranslationFieldSchema).min(1).max(32),
   style: z.string().trim().max(500).default("自然、清晰、符合目标市场电商习惯"),
   glossary: z.string().trim().max(4_000).default(""),
@@ -131,7 +137,7 @@ export const shopifyProductTranslationPublishSchema = z.object({
   storeId: z.string().uuid(),
   productId: z.string().min(1).max(255),
   locale: z.string().trim().regex(/^[a-z]{2,3}(?:-[A-Z]{2,4})?$/u, "locale 格式无效"),
-  translations: z.array(shopifyTranslationPublishItemSchema).min(1).max(32),
+  translations: z.array(shopifyTranslationPublishItemSchema).min(1).max(250),
 });
 
 const aiCandidateSchema = z.object({
