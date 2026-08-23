@@ -33,6 +33,7 @@ import { ProductModal } from "./components/ProductModal";
 import { SettingsPage } from "./components/SettingsPage";
 import { ShopifyStoresPage } from "./components/ShopifyStoresPage";
 import { ShopifyProductsPage } from "./components/ShopifyProductsPage";
+import { ShopifyProductEditorPage } from "./components/ShopifyProductEditorPage";
 import { UserManager } from "./components/UserManager";
 import { UserDashboard } from "./components/UserDashboard";
 import { CreditsPage } from "./components/CreditsPage";
@@ -70,7 +71,20 @@ const pathViews = new Map(Object.entries(viewPaths).map(([view, path]) => [path,
 
 function viewFromPath(pathname: string): View | null {
   const normalized = pathname !== "/" ? pathname.replace(/\/$/u, "") : pathname;
+  if (/^\/shopify\/products\/[^/]+$/u.test(normalized)) return "shopify-products";
   return pathViews.get(normalized) ?? null;
+}
+
+function readShopifyProductRoute() {
+  const normalized = window.location.pathname.replace(/\/$/u, "");
+  const match = normalized.match(/^\/shopify\/products\/([^/]+)$/u);
+  if (!match) return { productId: null, storeId: "", returnPath: "/shopify/products" };
+  const params = new URLSearchParams(window.location.search);
+  return {
+    productId: decodeURIComponent(match[1]),
+    storeId: params.get("storeId") ?? "",
+    returnPath: params.get("returnPath") || "/shopify/products",
+  };
 }
 
 function positiveInteger(value: string | null, fallback: number): number {
@@ -128,6 +142,7 @@ function formatOfferPrice(priceMin: number | null | undefined, priceMax: number 
 
 export default function App() {
   const initialView = viewFromPath(window.location.pathname) ?? "dashboard";
+  const initialShopifyProductRoute = readShopifyProductRoute();
   const initialProductRoute = readProductRouteState();
   const initialTaskRoute = readTaskRouteState();
   const [user, setUser] = useState<User | null | undefined>(undefined);
@@ -161,6 +176,9 @@ export default function App() {
   const [googleSettings, setGoogleSettings] = useState<GoogleSettings | null>(null);
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null);
   const [shopifyStores, setShopifyStores] = useState<ShopifyStore[]>([]);
+  const [shopifyProductId, setShopifyProductId] = useState<string | null>(initialShopifyProductRoute.productId);
+  const [shopifyProductStoreId, setShopifyProductStoreId] = useState(initialShopifyProductRoute.storeId);
+  const [shopifyProductReturnPath, setShopifyProductReturnPath] = useState(initialShopifyProductRoute.returnPath);
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [errorDialog, setErrorDialog] = useState<unknown>(null);
@@ -185,6 +203,29 @@ export default function App() {
     setSidebarOpen(false);
     setSelectedProduct(null);
     setExpandedProductId(null);
+    setShopifyProductId(null);
+    setShopifyProductStoreId("");
+    setShopifyProductReturnPath("/shopify/products");
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }, []);
+
+  const navigateToShopifyProduct = useCallback((productId: string, storeId: string, returnPath: string) => {
+    const nextPath = `/shopify/products/${encodeURIComponent(productId)}${toQuery({ storeId, returnPath })}`;
+    window.history.pushState({}, "", nextPath);
+    setView("shopify-products");
+    setShopifyProductId(productId);
+    setShopifyProductStoreId(storeId);
+    setShopifyProductReturnPath(returnPath);
+    setSidebarOpen(false);
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }, []);
+
+  const navigateBackFromShopifyProduct = useCallback((returnPath: string) => {
+    window.history.replaceState({}, "", returnPath || "/shopify/products");
+    setShopifyProductId(null);
+    setShopifyProductStoreId("");
+    setShopifyProductReturnPath("/shopify/products");
+    setView("shopify-products");
     window.scrollTo({ top: 0, behavior: "auto" });
   }, []);
 
@@ -237,6 +278,11 @@ export default function App() {
         setSearchTaskStatus(route.status);
         setSearchTaskPage(route.page);
         setSearchTaskPageSize(route.pageSize);
+      } else if (nextView === "shopify-products") {
+        const route = readShopifyProductRoute();
+        setShopifyProductId(route.productId);
+        setShopifyProductStoreId(route.storeId);
+        setShopifyProductReturnPath(route.returnPath);
       }
       setSelectedProduct(null);
       setExpandedProductId(null);
@@ -900,7 +946,11 @@ export default function App() {
             </section>
           </section>
         ) : view === "shopify-products" ? (
-          <ShopifyProductsPage stores={shopifyStores} onError={handleApiError} onNotify={(message) => notify("success", message)} />
+          shopifyProductId ? (
+            <ShopifyProductEditorPage stores={shopifyStores} storeId={shopifyProductStoreId} productId={shopifyProductId} returnPath={shopifyProductReturnPath} onBack={navigateBackFromShopifyProduct} onError={handleApiError} onNotify={(message) => notify("success", message)} />
+          ) : (
+            <ShopifyProductsPage stores={shopifyStores} onError={handleApiError} onNotify={(message) => notify("success", message)} onOpenProduct={navigateToShopifyProduct} />
+          )
         ) : view === "shopify" ? (
           <ShopifyStoresPage stores={shopifyStores} loading={loadingSettings} saving={saving} onSave={saveShopifySettings} onTest={testShopifyStore} onDelete={deleteShopifyStore} />
         ) : view === "accounts" && user.role === "admin" ? (
