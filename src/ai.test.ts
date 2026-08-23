@@ -12,15 +12,17 @@ describe("Shopify translation prompt", () => {
       style: "简洁高端",
       glossary: "AirFlex 保持英文",
       fields: [
-        { resourceId: "gid://shopify/Product/1", resourceType: "Product", resourceLabel: "商品", key: "title", sourceValue: "AirFlex Dress" },
+        { resourceId: "gid://shopify/Product/1", resourceType: "Product", resourceLabel: "商品", sourceLocale: "en", key: "title", sourceValue: "AirFlex Dress" },
         { resourceId: "gid://shopify/ProductVariant/2", resourceType: "ProductVariant", resourceLabel: "Black / M", key: "title", sourceValue: "Black / M" },
       ],
     });
 
-    expect(SHOPIFY_TRANSLATION_PROMPT_VERSION).toBe("shopify-product-translation-v2");
+    expect(SHOPIFY_TRANSLATION_PROMPT_VERSION).toBe("shopify-product-translation-v3");
     expect(prompt).toContain("事实忠实度、母语自然度、电商表达清晰度");
+    expect(prompt).toContain("跨字段术语一致性");
     expect(prompt).toContain('"id":"0"');
     expect(prompt).toContain('"id":"1"');
+    expect(prompt).toContain('"sourceLocale":"en"');
     expect(prompt).toContain("AirFlex 保持英文");
   });
 
@@ -28,5 +30,8 @@ describe("Shopify translation prompt", () => {
     const source = '<p data-sku="SKU-RED-01">Save 20% at https://example.com/{{ product.id }}</p>';
     expect(preservesShopifyProtectedTokens(source, '<p data-sku="SKU-RED-01">Économisez 20% sur https://example.com/{{ product.id }}</p>')).toBe(true);
     expect(preservesShopifyProtectedTokens(source, '<p data-sku="SKU-RED-02">Économisez 20%</p>')).toBe(false);
+    expect(preservesShopifyProtectedTokens(source, '<p data-sku="SKU-RED-01">Économisez 25% sur https://example.com/{{ product.id }}</p>')).toBe(false);
+    expect(preservesShopifyProtectedTokens("<p>First</p><p>Second</p>", "<p>Premier</p>")).toBe(false);
+    expect(preservesShopifyProtectedTokens("<strong><em>Text</em></strong>", "<em><strong>Texte</strong></em>")).toBe(false);
   });
 });

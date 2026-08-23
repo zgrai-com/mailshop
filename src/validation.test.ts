@@ -9,6 +9,9 @@ import {
   aiCandidatesRequestSchema,
   aiSettingsSchema,
   shopifyPublishSchema,
+  shopifyProductTranslationAiSchema,
+  shopifyProductTranslationPublishSchema,
+  shopifyProductTranslationsQuerySchema,
   shopifySettingsSchema,
   productInputSchema,
   productListQuerySchema,
@@ -183,6 +186,14 @@ describe("Shopify schemas", () => {
       clientSecret: "client-secret",
     })).toMatchObject({ shopDomain: "demo.myshopify.com", displayName: "" });
     expect(shopifyPublishSchema.parse({ storeId: "0a95f67f-f8fb-4454-9ef4-7cb0debb28a0" }).storeId).toContain("0a95");
+  });
+
+  it("accepts Shopify locale tags with script and numeric region subtags", () => {
+    const storeId = "0a95f67f-f8fb-4454-9ef4-7cb0debb28a0";
+    expect(shopifyProductTranslationsQuerySchema.parse({ locale: "es-419" }).locale).toBe("es-419");
+    expect(shopifyProductTranslationAiSchema.parse({ storeId, productId: "gid://shopify/Product/1", locale: "zh-Hant", fields: [{ key: "title", sourceValue: "示例" }] }).locale).toBe("zh-Hant");
+    expect(shopifyProductTranslationPublishSchema.parse({ storeId, productId: "gid://shopify/Product/1", locale: "pt-BR", translations: [{ key: "title", value: "Exemplo", translatableContentDigest: "digest" }] }).locale).toBe("pt-BR");
+    expect(() => shopifyProductTranslationsQuerySchema.parse({ locale: "bad_locale" })).toThrow();
   });
 });
 

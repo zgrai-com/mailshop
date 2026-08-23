@@ -816,7 +816,7 @@ async function handleAuthenticatedApi(
         const identity = translationIdentity(resourceId, field.key);
         const source = contentByKey.get(identity);
         if (!source) throw new ApiError(422, "Shopify 不允许翻译字段：" + field.key, "shopify_translation_key_invalid");
-        return { ...field, resourceId: source.resourceId, resourceType: source.resourceType, resourceLabel: source.resourceLabel, sourceValue: source.value, existingValue: field.existingValue ?? existingByKey.get(identity), digest: source.digest };
+        return { ...field, resourceId: source.resourceId, resourceType: source.resourceType, resourceLabel: source.resourceLabel, sourceLocale: source.locale, sourceValue: source.value, existingValue: field.existingValue ?? existingByKey.get(identity), digest: source.digest };
       });
       const charge = await chargeAiRequest(env, user.id, { feature: "shopify_translation", storeId: parsed.storeId, productId: parsed.productId, locale: parsed.locale, fieldCount: fields.length });
       try {
