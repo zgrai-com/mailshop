@@ -73,9 +73,9 @@ import {
   withSecurityHeaders,
 } from "./http";
 import { handleImageProxy } from "./image-proxy";
-import { classifyImageCandidates, getAiSettings, saveAiSettings } from "./ai";
+import { classifyImageCandidates, getAiSettings, saveAiSettings, translateShopifyContent } from "./ai";
 import { allowedExtensionOrigins, extensionOriginFromRequest } from "./extension-origin";
-import { deleteShopifyProduct, deleteShopifyStore, getShopifyProduct, getShopifySettings, listShopifyProducts, publishProductToShopify, saveShopifySettings, testShopifyStore, updateShopifyProduct } from "./shopify";
+import { deleteShopifyProduct, deleteShopifyStore, getShopifyProduct, getShopifyProductTranslations, getShopifySettings, listShopifyProducts, publishProductToShopify, registerShopifyTranslations, saveShopifySettings, testShopifyStore, updateShopifyProduct } from "./shopify";
 import {
   bootstrapSchema,
   crawlerOfferLinkSchema,
@@ -102,6 +102,9 @@ import {
   shopifyPublishSchema,
   shopifyProductListQuerySchema,
   shopifyProductUpdateSchema,
+  shopifyProductTranslationsQuerySchema,
+  shopifyProductTranslationAiSchema,
+  shopifyProductTranslationPublishSchema,
 } from "./validation";
 import type { SearchTaskRunInput } from "./validation";
 
@@ -452,6 +455,12 @@ function shopifyProductRoute(pathname: string): { storeId: string; productId?: s
   return { storeId: match[1], productId: match[2] ? decodeURIComponent(match[2]) : undefined };
 }
 
+function shopifyProductTranslationRoute(pathname: string): { storeId: string; productId: string; action: "read" | "ai" | "publish" } | null {
+  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/translations(?:\/(ai))?$/iu);
+  if (!match) return null;
+  return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "ai" ? "ai" : "read" };
+}
+
 function oneboundItemRoute(pathname: string): { offerId: string } | null {
   const match = pathname.match(/^\/api\/integrations\/onebound\/items\/([^/]+)$/u);
   if (!match) return null;
@@ -786,6 +795,45 @@ async function handleAuthenticatedApi(
       return json({ ok: true, store });
     }
     return methodNotAllowed(["GET", "PUT"]);
+  }
+  const shopifyTranslationRoute = shopifyProductTranslationRoute(url.pathname);
+  if (shopifyTranslationRoute) {
+    if (request.method === "GET") {
+      const query = shopifyProductTranslationsQuerySchema.parse(parseQuery(url));
+      return json({ ok: true, ...(await getShopifyProductTranslations(env, user.id, shopifyTranslationRoute.storeId, shopifyTranslationRoute.productId, query.locale)) });
+    }
+    if (request.method === "POST" && shopifyTranslationRoute.action === "ai") {
+      const parsed = await readJson(request, shopifyProductTranslationAiSchema);
+      if (parsed.storeId !== shopifyTranslationRoute.storeId || parsed.productId !== shopifyTranslationRoute.productId) {
+        throw new ApiError(422, "翻译请求的店铺或商品不匹配当前路由", "shopify_translation_resource_mismatch");
+      }
+      const current = await getShopifyProductTranslations(env, user.id, parsed.storeId, parsed.productId, parsed.locale);
+      const contentByKey = new Map(current.translatableContent.map((item) => [item.key, item] as const));
+      const existingByKey = new Map(current.translations.map((item) => [item.key, item.value] as const));
+      const fields = parsed.fields.map((field) => {
+        const source = contentByKey.get(field.key);
+        if (!source) throw new ApiError(422, "Shopify 不允许翻译字段：" + field.key, "shopify_translation_key_invalid");
+        return { ...field, sourceValue: source.value, existingValue: existingByKey.get(field.key), digest: source.digest };
+      });
+      const charge = await chargeAiRequest(env, user.id, { feature: "shopify_translation", storeId: parsed.storeId, productId: parsed.productId, locale: parsed.locale, fieldCount: fields.length });
+      try {
+        const result = await translateShopifyContent(env, { ...parsed, fields });
+        return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
+      } catch (error) {
+        await refundAiRequest(env, user.id, charge).catch(() => undefined);
+        throw error;
+      }
+    }
+    if (request.method === "PUT") {
+      const parsed = await readJson(request, shopifyProductTranslationPublishSchema);
+      if (parsed.storeId !== shopifyTranslationRoute.storeId || parsed.productId !== shopifyTranslationRoute.productId) {
+        throw new ApiError(422, "翻译发布请求的店铺或商品不匹配当前路由", "shopify_translation_resource_mismatch");
+      }
+      const result = await registerShopifyTranslations(env, user.id, parsed);
+      ctx.waitUntil(recordAudit(request, env, user.id, "shopify_product.translation_publish", "shopify_product", parsed.productId, { storeId: parsed.storeId, locale: parsed.locale, fieldCount: parsed.translations.length }));
+      return json({ ok: true, ...result });
+    }
+    return methodNotAllowed(["GET", "POST", "PUT"]);
   }
   const shopifyProduct = shopifyProductRoute(url.pathname);
   if (shopifyProduct) {

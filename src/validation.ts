@@ -100,6 +100,40 @@ export const shopifyProductUpdateSchema = z.object({
   variants: z.array(shopifyVariantUpdateSchema).max(250).default([]),
 });
 
+const shopifyTranslationFieldSchema = z.object({
+  key: z.string().trim().min(1).max(255),
+  sourceValue: z.string().max(500_000),
+  existingValue: z.string().max(500_000).optional(),
+  digest: z.string().trim().max(255).optional(),
+});
+
+const shopifyTranslationPublishItemSchema = z.object({
+  key: z.string().trim().min(1).max(255),
+  value: z.string().max(500_000),
+  translatableContentDigest: z.string().trim().min(1).max(255),
+  marketId: z.string().trim().max(255).optional(),
+});
+
+export const shopifyProductTranslationsQuerySchema = z.object({
+  locale: z.string().trim().regex(/^[a-z]{2,3}(?:-[A-Z]{2,4})?$/u, "locale 格式无效").optional(),
+});
+
+export const shopifyProductTranslationAiSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  locale: z.string().trim().regex(/^[a-z]{2,3}(?:-[A-Z]{2,4})?$/u, "locale 格式无效"),
+  fields: z.array(shopifyTranslationFieldSchema).min(1).max(32),
+  style: z.string().trim().max(500).default("自然、清晰、符合目标市场电商习惯"),
+  glossary: z.string().trim().max(4_000).default(""),
+});
+
+export const shopifyProductTranslationPublishSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  locale: z.string().trim().regex(/^[a-z]{2,3}(?:-[A-Z]{2,4})?$/u, "locale 格式无效"),
+  translations: z.array(shopifyTranslationPublishItemSchema).min(1).max(32),
+});
+
 const aiCandidateSchema = z.object({
   id: z.string().trim().min(1).max(160),
   url: z.string().trim().url().max(2_048),
@@ -138,6 +172,8 @@ export const aiCandidatesRequestSchema = z.object({
 
 export type AiSettingsInput = z.infer<typeof aiSettingsSchema>;
 export type ShopifySettingsInput = z.infer<typeof shopifySettingsSchema>;
+export type ShopifyProductTranslationAiInput = z.infer<typeof shopifyProductTranslationAiSchema>;
+export type ShopifyProductTranslationPublishInput = z.infer<typeof shopifyProductTranslationPublishSchema>;
 export type AiCandidate = z.infer<typeof aiCandidateSchema>;
 export type AiPageSnapshot = z.infer<typeof aiPageSnapshotSchema>;
 export type AiPageRegion = z.infer<typeof aiPageRegionSchema>;

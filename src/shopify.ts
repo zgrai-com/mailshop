@@ -85,6 +85,29 @@ export type ShopifyProductDetail = ShopifyProductListItem & {
   }>;
 };
 
+export type ShopifyLocale = {
+  locale: string;
+  name: string;
+  primary: boolean;
+  published: boolean;
+};
+
+export type ShopifyTranslatableContent = {
+  key: string;
+  value: string;
+  digest: string;
+  locale: string;
+};
+
+export type ShopifyTranslation = {
+  key: string;
+  value: string;
+  locale: string;
+  outdated: boolean;
+  marketId: string | null;
+  marketName: string | null;
+};
+
 export type ShopifyProductListQuery = {
   storeId: string;
   search: string;
@@ -243,6 +266,85 @@ export async function getShopifyProduct(env: Env, userId: string, storeId: strin
   const data = await graphql<{ product: RawShopifyProduct | null }>(store, token.accessToken, `query Product($id: ID!) { product(id: $id) { ${PRODUCT_FIELDS} } }`, { id: productId });
   if (!data.product) throw new ApiError(404, "Shopify 商品不存在", "shopify_product_not_found");
   return { product: mapShopifyProduct(data.product), store: toSummary(store, credentials) };
+}
+
+type ShopifyTranslationResourceResponse = {
+  resourceId: string;
+  translatableContent: Array<{ key: string; value: string; digest: string; locale: string }>;
+  translations: Array<{ key: string; value: string; locale: string; outdated?: boolean; market?: { id?: string | null; name?: string | null } | null }>;
+};
+
+function requiredTranslationScopes(scopes: string[]): string[] {
+  return ["read_locales", "read_translations", "write_translations"].filter((scope) => !scopes.includes(scope));
+}
+
+async function getShopLocales(store: ShopifyStoreRow, accessToken: string): Promise<ShopifyLocale[]> {
+  const data = await graphql<{ shopLocales: Array<{ locale: string; name: string; primary: boolean; published: boolean }> }>(store, accessToken, "query ShopLocales { shopLocales { locale name primary published } }", {});
+  return data.shopLocales.map((locale) => ({ locale: locale.locale, name: locale.name, primary: Boolean(locale.primary), published: Boolean(locale.published) }));
+}
+
+async function getTranslationResource(store: ShopifyStoreRow, accessToken: string, productId: string, locale: string): Promise<ShopifyTranslationResourceResponse> {
+  const data = await graphql<{ translatableResource: ShopifyTranslationResourceResponse | null }>(store, accessToken, "query ProductTranslations($resourceId: ID!, $locale: String!) { translatableResource(resourceId: $resourceId) { resourceId translatableContent { key value digest locale } translations(locale: $locale) { key value locale outdated market { id name } } } }", { resourceId: productId, locale });
+  if (!data.translatableResource) throw new ApiError(404, "Shopify 商品没有可翻译内容", "shopify_translation_resource_not_found");
+  return data.translatableResource;
+}
+
+export async function getShopifyProductTranslations(env: Env, userId: string, storeId: string, productId: string, locale?: string): Promise<{
+  locales: ShopifyLocale[];
+  translatableContent: ShopifyTranslatableContent[];
+  translations: ShopifyTranslation[];
+  locale: string;
+}> {
+  const store = await getStoreRow(env, storeId, userId);
+  const credentials = await decryptCredentials(env, store);
+  const token = await getAccessToken(store, credentials);
+  const missingScopes = requiredTranslationScopes(token.scopes);
+  if (missingScopes.length) throw new ApiError(403, "Shopify 应用缺少多语言权限：" + missingScopes.join(", ") + "，请更新应用权限并重新授权", "shopify_translation_scope_missing", { missingScopes });
+  const locales = await getShopLocales(store, token.accessToken);
+  const selectedLocale = locale || locales.find((item) => item.primary)?.locale || locales[0]?.locale;
+  if (!selectedLocale) throw new ApiError(422, "Shopify 店铺尚未配置语言", "shopify_locales_empty");
+  if (!locales.some((item) => item.locale === selectedLocale)) throw new ApiError(422, "目标语言不在 Shopify 店铺语言列表中", "shopify_locale_invalid");
+  const resource = await getTranslationResource(store, token.accessToken, productId, selectedLocale);
+  return {
+    locale: selectedLocale,
+    locales,
+    translatableContent: resource.translatableContent,
+    translations: resource.translations.map((item) => ({ key: item.key, value: item.value, locale: item.locale, outdated: Boolean(item.outdated), marketId: item.market?.id ?? null, marketName: item.market?.name ?? null })),
+  };
+}
+
+export type ShopifyTranslationPublishInput = {
+  storeId: string;
+  productId: string;
+  locale: string;
+  translations: Array<{ key: string; value: string; translatableContentDigest: string; marketId?: string }>;
+};
+
+export async function registerShopifyTranslations(env: Env, userId: string, input: ShopifyTranslationPublishInput): Promise<{ locale: string; translations: ShopifyTranslation[] }> {
+  const store = await getStoreRow(env, input.storeId, userId);
+  const credentials = await decryptCredentials(env, store);
+  const token = await getAccessToken(store, credentials);
+  const missingScopes = requiredTranslationScopes(token.scopes);
+  if (missingScopes.length) throw new ApiError(403, "Shopify 应用缺少多语言权限：" + missingScopes.join(", ") + "，请更新应用权限并重新授权", "shopify_translation_scope_missing", { missingScopes });
+  const locales = await getShopLocales(store, token.accessToken);
+  if (!locales.some((item) => item.locale === input.locale)) throw new ApiError(422, "目标语言不在 Shopify 店铺语言列表中", "shopify_locale_invalid");
+  const resource = await getTranslationResource(store, token.accessToken, input.productId, input.locale);
+  const contentByKey = new Map(resource.translatableContent.map((item) => [item.key, item] as const));
+  for (const item of input.translations) {
+    const current = contentByKey.get(item.key);
+    if (!current) throw new ApiError(422, "Shopify 不允许翻译字段：" + item.key, "shopify_translation_key_invalid");
+    if (current.digest !== item.translatableContentDigest) throw new ApiError(409, "字段 " + item.key + " 已在 Shopify 中更新，请重新读取后再发布", "shopify_translation_digest_stale", { key: item.key });
+  }
+  const data = await graphql<{ translationsRegister: { translations?: Array<{ key: string; value: string; locale: string; outdated?: boolean; market?: { id?: string | null; name?: string | null } | null }>; userErrors?: unknown } }>(store, token.accessToken, "mutation RegisterTranslations($resourceId: ID!, $translations: [TranslationInput!]!) { translationsRegister(resourceId: $resourceId, translations: $translations) { translations { key value locale outdated market { id name } } userErrors { field message code } } }", {
+    resourceId: input.productId,
+    translations: input.translations.map((item) => ({ locale: input.locale, key: item.key, value: item.value, translatableContentDigest: item.translatableContentDigest, ...(item.marketId ? { marketId: item.marketId } : {}) })),
+  });
+  const error = userErrors(data.translationsRegister.userErrors);
+  if (error) throw new ApiError(502, error, "shopify_translation_publish_failed");
+  return {
+    locale: input.locale,
+    translations: (data.translationsRegister.translations ?? []).map((item) => ({ key: item.key, value: item.value, locale: item.locale, outdated: Boolean(item.outdated), marketId: item.market?.id ?? null, marketName: item.market?.name ?? null })),
+  };
 }
 
 export async function updateShopifyProduct(env: Env, userId: string, input: ShopifyProductUpdateInput): Promise<{ product: ShopifyProductDetail }> {
@@ -822,13 +924,13 @@ export async function saveShopifySettings(env: Env, userId: string, input: Shopi
               client_id_ciphertext = ?, client_secret_ciphertext = ?, last_error = NULL,
               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ? AND owner_user_id = ?`,
-    ).bind(input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["read_products", "write_products"]), clientId, clientSecret, id, userId).run();
+    ).bind(input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["read_products", "write_products", "read_locales", "read_translations", "write_translations"]), clientId, clientSecret, id, userId).run();
   } else {
     await env.DB.prepare(
       `INSERT INTO shopify_stores
          (id, owner_user_id, shop_domain, display_name, status, api_version, scopes_json, client_id_ciphertext, client_secret_ciphertext, last_error, updated_at)
        VALUES (?, ?, ?, ?, 'planned', ?, ?, ?, ?, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
-    ).bind(id, userId, shopDomain, input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["read_products", "write_products"]), clientId, clientSecret).run();
+    ).bind(id, userId, shopDomain, input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["read_products", "write_products", "read_locales", "read_translations", "write_translations"]), clientId, clientSecret).run();
   }
   return toSummary(await getStoreRow(env, id, userId), { clientId: input.clientId, clientSecret: input.clientSecret });
 }

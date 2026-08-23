@@ -112,6 +112,22 @@ export type ShopifyProductTranslations = {
   translations: ShopifyTranslation[];
 };
 
+export type ShopifyTranslationDraft = {
+  key: string;
+  sourceValue: string;
+  value: string;
+  digest: string;
+  changed: boolean;
+  outdated?: boolean;
+};
+
+export type ShopifyTranslationAiResult = {
+  locale: string;
+  translations: ShopifyTranslationDraft[];
+  promptVersion: string;
+  credits: { balance: number; charged: number };
+};
+
 export type CreditTransaction = {
   id: string;
   amount: number;

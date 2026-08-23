@@ -1,8 +1,9 @@
 import { ApiError } from "./http";
 import { decryptSetting, encryptSetting } from "./settings-crypto";
-import type { AiCandidate, AiPageRegion, AiPageSnapshot, AiSettingsInput } from "./validation";
+import type { AiCandidate, AiPageRegion, AiPageSnapshot, AiSettingsInput, ShopifyProductTranslationAiInput } from "./validation";
 
 const AI_REQUEST_TIMEOUT_MS = 300_000;
+export const SHOPIFY_TRANSLATION_PROMPT_VERSION = "shopify-product-translation-v1";
 
 type AiSettingsRow = {
   base_url_ciphertext: string | null;
@@ -381,6 +382,77 @@ async function requestCompletion(credentials: AiSettingsInput, body: Record<stri
   } finally {
     clearTimeout(timeout);
   }
+}
+
+type ShopifyTranslationResult = { key: string; value: string };
+
+function protectedTokens(value: string): string[] {
+  const matches = value.match(/(?:https?:\/\/[^\s"'<>]+|\{\{[^}]+\}\}|\{%[^%]+%\}|\b[A-Z0-9][A-Z0-9._/-]{2,}\b|\$\{[^}]+\})/gu) ?? [];
+  return [...new Set(matches)];
+}
+
+function preservesProtectedTokens(source: string, translated: string): boolean {
+  const target = translated.toLowerCase();
+  return protectedTokens(source).every((token) => target.includes(token.toLowerCase()));
+}
+
+function translationPrompt(input: ShopifyProductTranslationAiInput): string {
+  const fields = input.fields.map((field) => ({ key: field.key, sourceValue: field.sourceValue, existingValue: field.existingValue ?? null }));
+  return [
+    "Prompt version: " + SHOPIFY_TRANSLATION_PROMPT_VERSION,
+    "你是 Shopify 商品页的专业本地化编辑，不是逐词翻译器。请将输入字段翻译成目标语言/地区自然、可信、适合电商转化的文案。",
+    "目标 locale：" + input.locale,
+    "语气要求：" + input.style,
+    input.glossary.trim() ? "术语表（优先遵守，品牌词不要擅自改写）：" + input.glossary.trim() : "没有额外术语表。",
+    "严格规则：",
+    "1. 只返回输入中已有的 key，每个 key 恰好返回一次；不得新增字段、解释、Markdown 或代码围栏。",
+    "2. 保留商品事实、数字、货币、尺寸、单位、SKU、品牌、型号、URL、Liquid 变量、占位符和 HTML 标签；不要翻译代码、链接、变量或 SKU。",
+    "3. body_html/descriptionHtml 必须保留原 HTML 标签、层级、列表和链接结构，只翻译可见文本；不要插入新标签或删除标签。",
+    "4. title 要简洁自然；SEO 标题/描述要像真实搜索结果，不堆砌关键词；不能增加原文没有的功效、认证、折扣、承诺、规格或售后信息。",
+    "5. 对已有翻译进行润色时，以 sourceValue 的事实为准；无法安全判断时返回 sourceValue，不要猜测。",
+    "输出严格 JSON：{\"translations\":[{\"key\":\"原 key\",\"value\":\"翻译后的字符串\"}]}",
+    JSON.stringify({ fields }),
+  ].join("\\n");
+}
+
+export async function translateShopifyContent(env: Env, input: ShopifyProductTranslationAiInput): Promise<{
+  locale: string;
+  translations: Array<{ key: string; value: string; sourceValue: string; digest: string; changed: boolean }>;
+  promptVersion: string;
+}> {
+  const credentials = await readCredentials(env);
+  const result = await requestCompletion(credentials, {
+    model: credentials.modelId,
+    max_output_tokens: Math.min(12_000, Math.max(1_500, input.fields.reduce((total, field) => total + Math.min(field.sourceValue.length, 1_500), 0))),
+    input: [{ role: "user", content: [{ type: "input_text", text: translationPrompt(input) }] }],
+  });
+  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "AI 翻译失败（HTTP " + result.response.status + "）"), "shopify_translation_ai_failed");
+  if (!result.payload) throw new ApiError(502, "AI 翻译没有返回内容", "shopify_translation_ai_empty");
+  const parsed = parseModelJson(responseOutputText(result.payload));
+  const raw = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { translations?: unknown }).translations : parsed;
+  const byKey = new Map<string, ShopifyTranslationResult>();
+  for (const item of Array.isArray(raw) ? raw : []) {
+    if (!item || typeof item !== "object") continue;
+    const value = item as Record<string, unknown>;
+    const key = typeof value.key === "string" ? value.key.trim() : "";
+    const translated = typeof value.value === "string" ? value.value : null;
+    if (key && translated !== null && !byKey.has(key)) byKey.set(key, { key, value: translated });
+  }
+  return {
+    locale: input.locale,
+    promptVersion: SHOPIFY_TRANSLATION_PROMPT_VERSION,
+    translations: input.fields.map((field) => {
+      const candidate = byKey.get(field.key)?.value?.trim() ?? "";
+      const safeValue = candidate && preservesProtectedTokens(field.sourceValue, candidate) ? candidate : field.sourceValue;
+      return {
+        key: field.key,
+        value: safeValue,
+        sourceValue: field.sourceValue,
+        digest: field.digest ?? "",
+        changed: safeValue !== field.sourceValue,
+      };
+    }),
+  };
 }
 
 async function extractRegionFields(credentials: AiSettingsInput, region: AiPageRegion): Promise<Record<string, unknown>> {
