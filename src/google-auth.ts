@@ -36,22 +36,30 @@ async function readSettingsRow(env: Env): Promise<GoogleSettingsRow | null> {
 
 export async function getGoogleSettings(env: Env): Promise<{
   configured: boolean;
+  clientId: string | null;
+  clientSecret: string | null;
   clientIdHint: string | null;
   allowedDomain: string;
   updatedAt: string | null;
 }> {
   const row = await readSettingsRow(env);
   const configured = Boolean(row?.google_client_id_ciphertext && row.google_client_secret_ciphertext);
-  let clientIdHint: string | null = null;
+  let clientId: string | null = null;
+  let clientSecret: string | null = null;
   let allowedDomain = "";
-  if (configured && row?.google_client_id_ciphertext) {
-    const clientId = await decryptSetting(env, row.google_client_id_ciphertext, "google_settings_invalid");
-    clientIdHint = clientId.length > 18 ? `${clientId.slice(0, 12)}...${clientId.slice(-6)}` : "已加密保存";
+  if (configured && row?.google_client_id_ciphertext && row.google_client_secret_ciphertext) {
+    [clientId, clientSecret] = await Promise.all([
+      decryptSetting(env, row.google_client_id_ciphertext, "google_settings_invalid"),
+      decryptSetting(env, row.google_client_secret_ciphertext, "google_settings_invalid"),
+    ]);
   }
   if (row?.google_allowed_domain_ciphertext) {
     allowedDomain = await decryptSetting(env, row.google_allowed_domain_ciphertext, "google_settings_invalid");
   }
-  return { configured, clientIdHint, allowedDomain, updatedAt: row?.updated_at ?? null };
+  const clientIdHint = clientId
+    ? clientId.length > 18 ? `${clientId.slice(0, 12)}...${clientId.slice(-6)}` : "已加密保存"
+    : null;
+  return { configured, clientId, clientSecret, clientIdHint, allowedDomain, updatedAt: row?.updated_at ?? null };
 }
 
 export async function saveGoogleSettings(

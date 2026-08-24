@@ -47,6 +47,26 @@ type ShopifyProduct = {
   images: Array<{ r2Key?: string | null; url?: string | null; contentType?: string | null; altText?: string | null }>;
 };
 
+export type ShopifyCollectionProductInput = {
+  title: string;
+  handle?: string | null;
+  descriptionHtml?: string | null;
+  vendor?: string | null;
+  productType?: string | null;
+  tags?: string[];
+  options?: Array<{ name: string; values: string[] }>;
+  variants?: Array<{
+    sku?: string | null;
+    price?: number | null;
+    compareAtPrice?: number | null;
+    barcode?: string | null;
+    option1?: string;
+    option2?: string;
+    option3?: string;
+  }>;
+  images?: Array<{ url: string; altText?: string | null }>;
+};
+
 export type ShopifyProductListItem = {
   id: string;
   title: string;
@@ -54,6 +74,7 @@ export type ShopifyProductListItem = {
   status: string;
   vendor: string | null;
   productType: string | null;
+  createdAt?: string | null;
   updatedAt: string | null;
   publishedAt: string | null;
   totalInventory: number | null;
@@ -63,6 +84,10 @@ export type ShopifyProductListItem = {
   featuredImage: { url: string; altText: string | null } | null;
   variantCount: number;
   tags: string[];
+  storeId?: string;
+  storeName?: string;
+  storeDomain?: string;
+  translatedLocales?: Array<{ locale: string; name: string }>;
 };
 
 export type ShopifyProductDetail = ShopifyProductListItem & {
@@ -158,7 +183,7 @@ export type ShopifyProductUpdateInput = {
 };
 
 const PRODUCT_FIELDS = `
-  id title handle status vendor productType updatedAt publishedAt totalInventory tags
+  id title handle status vendor productType createdAt updatedAt publishedAt totalInventory tags
   descriptionHtml templateSuffix
   priceRangeV2 { minVariantPrice { amount currencyCode } maxVariantPrice { amount currencyCode } }
   featuredImage { url altText }
@@ -181,6 +206,7 @@ type RawShopifyProduct = {
   status?: string | null;
   vendor?: string | null;
   productType?: string | null;
+  createdAt?: string | null;
   updatedAt?: string | null;
   publishedAt?: string | null;
   totalInventory?: number | null;
@@ -211,6 +237,7 @@ function mapShopifyProduct(raw: RawShopifyProduct): ShopifyProductDetail {
     status: raw.status ?? "DRAFT",
     vendor: raw.vendor ?? null,
     productType: raw.productType ?? null,
+    createdAt: raw.createdAt ?? null,
     updatedAt: raw.updatedAt ?? null,
     publishedAt: raw.publishedAt ?? null,
     totalInventory: raw.totalInventory ?? null,
@@ -253,6 +280,57 @@ function shopifyProductSearch(input: ShopifyProductListQuery): string | null {
   return parts.length ? parts.join(" ") : null;
 }
 
+async function getProductTranslationCoverage(
+  store: ShopifyStoreRow,
+  accessToken: string,
+  scopes: string[],
+  productIds: string[],
+): Promise<Map<string, Array<{ locale: string; name: string }>>> {
+  const coverage = new Map<string, Array<{ locale: string; name: string }>>();
+  if (!productIds.length) return coverage;
+  const canReadLocales = scopes.includes("read_locales") || scopes.includes("write_locales");
+  const canReadTranslations = scopes.includes("read_translations") || scopes.includes("write_translations");
+  if (!canReadLocales || !canReadTranslations) return coverage;
+
+  let locales: ShopifyLocale[];
+  try {
+    locales = await getShopLocales(store, accessToken);
+  } catch {
+    return coverage;
+  }
+  const targetLocales = locales.filter((locale) => !locale.primary);
+  if (!targetLocales.length) return coverage;
+
+  await Promise.all(targetLocales.map(async (locale) => {
+    try {
+      const data = await graphql<{
+        translatableResourcesByIds: {
+          nodes: Array<{
+            resourceId: string;
+            translations?: Array<{ locale?: string | null; value?: string | null }>;
+          }>;
+        };
+      }>(store, accessToken, `query ProductTranslationCoverage($resourceIds: [ID!]!, $locale: String!) {
+        translatableResourcesByIds(first: 100, resourceIds: $resourceIds) {
+          nodes {
+            resourceId
+            translations(locale: $locale) { locale value }
+          }
+        }
+      }`, { resourceIds: productIds, locale: locale.locale });
+      for (const resource of data.translatableResourcesByIds.nodes) {
+        if (!resource.translations?.some((translation) => Boolean(translation.value?.trim()))) continue;
+        const current = coverage.get(resource.resourceId) ?? [];
+        current.push({ locale: locale.locale, name: locale.name });
+        coverage.set(resource.resourceId, current);
+      }
+    } catch {
+      // Translation visibility should not make the product list unavailable.
+    }
+  }));
+  return coverage;
+}
+
 export async function listShopifyProducts(env: Env, userId: string, input: ShopifyProductListQuery): Promise<{ products: ShopifyProductListItem[]; pageInfo: { hasNextPage: boolean; endCursor: string | null }; store: ShopifyStoreSummary }> {
   const store = await getStoreRow(env, input.storeId, userId);
   const credentials = await decryptCredentials(env, store);
@@ -265,10 +343,19 @@ export async function listShopifyProducts(env: Env, userId: string, input: Shopi
     products(first: $first, after: $after, query: $query, sortKey: $sortKey, reverse: $reverse) { nodes { ${PRODUCT_FIELDS} } pageInfo { hasNextPage endCursor } }
   }`, { first: input.first, after: input.after, query: shopifyProductSearch(input), sortKey: graphqlSortKey, reverse: input.reverse });
   await updateStoreHealth(env, store.id, "active", null);
+  const mappedProducts = data.products.nodes.map((product) => mapShopifyProduct(product));
+  const translatedLocales = await getProductTranslationCoverage(store, token.accessToken, token.scopes, mappedProducts.map((product) => product.id));
+  const storeSummary = toSummary(await getStoreRow(env, store.id, userId), credentials);
   return {
-    products: data.products.nodes.map((product) => mapShopifyProduct(product)),
+    products: mappedProducts.map((product) => ({
+      ...product,
+      storeId: storeSummary.id,
+      storeName: storeSummary.displayName || storeSummary.shopDomain,
+      storeDomain: storeSummary.shopDomain,
+      translatedLocales: translatedLocales.get(product.id) ?? [],
+    })),
     pageInfo: { hasNextPage: data.products.pageInfo.hasNextPage, endCursor: data.products.pageInfo.endCursor ?? null },
-    store: toSummary(await getStoreRow(env, store.id, userId), credentials),
+    store: storeSummary,
   };
 }
 
@@ -1193,6 +1280,44 @@ export async function publishProductToShopify(env: Env, userId: string, productI
     }
     throw error;
   }
+}
+
+export async function createShopifyProductFromCollection(
+  env: Env,
+  userId: string,
+  storeId: string,
+  input: ShopifyCollectionProductInput,
+): Promise<{ productId: string; handle: string | null; warnings: string[] }> {
+  const store = await getStoreRow(env, storeId, userId);
+  const credentials = await decryptCredentials(env, store);
+  const token = await getAccessToken(store, credentials);
+  if (!token.scopes.includes("write_products")) {
+    throw new ApiError(403, "Shopify 应用缺少 write_products 权限，请更新应用版本并重新安装", "shopify_scope_missing");
+  }
+  const product: ShopifyProduct = {
+    title: input.title,
+    handle: input.handle ?? null,
+    descriptionHtml: input.descriptionHtml ?? null,
+    vendor: input.vendor ?? null,
+    productType: input.productType ?? null,
+    tags: input.tags ?? [],
+    options: input.options ?? [],
+    priceMin: input.variants?.[0]?.price ?? null,
+    variants: (input.variants ?? []).map((variant) => ({ ...variant })),
+    images: (input.images ?? []).map((image) => ({ url: image.url, altText: image.altText ?? null })),
+  };
+  const imageInput = await buildFileInputs(env, store, token.accessToken, product);
+  const productInput = buildProductInput(product);
+  if (product.variants.length) productInput.variants = product.variants.map((variant, index) => buildVariantInput(product, index));
+  if (imageInput.files.length) productInput.files = imageInput.files;
+  const identifier = input.handle?.trim() ? { handle: input.handle.trim() } : null;
+  const result = await graphql<{ productSet: { product?: { id: string; handle?: string | null }; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductSet($identifier: ProductSetIdentifiers, $input: ProductSetInput!, $synchronous: Boolean!) {
+    productSet(identifier: $identifier, input: $input, synchronous: $synchronous) { product { id handle } userErrors { field message } }
+  }`, { identifier, input: productInput, synchronous: true });
+  const error = userErrors(result.productSet.userErrors);
+  if (error || !result.productSet.product) throw new ApiError(502, error || "Shopify 未保存商品", "shopify_product_set_failed");
+  await updateStoreHealth(env, store.id, "active", null);
+  return { productId: result.productSet.product.id, handle: result.productSet.product.handle ?? null, warnings: imageInput.warnings };
 }
 
 export { buildProductInput, normalizeShopDomain };

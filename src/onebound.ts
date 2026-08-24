@@ -101,6 +101,28 @@ type ParsedItemDetail = {
   detail: OneBoundOfferDetailData;
 };
 
+export type ShopifyImportProduct = {
+  offerId: string;
+  title: string;
+  handle: string;
+  descriptionHtml: string | null;
+  vendor: string | null;
+  productType: string | null;
+  tags: string[];
+  options: Array<{ name: string; values: string[] }>;
+  variants: Array<{
+    sku: string | null;
+    price: number | null;
+    option1?: string;
+    option2?: string;
+    option3?: string;
+    barcode?: string | null;
+  }>;
+  images: Array<{ url: string; altText?: string | null }>;
+};
+
+export type ShopifyImportResult = { offerId: string; shopifyProductId: string; title: string };
+
 function variantOptionPairs(variant: { name?: string | null; attributes?: Record<string, unknown> }): Array<{ name: string; value: string }> {
   const text = asString(variant.attributes?.propertiesName) ?? variant.name ?? null;
   if (!text) return [];
@@ -255,6 +277,51 @@ export async function importOneBoundProducts(
   return { imported, failures };
 }
 
+export async function importOneBoundProductsToShopify(
+  env: Env,
+  offerIds: string[],
+  options: OneBoundRequestOptions,
+  publish: (product: ShopifyImportProduct) => Promise<string>,
+): Promise<{
+  imported: ShopifyImportResult[];
+  failures: Array<{ offerId: string; code: string; message: string; details?: unknown }>;
+}> {
+  const credentials = await readCredentials(env);
+  const imported: ShopifyImportResult[] = [];
+  const failures: Array<{ offerId: string; code: string; message: string; details?: unknown }> = [];
+  for (const offerId of offerIds) {
+    try {
+      const parsed = await callItemGet(credentials, offerId, options);
+      const variantData = importedVariantData(parsed.linkInput.offer.variants);
+      const productId = await publish({
+        offerId: parsed.preview.offerId,
+        title: parsed.preview.title,
+        handle: `mailshop-1688-${parsed.preview.offerId}`,
+        descriptionHtml: parsed.detail.main.descriptionHtml ?? parsed.preview.descriptionHtml,
+        vendor: parsed.preview.supplierName,
+        productType: parsed.preview.categoryId,
+        tags: ["1688", parsed.preview.supplierName].filter((value): value is string => Boolean(value?.trim())),
+        options: variantData.options,
+        variants: parsed.linkInput.offer.variants.map((variant, index) => ({
+          sku: variant.sku ?? null,
+          price: variant.price ?? null,
+          option1: variantData.values[index]?.[0],
+          option2: variantData.values[index]?.[1],
+          option3: variantData.values[index]?.[2],
+          barcode: null,
+        })),
+        images: parsed.linkInput.offer.images
+          .filter((image): image is typeof image & { url: string } => Boolean(image.url))
+          .map((image) => ({ url: image.url, altText: parsed.preview.title })),
+      });
+      imported.push({ offerId: parsed.preview.offerId, shopifyProductId: productId, title: parsed.preview.title });
+    } catch (caught) {
+      failures.push(itemFailure(offerId, caught));
+    }
+  }
+  return { imported, failures };
+}
+
 const ONEBOUND_SETTINGS_ID = 1;
 const ONEBOUND_API_BASE = "https://api-gw.onebound.cn/1688";
 const DEFAULT_MAX_IMAGE_BYTES = 15 * 1024 * 1024;
@@ -319,16 +386,26 @@ async function readSettingsRow(env: Env): Promise<OneBoundSettingsRow | null> {
     .first<OneBoundSettingsRow>();
 }
 
-export async function getOneBoundSettings(env: Env): Promise<{
+export async function getOneBoundSettings(env: Env, includeCredentials = false): Promise<{
   configured: boolean;
+  key: string | null;
+  secret: string | null;
   keyHint: string | null;
   updatedAt: string | null;
 }> {
   const row = await readSettingsRow(env);
-  const key = row?.onebound_key_ciphertext;
+  const configured = Boolean(row?.onebound_key_ciphertext && row.onebound_secret_ciphertext);
+  const credentials = configured && includeCredentials
+    ? {
+        key: await decryptValue(env, row!.onebound_key_ciphertext!),
+        secret: await decryptValue(env, row!.onebound_secret_ciphertext!),
+      }
+    : null;
   return {
-    configured: Boolean(key && row?.onebound_secret_ciphertext),
-    keyHint: key ? "已保存（密钥已加密）" : null,
+    configured,
+    key: credentials?.key ?? null,
+    secret: credentials?.secret ?? null,
+    keyHint: configured ? "已保存（密钥已加密）" : null,
     updatedAt: row?.updated_at ?? null,
   };
 }

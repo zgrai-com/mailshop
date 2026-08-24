@@ -21,14 +21,18 @@ const state = {
   pageSnapshot: null,
   aiLoading: false,
   pageScanDiagnostics: {},
-  aiUsage: { mode: "server", baseUrl: "", apiKey: "", modelId: "" },
+  aiUsage: { mode: "server", baseUrl: "", apiKey: "", imageFilterModelId: "" },
   aiLogs: [],
   aiProductRegions: [],
   imageIdAliases: new Map(),
-  products: [],
   stores: [],
   credits: null,
   managementLoading: new Set(),
+  resultsTaskId: null,
+  resultsStoreId: "",
+  resultsImportingKey: "",
+  resultsMessage: "",
+  resultsMessageTone: "",
 };
 
 const elements = Object.fromEntries([
@@ -44,11 +48,11 @@ const elements = Object.fromEntries([
   "selected-count", "toggle-image-selection", "create-selected-tasks", "ai-product-info",
   "account-label", "account-meta", "account-balance", "account-refresh",
   "account-login", "account-logout",
-  "view-workspace", "view-products", "view-tasks", "view-stores", "view-credits", "view-settings",
-  "workspace-view", "products-view", "tasks-view", "stores-view", "credits-view", "settings-view", "settings-back",
-  "products-summary", "products-list", "refresh-products", "stores-summary", "stores-list", "refresh-stores",
+  "view-workspace", "view-tasks", "view-stores", "view-credits", "view-settings",
+  "workspace-view", "tasks-view", "stores-view", "credits-view", "settings-view", "settings-back",
+  "stores-summary", "stores-list", "refresh-stores",
   "credits-balance-card", "credits-list", "refresh-credits",
-  "results-modal", "results-modal-backdrop", "results-modal-close", "results-modal-heading", "results-modal-meta", "results-modal-grid",
+  "results-modal", "results-modal-backdrop", "results-modal-close", "results-modal-heading", "results-modal-meta", "results-store", "results-import-all", "results-import-status", "results-modal-grid",
   "ai-error-modal", "ai-error-backdrop", "ai-error-close", "ai-error-log", "reload-extension",
   "ai-log-modal", "ai-log-modal-backdrop", "ai-log-modal-close", "ai-log-modal-heading", "ai-log-modal-meta", "ai-log-modal-content",
   "image-viewer", "viewer-backdrop", "viewer-title", "viewer-reset", "viewer-close", "viewer-stage",
@@ -64,15 +68,13 @@ function hasSearchCredits() {
 
 function hasAiUsageConfiguration() {
   return state.aiUsage.mode === "server"
-    || !state.aiUsage.baseUrl
-    || !state.aiUsage.apiKey
-    || !state.aiUsage.modelId;
+    || Boolean(state.aiUsage.baseUrl && state.aiUsage.apiKey && state.aiUsage.imageFilterModelId);
 }
 
 function renderView() {
   const signedIn = Boolean(state.account?.authenticated);
   if (!signedIn && state.activeView !== "workspace") state.activeView = "workspace";
-  const views = ["workspace", "products", "tasks", "stores", "credits", "settings"];
+  const views = ["workspace", "tasks", "stores", "credits", "settings"];
   for (const view of views) {
     elements[`${view}_view`].hidden = state.activeView !== view;
     elements[`view_${view}`].classList.toggle("active", state.activeView === view);
@@ -89,7 +91,7 @@ function renderAccount() {
       : "尚未登录 Mailshop";
   elements.account_meta.textContent = signedIn
     ? `${state.account.user?.email || "普通用户"} · 创建任务免费，搜索时扣 20 分`
-    : "登录后可采集商品并管理服务器数据";
+    : "登录后可创建采集任务并管理 Shopify 数据";
   elements.account_balance.textContent = `${balance.toLocaleString("zh-CN")} 分`;
   elements.account_balance.hidden = !signedIn;
   elements.account_login.hidden = state.accountLoading || signedIn;
@@ -101,7 +103,7 @@ function renderAccount() {
   elements.drop_zone.setAttribute("aria-disabled", String(!signedIn));
   const showWorkspace = !state.accountLoading && signedIn;
   elements.task_intake.hidden = !showWorkspace;
-  for (const view of ["products", "tasks", "stores", "credits", "settings"]) {
+  for (const view of ["tasks", "stores", "credits", "settings"]) {
     elements[`view_${view}`].hidden = state.accountLoading || !signedIn;
   }
   renderView();
@@ -883,7 +885,7 @@ function renderImageSelection() {
   elements.toggle_image_selection.disabled = state.pageImages.length === 0;
   elements.toggle_image_selection.textContent = allSelected ? "取消全选" : "全选";
   elements.create_selected_tasks.disabled = count === 0;
-  elements.create_selected_tasks.textContent = count ? `创建 1 个商品任务（${count} 张）` : "创建商品任务";
+  elements.create_selected_tasks.textContent = count ? `创建 1 个采集任务（${count} 张）` : "创建采集任务";
 }
 
 function openImageModal(mode = "manual") {
@@ -920,7 +922,7 @@ async function createSelectedTasks() {
   if (!selectedImages.length) return;
   elements.create_selected_tasks.disabled = true;
   elements.toggle_image_selection.disabled = true;
-  elements.create_selected_tasks.textContent = "正在保存商品任务…";
+  elements.create_selected_tasks.textContent = "正在保存采集任务…";
   const selectedIds = new Set(selectedImages.map((image) => image.id));
   const region = [...state.aiProductRegions].sort((left, right) => {
     const overlap = (value) => (value.imageIds || []).filter((id) => selectedIds.has(id)).length;
@@ -955,7 +957,7 @@ async function createSelectedTasks() {
     state.selectedPageImageIds.clear();
     closeImageModal();
     await loadTasks();
-    showNotice(`商品任务已保存，共 ${selectedImages.length} 张图片；请到任务管理选择搜索图`, "success");
+    showNotice(`采集任务已保存，共 ${selectedImages.length} 张图片；请到采集任务中选择搜图图片`, "success");
   } catch (error) {
     renderImageSelection();
     showNotice(error instanceof Error ? error.message : String(error), "error");
@@ -1069,7 +1071,7 @@ async function createTask() {
       },
     });
     discardDraft();
-    showNotice(`商品任务“${name}”已保存，请到任务管理选择搜索图`, "success");
+    showNotice(`采集任务“${name}”已保存，请到采集任务中选择搜图图片`, "success");
     await loadTasks();
     await loadAccount({ quiet: true });
   } catch (error) {
@@ -1094,42 +1096,15 @@ async function loadTasks() {
 }
 
 function taskStatus(task) {
+  if (task.collectionStatus === "imported") {
+    return { label: `已导入 ${task.importedCount || 0} 个`, className: "completed" };
+  }
   return {
     queued: { label: "待选搜索图", className: "queued" },
-    running: { label: "查询中", className: "running" },
+    running: { label: "搜图中", className: "running" },
     completed: { label: `${task.resultCount || 0} 个结果`, className: "completed" },
-    failed: { label: "查询失败", className: "failed" },
+    failed: { label: "搜图失败", className: "failed" },
   }[task.status] || { label: task.status, className: "queued" };
-}
-
-function legacyResultCard(result) {
-  const detailUrl = result.detailUrl || `https://detail.1688.com/offer/${encodeURIComponent(result.offerId)}.html`;
-  const card = document.createElement("a");
-  card.className = "result-row";
-  card.href = detailUrl;
-  card.target = "_blank";
-  card.rel = "noreferrer";
-  const image = document.createElement("span");
-  image.className = "result-thumb";
-  if (result.imageUrl) {
-    const img = document.createElement("img");
-    img.src = result.imageUrl;
-    img.alt = "";
-    img.loading = "lazy";
-    image.append(img);
-  }
-  const copy = document.createElement("span");
-  copy.className = "result-copy";
-  const title = document.createElement("strong");
-  title.textContent = result.title;
-  const meta = document.createElement("small");
-  meta.textContent = [formatMoney(result.promotionPrice ?? result.price), result.supplierName, result.sales ? `${result.sales} 销量` : null].filter(Boolean).join(" · ");
-  copy.append(title, meta);
-  const arrow = document.createElement("span");
-  arrow.className = "result-arrow";
-  arrow.textContent = "↗";
-  card.append(image, copy, arrow);
-  return card;
 }
 
 let viewerScale = 1;
@@ -1165,10 +1140,28 @@ function closeImageViewer() {
   document.body.classList.remove("viewer-open");
 }
 
-function createResultCard(result, task) {
+function availableImportStores() {
+  return state.stores.filter((store) => store?.status === "active" && store?.configured);
+}
+
+function resultImportedToStore(result, storeId) {
+  return Boolean(storeId && Array.isArray(result?.shopifyImports) && result.shopifyImports.some((item) => item?.storeId === storeId));
+}
+
+function currentResultsTask() {
+  return state.tasks.find((task) => task.id === state.resultsTaskId) || null;
+}
+
+function currentResultsRun(task) {
+  return Array.isArray(task?.runs) ? task.runs.find((run) => run?.status === "completed") || null : null;
+}
+
+function createResultCard(result, task, run) {
   const detailUrl = result.detailUrl || `https://detail.1688.com/offer/${encodeURIComponent(result.offerId)}.html`;
   const card = document.createElement("article");
   card.className = "result-row";
+  const imported = resultImportedToStore(result, state.resultsStoreId);
+  card.classList.toggle("imported", imported);
   const image = document.createElement("button");
   image.type = "button";
   image.className = "result-thumb";
@@ -1206,28 +1199,108 @@ function createResultCard(result, task) {
   title.append(titleLink);
   const meta = document.createElement("small");
   meta.textContent = [formatMoney(result.promotionPrice ?? result.price), result.supplierName, result.sales ? `${result.sales} 销量` : null].filter(Boolean).join(" · ");
-  copy.append(title, meta);
+  const importButton = document.createElement("button");
+  importButton.type = "button";
+  importButton.className = `button ${imported ? "quiet" : "primary"} compact result-import-button`;
+  importButton.textContent = imported
+    ? "当前店铺已导入"
+    : state.resultsImportingKey === String(result.offerId || "")
+      ? "正在导入…"
+      : "导入 Shopify";
+  importButton.disabled = imported || !result.offerId || !run || !state.resultsStoreId || Boolean(state.resultsImportingKey);
+  importButton.title = state.resultsStoreId ? "导入到当前 Shopify 店铺" : "请先选择 Shopify 店铺";
+  importButton.addEventListener("click", () => void importResultsFromModal([result.offerId]));
+  copy.append(title, meta, importButton);
   card.append(image, copy);
   return card;
 }
 
-function openResultsModal(task) {
-  elements.results_modal_heading.textContent = task.name || "查询结果";
+function renderResultsModal() {
+  const task = currentResultsTask();
+  if (!task) return;
+  const run = currentResultsRun(task);
+  const stores = availableImportStores();
+  if (!stores.some((store) => store.id === state.resultsStoreId)) state.resultsStoreId = stores[0]?.id || "";
+  elements.results_modal_heading.textContent = task.name || "搜图结果";
   elements.results_modal_meta.textContent = `${task.resultCount || task.results?.length || 0} 个结果`;
+  elements.results_store.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = stores.length ? "选择 Shopify 店铺" : "没有可用的 Shopify 店铺";
+  elements.results_store.append(placeholder);
+  for (const store of stores) {
+    const option = document.createElement("option");
+    option.value = store.id;
+    option.textContent = store.displayName || store.shopDomain;
+    elements.results_store.append(option);
+  }
+  elements.results_store.value = state.resultsStoreId;
+  elements.results_store.disabled = Boolean(state.resultsImportingKey) || stores.length === 0;
+  const pendingOfferIds = (task.results || []).flatMap((result) => result.offerId && !resultImportedToStore(result, state.resultsStoreId) ? [result.offerId] : []);
+  elements.results_import_all.disabled = !run || !state.resultsStoreId || pendingOfferIds.length === 0 || Boolean(state.resultsImportingKey);
+  elements.results_import_all.textContent = state.resultsImportingKey === "all" ? "正在导入…" : pendingOfferIds.length ? `全部导入 Shopify（${pendingOfferIds.length}）` : "当前店铺已全部导入";
+  elements.results_import_status.className = `results-import-status${state.resultsMessageTone ? ` ${state.resultsMessageTone}` : ""}`;
+  elements.results_import_status.textContent = state.resultsMessage || (stores.length ? "选择目标店铺后，可单条或批量导入搜图结果。" : "请先在 Mailshop 后台连接并验证 Shopify 店铺。");
   elements.results_modal_grid.replaceChildren();
   if (task.results?.length) {
-    task.results.forEach((result) => elements.results_modal_grid.append(createResultCard(result, task)));
+    task.results.forEach((result) => elements.results_modal_grid.append(createResultCard(result, task, run)));
   } else {
     elements.results_modal_grid.innerHTML = '<div class="no-results">没有找到匹配货源，可以换一张图片重新创建任务。</div>';
   }
+}
+
+async function importResultsFromModal(offerIds) {
+  const task = currentResultsTask();
+  const run = currentResultsRun(task);
+  const values = [...new Set((offerIds || []).filter(Boolean))];
+  if (!task || !run || !state.resultsStoreId || !values.length || state.resultsImportingKey) return;
+  state.resultsImportingKey = values.length === 1 ? values[0] : "all";
+  state.resultsMessage = `正在导入 ${values.length} 个商品到 Shopify…`;
+  state.resultsMessageTone = "";
+  renderResultsModal();
+  try {
+    const response = await extensionMessage({
+      type: "IMPORT_TASK_RESULTS",
+      taskId: task.id,
+      runId: run.id,
+      storeId: state.resultsStoreId,
+      offerIds: values,
+    });
+    const importedCount = Array.isArray(response.imported) ? response.imported.length : 0;
+    const failureCount = Array.isArray(response.failures) ? response.failures.length : 0;
+    state.resultsMessage = failureCount
+      ? `已导入 ${importedCount} 个，${failureCount} 个失败。可重试失败项。`
+      : `已导入 ${importedCount} 个 Shopify 商品。`;
+    state.resultsMessageTone = failureCount ? "error" : "success";
+    await loadTasks();
+  } catch (error) {
+    state.resultsMessage = error instanceof Error ? error.message : String(error);
+    state.resultsMessageTone = "error";
+  } finally {
+    state.resultsImportingKey = "";
+    renderResultsModal();
+  }
+}
+
+async function openResultsModal(task) {
+  state.resultsTaskId = task.id;
+  state.resultsMessage = "";
+  state.resultsMessageTone = "";
   elements.results_modal.hidden = false;
   document.body.classList.add("modal-open");
+  renderResultsModal();
+  await loadManagement("stores");
+  renderResultsModal();
   elements.results_modal_close.focus();
 }
 
 function closeResultsModal() {
   elements.results_modal.hidden = true;
   elements.results_modal_grid.replaceChildren();
+  state.resultsTaskId = null;
+  state.resultsImportingKey = "";
+  state.resultsMessage = "";
+  state.resultsMessageTone = "";
   if (elements.image_modal.hidden && elements.ai_error_modal.hidden && elements.ai_log_modal.hidden) document.body.classList.remove("modal-open");
 }
 
@@ -1278,13 +1351,13 @@ function createTaskCard(task) {
     toggle.className = "button quiet compact";
     toggle.type = "button";
     toggle.textContent = "查看结果";
-    toggle.addEventListener("click", () => openResultsModal(task));
+    toggle.addEventListener("click", () => void openResultsModal(task));
     actions.append(toggle);
   }
   if (task.status === "failed" && task.error) {
     const error = document.createElement("p");
     error.className = "task-error";
-    error.textContent = task.error || "查询失败";
+    error.textContent = task.error || "搜图失败";
     copy.append(error);
   }
   const remove = document.createElement("button");
@@ -1373,7 +1446,7 @@ function createTaskCard(task) {
   if (task.status === "running") {
     const progress = document.createElement("div");
     progress.className = "task-progress";
-    progress.setAttribute("aria-label", "查询进行中");
+    progress.setAttribute("aria-label", "搜图进行中");
     article.append(progress);
   }
   return article;
@@ -1383,8 +1456,10 @@ function taskStateKey(tasks) {
   return tasks.map((task) => [
     task.id,
     task.status,
+    task.collectionStatus || "",
     task.updatedAt,
     task.resultCount,
+    task.importedCount || 0,
     task.error,
     task.results?.length || 0,
     task.selectedImageId || "",
@@ -1432,31 +1507,6 @@ function managementEmpty(title, detail) {
   span.textContent = detail;
   empty.append(strong, span);
   return empty;
-}
-
-function renderProducts() {
-  elements.products_list.replaceChildren();
-  elements.products_summary.textContent = state.products.length ? `${state.products.length} 个服务器商品` : "服务器商品目录";
-  if (!state.products.length) {
-    elements.products_list.append(managementEmpty("暂无商品", "在服务器端导入或保存商品后会显示在这里。"));
-    return;
-  }
-  for (const product of state.products) {
-    const article = document.createElement("article");
-    article.className = "management-row product-row";
-    const thumb = document.createElement("span");
-    thumb.className = "management-thumb";
-    if (product.thumbnailUrl) {
-      const image = document.createElement("img"); image.src = product.thumbnailUrl; image.alt = ""; image.loading = "lazy"; thumb.append(image);
-    }
-    const copy = document.createElement("div"); copy.className = "management-copy";
-    const title = document.createElement("strong"); title.textContent = product.title || "未命名商品";
-    const meta = document.createElement("span"); meta.textContent = [product.sourcePlatform, product.spu || product.externalId, `${product.imageCount || 0} 图`, `${product.offerCount || 0} 货源`].filter(Boolean).join(" · ");
-    const status = document.createElement("small"); status.textContent = `状态 ${product.status || "unknown"} · ${formatTime(product.updatedAt)}`;
-    copy.append(title, meta, status);
-    article.append(thumb, copy);
-    elements.products_list.append(article);
-  }
 }
 
 function renderStores() {
@@ -1511,8 +1561,11 @@ async function loadManagement(resource) {
   state.managementLoading.add(resource);
   try {
     const response = await extensionMessage({ type: "GET_MANAGEMENT_DATA", resource });
-    if (resource === "products") { state.products = Array.isArray(response.items) ? response.items : []; renderProducts(); }
-    if (resource === "stores") { state.stores = Array.isArray(response.stores) ? response.stores : []; renderStores(); }
+    if (resource === "stores") {
+      state.stores = Array.isArray(response.stores) ? response.stores : [];
+      renderStores();
+      if (!elements.results_modal.hidden) renderResultsModal();
+    }
     if (resource === "credits") { state.credits = response.credits || null; renderCredits(); }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1529,7 +1582,7 @@ function openView(view) {
   state.activeView = view;
   renderView();
   if (view === "tasks") void loadTasks();
-  if (["products", "stores", "credits"].includes(view)) void loadManagement(view);
+  if (["stores", "credits"].includes(view)) void loadManagement(view);
   if (view === "settings") void loadAiLogs();
 }
 
@@ -1554,13 +1607,11 @@ elements.account_logout.addEventListener("click", async () => {
   }
 });
 elements.view_workspace.addEventListener("click", () => openView("workspace"));
-elements.view_products.addEventListener("click", () => openView("products"));
 elements.view_tasks.addEventListener("click", () => openView("tasks"));
 elements.view_stores.addEventListener("click", () => openView("stores"));
 elements.view_credits.addEventListener("click", () => openView("credits"));
 elements.view_settings.addEventListener("click", () => openView("settings"));
 elements.settings_back.addEventListener("click", () => openView("workspace"));
-elements.refresh_products.addEventListener("click", () => void loadManagement("products"));
 elements.refresh_stores.addEventListener("click", () => void loadManagement("stores"));
 elements.refresh_credits.addEventListener("click", () => void loadManagement("credits"));
 elements.load_page_images.addEventListener("click", () => openImageModal("manual"));
@@ -1694,7 +1745,7 @@ function readAiUsageForm() {
     mode: elements.ai_mode_custom.checked ? "custom" : "server",
     baseUrl: elements.custom_ai_url.value.trim(),
     apiKey: elements.custom_ai_key.value.trim(),
-    modelId: elements.custom_ai_model.value.trim(),
+    imageFilterModelId: elements.custom_ai_model.value.trim(),
   };
 }
 
@@ -1735,7 +1786,7 @@ function showAiErrorLog(error, action = "AI 测试") {
     action,
     mode: state.aiUsage.mode,
     baseUrl: state.aiUsage.baseUrl || "服务器配置",
-    modelId: state.aiUsage.modelId || "服务器托管模型",
+    imageFilterModelId: state.aiUsage.imageFilterModelId || "服务器托管模型",
     extensionVersion: chrome.runtime.getManifest().version,
     errorCode: backgroundOutdated ? "extension_background_outdated" : "ai_test_failed",
     error: message,
@@ -1818,6 +1869,17 @@ for (const element of [elements.search_sort, elements.search_limit, elements.sea
 elements.clear_finished.addEventListener("click", async () => { await extensionMessage({ type: "CLEAR_FINISHED_TASKS" }); await loadTasks(); });
 elements.results_modal_close.addEventListener("click", closeResultsModal);
 elements.results_modal_backdrop.addEventListener("click", closeResultsModal);
+elements.results_store.addEventListener("change", () => {
+  state.resultsStoreId = elements.results_store.value;
+  state.resultsMessage = "";
+  state.resultsMessageTone = "";
+  renderResultsModal();
+});
+elements.results_import_all.addEventListener("click", () => {
+  const task = currentResultsTask();
+  const pendingOfferIds = (task?.results || []).flatMap((result) => result.offerId && !resultImportedToStore(result, state.resultsStoreId) ? [result.offerId] : []);
+  void importResultsFromModal(pendingOfferIds);
+});
 elements.ai_error_close.addEventListener("click", closeAiErrorLog);
 elements.ai_error_backdrop.addEventListener("click", closeAiErrorLog);
 elements.ai_log_modal_close.addEventListener("click", closeAiLogModal);
@@ -1907,11 +1969,11 @@ try {
   const aiUsageResponse = await extensionMessage({ type: "GET_AI_USAGE" });
   state.aiUsage = { ...state.aiUsage, ...(aiUsageResponse.config || {}) };
 } catch {
-  state.aiUsage = { mode: "server", baseUrl: "", apiKey: "", modelId: "" };
+  state.aiUsage = { mode: "server", baseUrl: "", apiKey: "", imageFilterModelId: "" };
 }
 elements.custom_ai_url.value = state.aiUsage.baseUrl;
 elements.custom_ai_key.value = state.aiUsage.apiKey;
-elements.custom_ai_model.value = state.aiUsage.modelId;
+elements.custom_ai_model.value = state.aiUsage.imageFilterModelId;
 renderAiUsage();
 renderAiLogs();
 await loadAccount({ quiet: true });

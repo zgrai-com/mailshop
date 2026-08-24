@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Mailshop Product Sourcing",
-  "version": "0.7.0",
-  "description": "Collect product data, manage sourcing tasks, and search 1688 by a selected task image.",
+  "name": "Mailshop 采集任务",
+  "version": "0.8.0",
+  "description": "创建采集任务，以图搜索 1688，并将结果直接导入 Shopify。",
   "permissions": ["activeTab", "identity", "scripting", "sidePanel", "storage", "unlimitedStorage"],
   "host_permissions": ["<all_urls>"],
   "background": {
@@ -10,7 +10,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Open Mailshop image search"
+    "default_title": "打开 Mailshop 采集任务"
   },
   "side_panel": {
     "default_path": "panel.html"

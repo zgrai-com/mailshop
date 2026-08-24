@@ -200,11 +200,19 @@ h2 { font-size: 16px; line-height: 1.2; }
 .image-empty { grid-column: 1 / -1; }
 .modal-footer { display: flex; align-items: center; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--color-ink); }
 .selected-count { margin-right: auto; color: var(--color-muted); font-size: 11px; font-weight: 800; }
-.results-modal-sheet { grid-template-rows: auto minmax(0, 1fr); }
+.results-modal-sheet { grid-template-rows: auto auto auto minmax(0, 1fr); }
+.results-import-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); align-items: end; padding: var(--space-3) 0 0; }
+.results-import-toolbar label { display: grid; min-width: 0; gap: 4px; color: var(--color-muted); font-size: 10px; }
+.results-import-toolbar select { width: 100%; height: 36px; min-width: 0; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-ink); padding: 0 8px; font: inherit; }
+.results-import-status { min-height: 28px; padding: 7px 0 5px; color: var(--color-muted); font-size: 10px; }
+.results-import-status.success { color: var(--color-success); }
+.results-import-status.error { color: var(--color-danger); }
 .ai-error-sheet { grid-template-rows: auto minmax(0, 1fr) auto; }
 .results-modal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 100%; gap: 8px; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: scroll; align-content: start; padding: var(--space-3) 8px var(--space-3) 0; scrollbar-color: var(--color-muted) var(--color-preview); scrollbar-gutter: stable; scrollbar-width: thin; overscroll-behavior: contain; }
 .results-modal-grid .result-row { grid-template-rows: 156px auto; }
 .results-modal-grid .result-thumb { height: 156px; }
+.results-modal-grid .result-row.imported { border-color: var(--color-success); }
+.result-import-button { width: 100%; margin-top: 5px; }
 .ai-error-log { max-height: 100%; min-height: 0; margin: var(--space-3) 0 0; padding: 10px; overflow-x: auto; overflow-y: scroll; border: 1px solid var(--color-line); background: var(--color-ink); color: var(--color-accent); font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-color: var(--color-muted) var(--color-preview); scrollbar-gutter: stable; scrollbar-width: thin; overscroll-behavior: contain; }
 .ai-error-footer { justify-content: flex-end; }
 .ai-log-modal-sheet { grid-template-rows: auto minmax(0, 1fr); }

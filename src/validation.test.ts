@@ -21,6 +21,7 @@ import {
   productListQuerySchema,
   searchTaskSyncSchema,
   searchTaskListQuerySchema,
+  collectionTaskImportSchema,
 } from "./validation";
 
 describe("productInputSchema", () => {
@@ -116,6 +117,17 @@ describe("searchTaskListQuerySchema", () => {
   });
 });
 
+describe("collectionTaskImportSchema", () => {
+  it("requires a Shopify store and deduplicates selected offers", () => {
+    expect(collectionTaskImportSchema.parse({
+      storeId: "0a95f67f-f8fb-4454-9ef4-7cb0debb28a0",
+      runId: "62afbdf4-908a-4e80-a60d-8c72232e2585",
+      offerIds: ["1001", "1001", "1002"],
+    })).toMatchObject({ offerIds: ["1001", "1002"] });
+    expect(() => collectionTaskImportSchema.parse({ offerIds: ["1001"] })).toThrow();
+  });
+});
+
 describe("oneboundSettingsSchema", () => {
   it("requires both OneBound credentials", () => {
     expect(oneboundSettingsSchema.parse({ key: "key-1", secret: "secret-1" })).toEqual({ key: "key-1", secret: "secret-1" });
@@ -148,26 +160,20 @@ describe("googleSettingsSchema", () => {
 });
 
 describe("AI schemas", () => {
-  it("accepts encrypted-server configuration inputs without exposing them to clients", () => {
-    expect(aiSettingsSchema.parse({
-      baseUrl: "https://api.openai.com/v1",
-      apiKey: "sk-example",
-      modelId: "gpt-4o-mini",
-    }).modelId).toBe("gpt-4o-mini");
-  });
-
-  it("supports separate chat and image-generation scopes", () => {
-    expect(aiSettingsUpdateSchema.parse({
-      scope: "chat",
-      baseUrl: "https://api.openai.com/v1",
-      apiKey: "sk-example",
-      modelId: "gpt-4o-mini",
-    }).scope).toBe("chat");
-    expect(aiSettingsUpdateSchema.parse({
-      baseUrl: "https://api.openai.com/v1",
-      apiKey: "sk-example",
-      modelId: "gpt-image-1",
-    }).scope).toBe("image_filter");
+  it("accepts one conversation service, one image service, and task-specific models", () => {
+    const settings = aiSettingsSchema.parse({
+      conversationBaseUrl: "https://api.openai.com/v1",
+      conversationApiKey: "sk-conversation",
+      imageGenerationBaseUrl: "https://images.example.com/v1",
+      imageGenerationApiKey: "sk-images",
+      imageFilterModelId: "gpt-4o-mini",
+      imageAnalysisModelId: "gpt-4o",
+      chatModelId: "gpt-4.1-mini",
+      translationModelId: "gpt-4.1-mini",
+      imageGenerationModelId: "gpt-image-1",
+    });
+    expect(settings.imageAnalysisModelId).toBe("gpt-4o");
+    expect(aiSettingsUpdateSchema.parse(settings).imageGenerationModelId).toBe("gpt-image-1");
   });
 
   it("validates Shopify AI image and SEO requests", () => {

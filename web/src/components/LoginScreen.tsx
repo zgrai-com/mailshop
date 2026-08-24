@@ -43,7 +43,7 @@ export function LoginScreen({ onLogin }: Props) {
       <section className="login-brand">
         <div className="login-brand-mark" aria-hidden="true"><PackageSearch size={26} /></div>
         <p>MAILSHOP / OPERATIONS</p>
-        <h1>商品中台</h1>
+        <h1>采集与 Shopify</h1>
         <div className="login-rule" />
         <dl>
           <div><dt>来源</dt><dd>Shopify / 1688</dd></div>

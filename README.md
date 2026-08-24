@@ -1,21 +1,28 @@
-# Mailshop Cloudflare 商品中台
+# Mailshop 采集任务与 Shopify 中台
 
-Mailshop 是一套面向跨境电商选品与货源管理的轻量级商品中台。它将 Shopify 商品、SKU、媒体素材与 1688 候选货源集中管理，并提供图片搜索、货源匹配、员工账号和审计能力。
+Mailshop 是一套面向跨境电商选品的采集与 Shopify 管理工具。浏览器插件负责创建采集任务，服务端保存任务图片和搜图轮次，用户确认 1688 结果后直接导入 Shopify 商品。
 
-项目采用 Cloudflare Workers 全栈部署：D1 保存业务数据，R2 保存员工上传的商品图片，React 管理界面通过 Worker Static Assets 托管。无需单独维护传统服务器，适合小团队快速搭建内部商品工作台。
+统一业务流程为：
+
+`浏览器插件创建采集任务 -> 任务内执行 1688 搜图 -> 选择结果导入 Shopify 商品`
+
+项目采用 Cloudflare Workers 全栈部署：D1 保存任务、搜图、店铺和导入关系，R2 保存上传图片，React 管理界面通过 Worker Static Assets 托管。
 
 ## 核心功能
 
 - 支持 Google 账号登录；新账号自动获得 10,000 积分，以图搜图每次消耗 20 积分，AI 请求和商品详情每次消耗 5 积分
-- 普通用户登录后只使用仪表台、商品管理和积分管理；系统配置与账号管理仅管理员可见且由服务端角色校验保护
+- 普通用户使用仪表台、采集任务、Shopify 商品、Shopify 店铺和积分管理；系统配置与账号管理仅管理员可见
+- 浏览器插件采集网页商品信息与多张图片，并同步为服务器采集任务
+- 采集任务保留每张源图的多轮 1688 搜图结果、参数、页码和积分消耗
+- 选择目标 Shopify 店铺，单条或批量把 1688 结果直接创建或更新为 Shopify 草稿商品
 - 管理 Shopify 商品、SKU、选项、价格、库存、图片和视频
-- 为一个商品关联多个 1688 候选货源，并记录匹配状态、分数和 SKU 映射
-- 通过 OneBound 接口执行以图搜图，并将候选结果加入商品
 - 上传商品图片到 Cloudflare R2，通过受保护的媒体接口访问
 - 提供管理员初始化、员工账号、会话、登录限流和密码重置
 - 记录关键管理操作的审计日志
 - 提供 Bearer Token 保护的商品与货源导入接口
 - 支持从 Fehaute 商品页解析并导入完整商品数据
+
+旧的本地商品导入接口和数据表继续保留给爬虫及历史数据兼容，但不再作为普通用户的采集工作流入口。后台统一使用 `/api/collection-tasks`，旧 `/api/search-tasks` 仅作为兼容别名。
 
 ## 技术栈
 
@@ -58,9 +65,10 @@ Mailshop 是一套面向跨境电商选品与货源管理的轻量级商品中�
 - `INGEST_API_KEY`：爬虫接口的 Bearer Token
 - `BOOTSTRAP_TOKEN`：首次创建管理员时使用，初始化成功后接口会拒绝再次执行
 - `SETTINGS_ENCRYPTION_KEY`：独立加密 OneBound 等集成凭据，轮换初始化令牌时不会破坏已保存配置
-- `SERVER_AI_BASE_URL`、`SERVER_AI_API_KEY`、`SERVER_AI_MODEL_ID`：可选的服务器托管 AI 凭据；未在后台保存 AI 配置时作为兜底使用
-- `SERVER_AI_CHAT_BASE_URL`、`SERVER_AI_CHAT_API_KEY`、`SERVER_AI_CHAT_MODEL_ID`：可选的 AI 对话配置兜底
-- `SERVER_AI_IMAGE_GENERATION_BASE_URL`、`SERVER_AI_IMAGE_GENERATION_API_KEY`、`SERVER_AI_IMAGE_GENERATION_MODEL_ID`：可选的 AI 图片生成配置兜底
+- `SERVER_AI_CONVERSATION_BASE_URL`、`SERVER_AI_CONVERSATION_API_KEY`：可选的对话接口兜底，图片识别、图片分析、对话和翻译共用这一套凭据
+- `SERVER_AI_IMAGE_FILTER_MODEL_ID`、`SERVER_AI_IMAGE_ANALYSIS_MODEL_ID`、`SERVER_AI_CHAT_MODEL_ID`、`SERVER_AI_TRANSLATION_MODEL_ID`：上述各对话任务的模型 ID
+- `SERVER_AI_IMAGE_GENERATION_BASE_URL`、`SERVER_AI_IMAGE_GENERATION_API_KEY`、`SERVER_AI_IMAGE_GENERATION_MODEL_ID`：可选的图片生成接口及其模型兜底
+- 旧版 `SERVER_AI_BASE_URL`、`SERVER_AI_CHAT_BASE_URL` 和 `SERVER_AI_TRANSLATION_BASE_URL` 变量仍会作为兼容回退读取
 
 ## 本地开发
 
@@ -77,6 +85,8 @@ npm run dev
 
 ## 验证与部署
 
+生产数据库迁移、Cloudflare 多账户选择、部署验收与回滚的完整流程见 [`DEPLOYMENT.md`](./DEPLOYMENT.md)。生产发布请按该文档执行，不要跳过迁移前后检查。
+
 ```powershell
 npm run typecheck
 npm test
@@ -87,9 +97,15 @@ npm run deploy
 npx wrangler secret put INGEST_API_KEY
 npx wrangler secret put BOOTSTRAP_TOKEN
 npx wrangler secret put SETTINGS_ENCRYPTION_KEY
-npx wrangler secret put SERVER_AI_BASE_URL
-npx wrangler secret put SERVER_AI_API_KEY
-npx wrangler secret put SERVER_AI_MODEL_ID
+npx wrangler secret put SERVER_AI_CONVERSATION_BASE_URL
+npx wrangler secret put SERVER_AI_CONVERSATION_API_KEY
+npx wrangler secret put SERVER_AI_IMAGE_FILTER_MODEL_ID
+npx wrangler secret put SERVER_AI_IMAGE_ANALYSIS_MODEL_ID
+npx wrangler secret put SERVER_AI_CHAT_MODEL_ID
+npx wrangler secret put SERVER_AI_TRANSLATION_MODEL_ID
+npx wrangler secret put SERVER_AI_IMAGE_GENERATION_BASE_URL
+npx wrangler secret put SERVER_AI_IMAGE_GENERATION_API_KEY
+npx wrangler secret put SERVER_AI_IMAGE_GENERATION_MODEL_ID
 ```
 
 Google OAuth、积分规则、回调地址和扩展 Origin 配置见 [`GOOGLE_AUTH.md`](./GOOGLE_AUTH.md)。Google 凭据在后台“系统设置”中保存。

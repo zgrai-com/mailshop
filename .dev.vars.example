@@ -2,12 +2,16 @@ INGEST_API_KEY=replace-with-a-long-random-key
 BOOTSTRAP_TOKEN=replace-with-a-one-time-random-token
 SETTINGS_ENCRYPTION_KEY=replace-with-a-separate-long-random-key
 # Optional server-managed AI fallback (used when no AI settings are saved in D1).
-# SERVER_AI_BASE_URL=https://api.openai.com/v1
-# SERVER_AI_API_KEY=replace-with-server-ai-key
-# SERVER_AI_MODEL_ID=gpt-4o-mini
-# SERVER_AI_CHAT_BASE_URL=https://api.openai.com/v1
-# SERVER_AI_CHAT_API_KEY=replace-with-chat-api-key
+# Conversation tasks share one endpoint and key; assign a model for each task.
+# SERVER_AI_CONVERSATION_BASE_URL=https://api.openai.com/v1
+# SERVER_AI_CONVERSATION_API_KEY=replace-with-conversation-api-key
+# SERVER_AI_IMAGE_FILTER_MODEL_ID=gpt-4o-mini
+# SERVER_AI_IMAGE_ANALYSIS_MODEL_ID=gpt-4o-mini
 # SERVER_AI_CHAT_MODEL_ID=gpt-4o-mini
+# SERVER_AI_TRANSLATION_MODEL_ID=gpt-4o-mini
+# Image generation uses a separate endpoint and key.
 # SERVER_AI_IMAGE_GENERATION_BASE_URL=https://api.openai.com/v1
 # SERVER_AI_IMAGE_GENERATION_API_KEY=replace-with-image-generation-api-key
 # SERVER_AI_IMAGE_GENERATION_MODEL_ID=gpt-image-1
+# Legacy SERVER_AI_BASE_URL / SERVER_AI_CHAT_BASE_URL / SERVER_AI_TRANSLATION_BASE_URL
+# variables are still read as fallbacks during migration.

@@ -45,16 +45,23 @@ export const googleSettingsSchema = z.object({
   allowedDomain: z.string().trim().max(255),
 });
 
+const aiBaseUrl = z.string().trim().url().max(2_048);
+const aiApiKey = z.string().trim().min(1).max(2_048);
+const aiModelId = z.string().trim().min(1).max(255);
+
 export const aiSettingsSchema = z.object({
-  baseUrl: z.string().trim().url().max(2_048),
-  apiKey: z.string().trim().min(1).max(2_048),
-  modelId: z.string().trim().min(1).max(255),
+  conversationBaseUrl: aiBaseUrl,
+  conversationApiKey: aiApiKey,
+  imageGenerationBaseUrl: aiBaseUrl,
+  imageGenerationApiKey: aiApiKey,
+  imageFilterModelId: aiModelId,
+  imageAnalysisModelId: aiModelId,
+  chatModelId: aiModelId,
+  translationModelId: aiModelId,
+  imageGenerationModelId: aiModelId,
 });
 
-export const aiSettingsScopeSchema = z.enum(["image_filter", "chat", "translation", "image_generation"]);
-export const aiSettingsUpdateSchema = aiSettingsSchema.extend({
-  scope: aiSettingsScopeSchema.default("image_filter"),
-});
+export const aiSettingsUpdateSchema = aiSettingsSchema;
 
 export const shopifySettingsSchema = z.object({
   shopDomain: z.string().trim().min(1).max(255),
@@ -240,7 +247,6 @@ export const aiCandidatesRequestSchema = z.object({
 });
 
 export type AiSettingsInput = z.infer<typeof aiSettingsSchema>;
-export type AiSettingsScope = z.infer<typeof aiSettingsScopeSchema>;
 export type AiSettingsUpdateInput = z.infer<typeof aiSettingsUpdateSchema>;
 export type ShopifySettingsInput = z.infer<typeof shopifySettingsSchema>;
 export type ShopifyProductTranslationAiInput = z.infer<typeof shopifyProductTranslationAiSchema>;
@@ -496,6 +502,12 @@ export const searchTaskImportSchema = oneboundRequestOptionsSchema.extend({
     .transform((values) => [...new Set(values)]).optional(),
 });
 
+// Collection tasks are the public name of the workflow. Keep the old schema
+// export for deployed clients that still call the legacy search-task routes.
+export const collectionTaskImportSchema = searchTaskImportSchema.extend({
+  storeId: z.string().uuid(),
+});
+
 export const searchTaskRunSchema = imageSearchSchema.extend({
   imageId: z.string().trim().min(1).max(160),
 });
@@ -506,4 +518,5 @@ export type OfferLinkInput = z.infer<typeof offerLinkSchema>;
 export type ProductListQuery = z.infer<typeof productListQuerySchema>;
 export type SearchTaskListQuery = z.infer<typeof searchTaskListQuerySchema>;
 export type SearchTaskImportInput = z.infer<typeof searchTaskImportSchema>;
+export type CollectionTaskImportInput = z.infer<typeof collectionTaskImportSchema>;
 export type SearchTaskRunInput = z.infer<typeof searchTaskRunSchema>;

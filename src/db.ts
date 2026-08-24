@@ -178,10 +178,23 @@ export async function ensureSearchTasksSchema(env: Env): Promise<void> {
             offer_id TEXT NOT NULL,
             product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
             imported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            UNIQUE(task_id, offer_id)
+            UNIQUE(task_id, offer_id, shopify_store_id)
           )`,
         ),
         env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_task_imports_task ON search_task_imports(task_id, imported_at DESC)"),
+        env.DB.prepare(
+          `CREATE TABLE IF NOT EXISTS collection_task_imports (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES search_tasks(id) ON DELETE CASCADE,
+            run_id TEXT REFERENCES search_task_runs(id) ON DELETE SET NULL,
+            offer_id TEXT NOT NULL,
+            shopify_store_id TEXT NOT NULL REFERENCES shopify_stores(id) ON DELETE CASCADE,
+            shopify_product_id TEXT NOT NULL,
+            imported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            UNIQUE(task_id, offer_id)
+          )`,
+        ),
+        env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_collection_task_imports_task ON collection_task_imports(task_id, imported_at DESC)"),
       ]);
       await env.DB.prepare(
         `INSERT INTO search_task_runs
@@ -225,6 +238,19 @@ export async function recordAudit(
       clientIp(request),
     )
     .run();
+}
+
+export async function listAuditLogs(env: Env, limit = 100): Promise<JsonRow[]> {
+  const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit) || 100));
+  const result = await env.DB.prepare(
+    `SELECT l.id, l.user_id AS userId, u.display_name AS userName, u.username,
+            l.action, l.entity_type AS entityType, l.entity_id AS entityId,
+            l.detail_json AS detail, l.ip_address AS ipAddress, l.created_at AS createdAt
+       FROM audit_logs l
+       LEFT JOIN users u ON u.id = l.user_id
+       ORDER BY l.created_at DESC LIMIT ?`,
+  ).bind(safeLimit).all<JsonRow>();
+  return result.results.map((row) => hydrateJson(row, [["detail", {}]]));
 }
 
 let aiLogsSchemaReady: Promise<void> | null = null;
@@ -1126,49 +1152,60 @@ export async function getProductImage(
 }
 
 export async function dashboardSummary(env: Env, viewer?: ProductViewer): Promise<JsonRow> {
-  const productScope = viewer?.role === "admin" ? "" : " AND created_by = ?";
-  const productBindings = viewer?.role === "admin" ? [] : [viewer?.id ?? ""];
-  const productCounts = await env.DB.prepare(
-    `SELECT COUNT(*) AS total,
-            SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS newCount,
-            SUM(CASE WHEN status = 'image_searching' THEN 1 ELSE 0 END) AS searchingCount,
-            SUM(CASE WHEN status = 'matched' THEN 1 ELSE 0 END) AS matchedCount,
-            SUM(CASE WHEN status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount
-       FROM products WHERE status != 'archived'${productScope}`,
-  ).bind(...productBindings).first<JsonRow>();
-  let offerCount: { count?: number } | null = null;
-  try {
-    offerCount = viewer?.role === "admin"
-      ? await env.DB.prepare("SELECT COUNT(*) AS count FROM products WHERE catalog_source = '1688' AND status != 'archived'").first<JsonRow>()
-      : await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM products WHERE catalog_source = '1688' AND status != 'archived' AND created_by = ?",
-      ).bind(viewer?.id ?? "").first<JsonRow>();
-  } catch (error) {
-    // Keep older remote databases usable until the catalog migration is applied.
-    console.warn(JSON.stringify({ level: "warn", event: "dashboard_catalog_source_fallback", error: error instanceof Error ? error.message : String(error) }));
-    offerCount = viewer?.role === "admin"
-      ? await env.DB.prepare("SELECT COUNT(*) AS count FROM products WHERE source_platform = '1688' AND status != 'archived'").first<JsonRow>()
-      : await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM products WHERE source_platform = '1688' AND status != 'archived' AND created_by = ?",
-      ).bind(viewer?.id ?? "").first<JsonRow>();
-  }
-  const [userCount, recentResult] = await env.DB.batch<JsonRow>([
-    viewer?.role === "admin"
-      ? env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE is_active = 1")
-      : env.DB.prepare("SELECT 1 AS count"),
+  await ensureSearchTasksSchema(env);
+  const isAdmin = viewer?.role === "admin";
+  const taskScope = isAdmin ? "" : " WHERE st.user_id = ?";
+  const taskBindings = isAdmin ? [] : [viewer?.id ?? ""];
+  const storeScope = isAdmin ? "" : " WHERE owner_user_id = ?";
+  const storeBindings = isAdmin ? [] : [viewer?.id ?? ""];
+  const [taskCountResult, storeCountResult, userCountResult, recentResult] = await env.DB.batch<JsonRow>([
     env.DB.prepare(
-      `SELECT p.id, p.title, p.status, p.updated_at AS updatedAt,
-              COALESCE((SELECT CASE WHEN pi.r2_key IS NOT NULL THEN '/media/' || pi.r2_key ELSE pi.url END
-                FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.position LIMIT 1), '') AS thumbnailUrl
-         FROM products p WHERE p.status != 'archived'${viewer?.role === "admin" ? "" : " AND p.created_by = ?"}
-         ORDER BY p.updated_at DESC LIMIT 6`,
-    ).bind(...productBindings),
+      `SELECT COUNT(*) AS collectionTaskCount,
+              COALESCE(SUM(CASE
+                WHEN EXISTS (SELECT 1 FROM collection_task_imports ci WHERE ci.task_id = st.id) THEN 1
+                ELSE 0
+              END), 0) AS importedTaskCount,
+              COALESCE(SUM(CASE
+                WHEN NOT EXISTS (SELECT 1 FROM collection_task_imports ci WHERE ci.task_id = st.id)
+                 AND EXISTS (SELECT 1 FROM search_task_runs sr WHERE sr.task_id = st.id AND sr.status = 'completed') THEN 1
+                ELSE 0
+              END), 0) AS queriedTaskCount,
+              COALESCE(SUM(CASE
+                WHEN NOT EXISTS (SELECT 1 FROM search_task_runs sr WHERE sr.task_id = st.id AND sr.status = 'completed') THEN 1
+                ELSE 0
+              END), 0) AS unqueriedTaskCount,
+              COALESCE(SUM((SELECT COUNT(*) FROM collection_task_imports ci WHERE ci.task_id = st.id)), 0) AS shopifyProductCount
+         FROM search_tasks st${taskScope}`,
+    ).bind(...taskBindings),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS shopifyStoreCount,
+              COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) AS activeShopifyStoreCount
+         FROM shopify_stores${storeScope}`,
+    ).bind(...storeBindings),
+    isAdmin
+      ? env.DB.prepare("SELECT COUNT(*) AS activeUsers FROM users WHERE is_active = 1")
+      : env.DB.prepare("SELECT 1 AS activeUsers"),
+    env.DB.prepare(
+      `SELECT st.id,
+              COALESCE(NULLIF(st.product_title, ''), st.name) AS name,
+              CASE
+                WHEN EXISTS (SELECT 1 FROM collection_task_imports ci WHERE ci.task_id = st.id) THEN 'imported'
+                WHEN EXISTS (SELECT 1 FROM search_task_runs sr WHERE sr.task_id = st.id AND sr.status = 'completed') THEN 'queried'
+                ELSE 'unqueried'
+              END AS status,
+              COALESCE((SELECT SUM(sr.result_count) FROM search_task_runs sr WHERE sr.task_id = st.id), 0) AS resultCount,
+              (SELECT COUNT(*) FROM collection_task_imports ci WHERE ci.task_id = st.id) AS importedCount,
+              COALESCE(st.selected_image_url, st.source_image_url, json_extract(st.images_json, '$[0].url'), '') AS thumbnailUrl,
+              st.updated_at AS updatedAt
+         FROM search_tasks st${taskScope}
+         ORDER BY st.updated_at DESC LIMIT 6`,
+    ).bind(...taskBindings),
   ]);
   return {
-    ...(productCounts ?? {}),
-    offerCount: offerCount?.count ?? 0,
-    activeUsers: userCount.results[0]?.count ?? 0,
-    recentProducts: recentResult.results,
+    ...(taskCountResult.results[0] ?? {}),
+    ...(storeCountResult.results[0] ?? {}),
+    activeUsers: userCountResult.results[0]?.activeUsers ?? 0,
+    recentCollectionTasks: recentResult.results,
   };
 }
 
@@ -1191,7 +1228,7 @@ async function hydrateSearchTasks(env: Env, rows: JsonRow[]): Promise<JsonRow[]>
   if (!rows.length) return [];
   const taskIds = rows.map((row) => String(row.id));
   const placeholders = taskIds.map(() => "?").join(", ");
-  const [runResult, importResult] = await env.DB.batch<JsonRow>([
+  const [runResult, legacyImportResult, importResult] = await env.DB.batch<JsonRow>([
     env.DB.prepare(
       `SELECT id, task_id AS taskId, image_id AS imageId, image_url AS imageUrl, status,
               options_json AS options, page, page_size AS pageSize, uploaded_image_id AS uploadedImageId,
@@ -1204,6 +1241,12 @@ async function hydrateSearchTasks(env: Env, rows: JsonRow[]): Promise<JsonRow[]>
               imported_at AS importedAt
          FROM search_task_imports WHERE task_id IN (${placeholders}) ORDER BY imported_at DESC`,
     ).bind(...taskIds),
+    env.DB.prepare(
+      `SELECT task_id AS taskId, run_id AS runId, offer_id AS offerId,
+              shopify_store_id AS shopifyStoreId, shopify_product_id AS shopifyProductId,
+              imported_at AS importedAt
+         FROM collection_task_imports WHERE task_id IN (${placeholders}) ORDER BY imported_at DESC`,
+    ).bind(...taskIds),
   ]);
   const runsByTask = new Map<string, JsonRow[]>();
   for (const row of runResult.results) {
@@ -1213,7 +1256,7 @@ async function hydrateSearchTasks(env: Env, rows: JsonRow[]): Promise<JsonRow[]>
     runsByTask.set(taskId, values);
   }
   const importsByTask = new Map<string, JsonRow[]>();
-  for (const row of importResult.results) {
+  for (const row of [...legacyImportResult.results, ...importResult.results]) {
     const taskId = String(row.taskId);
     const values = importsByTask.get(taskId) ?? [];
     values.push(row);
@@ -1224,13 +1267,33 @@ async function hydrateSearchTasks(env: Env, rows: JsonRow[]): Promise<JsonRow[]>
     const task = hydrateJson(rawRow, [["options", {}], ["results", []], ["images", []]]);
     const taskId = String(task.id);
     const imports = importsByTask.get(taskId) ?? [];
-    const importedByOffer = new Map(imports.map((item) => [String(item.offerId), item]));
+    const importsByOffer = new Map<string, JsonRow[]>();
+    for (const item of imports) {
+      const offerId = String(item.offerId);
+      const values = importsByOffer.get(offerId) ?? [];
+      values.push(item);
+      importsByOffer.set(offerId, values);
+    }
     const runs: JsonRow[] = (runsByTask.get(taskId) ?? []).map((run): JsonRow => {
       const results = Array.isArray(run.results) ? run.results.map((result) => {
         const offerId = offerIdFromResult(result);
-        const imported = offerId ? importedByOffer.get(offerId) : undefined;
+        const resultImports = offerId ? importsByOffer.get(offerId) ?? [] : [];
+        const latestImport = resultImports[0];
+        const shopifyImports = resultImports.flatMap((item) => typeof item.shopifyStoreId === "string"
+          ? [{
+              storeId: item.shopifyStoreId,
+              productId: item.shopifyProductId,
+              importedAt: item.importedAt,
+            }]
+          : []);
         return result && typeof result === "object" && !Array.isArray(result)
-          ? { ...result as Record<string, unknown>, imported: Boolean(imported), importedAt: imported?.importedAt ?? null, productId: imported?.productId ?? null }
+          ? {
+              ...result as Record<string, unknown>,
+              imported: resultImports.length > 0,
+              importedAt: latestImport?.importedAt ?? null,
+              productId: latestImport?.productId ?? null,
+              shopifyImports,
+            }
           : result;
       }) : [];
       return { ...run, results };
@@ -1431,6 +1494,25 @@ export async function recordSearchTaskImports(
        product_id = excluded.product_id,
        imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
   ).bind(crypto.randomUUID(), taskId, runId, item.offerId, item.productId)));
+}
+
+export async function recordCollectionTaskImports(
+  env: Env,
+  taskId: string,
+  runId: string | null,
+  storeId: string,
+  imported: Array<{ offerId: string; shopifyProductId: string }>,
+): Promise<void> {
+  if (!imported.length) return;
+  await ensureSearchTasksSchema(env);
+  await env.DB.batch(imported.map((item) => env.DB.prepare(
+    `INSERT INTO collection_task_imports (id, task_id, run_id, offer_id, shopify_store_id, shopify_product_id)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(task_id, offer_id, shopify_store_id) DO UPDATE SET
+       run_id = COALESCE(excluded.run_id, collection_task_imports.run_id),
+       shopify_product_id = excluded.shopify_product_id,
+       imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+  ).bind(crypto.randomUUID(), taskId, runId, item.offerId, storeId, item.shopifyProductId)));
 }
 
 export async function deleteSearchTask(env: Env, userId: string, taskId: string): Promise<boolean> {
@@ -1807,7 +1889,7 @@ export async function listUsers(env: Env): Promise<JsonRow[]> {
   const result = await env.DB.prepare(
     `SELECT u.id, u.username, u.display_name AS displayName, u.email, u.avatar_url AS avatarUrl,
             u.auth_provider AS authProvider, u.role, w.balance AS credits, u.is_active AS isActive,
-            created_at AS createdAt, updated_at AS updatedAt, last_login_at AS lastLoginAt
+            u.created_at AS createdAt, u.updated_at AS updatedAt, u.last_login_at AS lastLoginAt
        FROM users u JOIN credit_wallets w ON w.user_id = u.id
        ORDER BY u.is_active DESC, u.created_at`,
   ).all<JsonRow>();

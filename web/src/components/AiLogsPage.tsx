@@ -13,6 +13,7 @@ const operationLabels: Record<string, string> = {
 
 const scopeLabels: Record<string, string> = {
   chat: "AI 对话",
+  image_analysis: "图片分析",
   translation: "AI 翻译",
   image_generation: "图片生成",
   image_filter: "图片识别",

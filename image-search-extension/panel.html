@@ -3,20 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mailshop 商品采集</title>
+    <title>Mailshop 采集任务</title>
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
     <header class="app-header">
       <div class="brand-mark" aria-hidden="true">M</div>
       <div class="brand-copy">
-        <strong>商品采集</strong>
+        <strong>采集任务</strong>
         <span>MAILSHOP SOURCING</span>
       </div>
       <nav class="app-nav" aria-label="插件视图">
-        <button id="view-workspace" class="nav-button active" type="button">采集</button>
-        <button id="view-products" class="nav-button" type="button" hidden>商品</button>
-        <button id="view-tasks" class="nav-button" type="button" hidden>任务</button>
+        <button id="view-workspace" class="nav-button active" type="button">新建</button>
+        <button id="view-tasks" class="nav-button" type="button" hidden>采集任务</button>
         <button id="view-stores" class="nav-button" type="button" hidden>店铺</button>
         <button id="view-credits" class="nav-button" type="button" hidden>积分</button>
         <button id="view-settings" class="nav-button" type="button" hidden>AI</button>
@@ -41,8 +40,8 @@
       <section class="task-intake" aria-labelledby="task-heading">
         <div class="section-heading intake-heading">
           <div>
-            <h1 id="task-heading">采集当前商品</h1>
-            <p>多选图片保存为一个商品任务，稍后再选择搜索图</p>
+            <h1 id="task-heading">创建采集任务</h1>
+            <p>保存当前商品信息与图片，稍后在任务中选择图片搜索 1688</p>
           </div>
           <div class="intake-actions">
             <button id="load-page-images" class="button quiet compact" type="button">手动选择图片</button>
@@ -59,7 +58,7 @@
         </div>
         <input id="file-picker" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif" hidden />
 
-        <div class="search-options" aria-label="查询参数">
+        <div class="search-options" aria-label="搜图参数">
           <label><span>排序</span><select id="search-sort"><option value="_sale">销量降序</option><option value="sale">销量升序</option><option value="bid2">总价升序</option><option value="_bid2">总价降序</option></select></label>
           <label><span>结果数</span><input id="search-limit" type="number" min="10" max="50" step="1" value="30" /></label>
           <label><span>缓存</span><select id="search-cache"><option value="no">关闭</option><option value="yes">开启</option></select></label>
@@ -73,9 +72,9 @@
             <label><input id="ai-mode-custom" type="radio" name="ai-mode" value="custom" /><span>使用自己的 AI</span></label>
           </div>
           <div id="custom-ai-config" class="custom-ai-config" hidden>
-            <label class="field-wide"><span>模型服务 URL（Responses）</span><input id="custom-ai-url" type="url" placeholder="https://api.example.com/v1" autocomplete="off" /></label>
-            <label><span>API Key</span><input id="custom-ai-key" type="password" placeholder="输入自己的 API Key" autocomplete="new-password" /></label>
-            <label><span>模型 ID</span><input id="custom-ai-model" type="text" placeholder="支持图片识别的模型" autocomplete="off" /></label>
+            <label class="field-wide"><span>对话接口 URL（Responses）</span><input id="custom-ai-url" type="url" placeholder="https://api.example.com/v1" autocomplete="off" /></label>
+            <label><span>对话接口 API Key</span><input id="custom-ai-key" type="password" placeholder="输入对话接口 API Key" autocomplete="new-password" /></label>
+            <label><span>图片识别模型</span><input id="custom-ai-model" type="text" placeholder="支持图片识别的模型" autocomplete="off" /></label>
             <small>自定义配置仅保存在当前浏览器插件本地。</small>
           </div>
           <div class="ai-config-actions">
@@ -101,7 +100,7 @@
         <div id="draft-panel" class="draft-panel" hidden>
           <img id="draft-preview" class="draft-preview" alt="任务图片预览" />
           <div class="draft-content">
-            <label for="task-name">任务名称</label>
+            <label for="task-name">采集任务名称</label>
             <input id="task-name" type="text" maxlength="120" placeholder="例如：黑色连衣裙" />
             <span id="draft-meta" class="draft-meta"></span>
           </div>
@@ -119,21 +118,13 @@
       <section id="task-workspace" class="task-workspace" aria-labelledby="queue-heading">
         <div class="queue-header">
           <div>
-            <h1 id="queue-heading">任务管理</h1>
+            <h1 id="queue-heading">采集任务</h1>
             <p id="queue-summary">还没有任务</p>
           </div>
           <button id="clear-finished" class="button quiet compact" type="button" hidden>清理已完成</button>
         </div>
         <div id="task-list" class="task-list" aria-live="polite"></div>
       </section>
-      </section>
-
-      <section id="products-view" class="app-view management-view" aria-labelledby="products-heading" hidden>
-        <div class="management-header">
-          <div><h1 id="products-heading">商品管理</h1><p id="products-summary">服务器商品目录</p></div>
-          <button id="refresh-products" class="icon-button" type="button" title="刷新商品" aria-label="刷新商品">↻</button>
-        </div>
-        <div id="products-list" class="management-list" aria-live="polite"></div>
       </section>
 
       <section id="stores-view" class="app-view management-view" aria-labelledby="stores-heading" hidden>
@@ -159,7 +150,7 @@
             <h1 id="settings-heading">AI 配置</h1>
             <p>选择图片分析方式，并在保存前测试连接。</p>
           </div>
-          <button id="settings-back" class="button quiet compact" type="button">返回采集</button>
+          <button id="settings-back" class="button quiet compact" type="button">返回新建</button>
         </div>
         <div id="ai-settings-mount"></div>
       </section>
@@ -213,21 +204,29 @@
         <footer class="modal-footer">
           <span id="selected-count" class="selected-count">已选 0 张</span>
           <button id="toggle-image-selection" class="button quiet compact" type="button">全选</button>
-          <button id="create-selected-tasks" class="button primary compact" type="button" disabled>创建商品任务</button>
+          <button id="create-selected-tasks" class="button primary compact" type="button" disabled>创建采集任务</button>
         </footer>
       </section>
     </div>
 
     <div id="results-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="results-modal-heading" hidden>
-      <button id="results-modal-backdrop" class="modal-backdrop" type="button" aria-label="关闭查询结果"></button>
+      <button id="results-modal-backdrop" class="modal-backdrop" type="button" aria-label="关闭搜图结果"></button>
       <section class="modal-sheet results-modal-sheet">
         <header class="modal-header">
           <div>
-            <h2 id="results-modal-heading">查询结果</h2>
+            <h2 id="results-modal-heading">搜图结果</h2>
             <p id="results-modal-meta"></p>
           </div>
           <button id="results-modal-close" class="modal-close" type="button" aria-label="关闭">×</button>
         </header>
+        <div class="results-import-toolbar">
+          <label>
+            <span>导入店铺</span>
+            <select id="results-store" aria-label="选择 Shopify 导入店铺"></select>
+          </label>
+          <button id="results-import-all" class="button primary compact" type="button">全部导入 Shopify</button>
+        </div>
+        <div id="results-import-status" class="results-import-status" role="status" aria-live="polite"></div>
         <div id="results-modal-grid" class="results-modal-grid"></div>
       </section>
     </div>

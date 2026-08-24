@@ -14,12 +14,16 @@ export type User = {
 
 export type OneBoundSettings = {
   configured: boolean;
+  key: string | null;
+  secret: string | null;
   keyHint: string | null;
   updatedAt: string | null;
 };
 
 export type GoogleSettings = {
   configured: boolean;
+  clientId: string | null;
+  clientSecret: string | null;
   clientIdHint: string | null;
   allowedDomain: string;
   updatedAt: string | null;
@@ -27,25 +31,38 @@ export type GoogleSettings = {
 
 export type AiSettings = {
   configured: boolean;
-  baseUrl: string;
-  apiKeyHint: string | null;
-  modelId: string | null;
+  conversation: AiServiceSettings;
+  imageGeneration: AiServiceSettings;
+  models: AiTaskModels;
   updatedAt: string | null;
-  imageFilter: AiProviderSettings;
-  chat: AiProviderSettings;
-  translation: AiProviderSettings;
-  imageGeneration: AiProviderSettings;
 };
 
-export type AiProviderSettings = {
+export type AiServiceSettings = {
   configured: boolean;
   baseUrl: string;
+  apiKey: string | null;
   apiKeyHint: string | null;
-  modelId: string | null;
-  updatedAt: string | null;
 };
 
-export type AiSettingsScope = "image_filter" | "chat" | "translation" | "image_generation";
+export type AiTaskModels = {
+  imageFilterModelId: string | null;
+  imageAnalysisModelId: string | null;
+  chatModelId: string | null;
+  translationModelId: string | null;
+  imageGenerationModelId: string | null;
+};
+
+export type AiSettingsInput = {
+  conversationBaseUrl: string;
+  conversationApiKey: string;
+  imageGenerationBaseUrl: string;
+  imageGenerationApiKey: string;
+  imageFilterModelId: string;
+  imageAnalysisModelId: string;
+  chatModelId: string;
+  translationModelId: string;
+  imageGenerationModelId: string;
+};
 
 export type AiRequestLog = {
   id: string;
@@ -62,6 +79,19 @@ export type AiRequestLog = {
   errorMessage: string | null;
   entityType: string | null;
   entityId: string | null;
+  createdAt: string;
+};
+
+export type AuditLog = {
+  id: string;
+  userId: string | null;
+  userName: string | null;
+  username: string | null;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  detail: Record<string, unknown>;
+  ipAddress: string | null;
   createdAt: string;
 };
 
@@ -87,6 +117,7 @@ export type ShopifyRemoteProduct = {
   status: string;
   vendor: string | null;
   productType: string | null;
+  createdAt?: string | null;
   updatedAt: string | null;
   publishedAt: string | null;
   totalInventory: number | null;
@@ -113,6 +144,10 @@ export type ShopifyRemoteProduct = {
     selectedOptions: Array<{ name: string; value: string }>;
     imageUrl: string | null;
   }>;
+  storeId?: string;
+  storeName?: string;
+  storeDomain?: string;
+  translatedLocales?: Array<{ locale: string; name: string }>;
 };
 
 export type ShopifyLocale = {
@@ -209,6 +244,11 @@ export type SearchTaskResult = {
   imported?: boolean;
   importedAt?: string | null;
   productId?: string | null;
+  shopifyImports?: Array<{
+    storeId: string;
+    productId: string;
+    importedAt: string;
+  }>;
 };
 
 export type SearchTaskRun = {
@@ -319,285 +359,22 @@ export type OneBoundItemPreview = {
   raw: Record<string, unknown>;
 };
 
-export type ProductStatus = "new" | "image_searching" | "matched" | "reviewed" | "archived";
-
-export type ProductSummary = {
-  id: string;
-  sourcePlatform: "1688" | "shopify" | "manual" | "other";
-  sourceStore: string;
-  externalId: string;
-  sourceUrl?: string | null;
-  title: string;
-  vendor?: string | null;
-  productType?: string | null;
-  spu?: string | null;
-  inventoryQuantity?: number | null;
-  offerId1688?: string | null;
-  supplierName1688?: string | null;
-  currency: string;
-  status: ProductStatus;
-  syncState: string;
-  priceMin?: number | null;
-  priceMax?: number | null;
-  updatedAt: string;
-  assignedToName?: string | null;
-  variantCount: number;
-  imageCount: number;
-  offerCount: number;
-  thumbnailUrl?: string;
-};
-
-export type ProductVariant = {
-  id: string;
-  externalId: string;
-  sku?: string | null;
-  barcode?: string | null;
-  title?: string | null;
-  option1?: string | null;
-  option2?: string | null;
-  option3?: string | null;
-  price?: number | null;
-  compareAtPrice?: number | null;
-  cost?: number | null;
-  inventoryQuantity?: number | null;
-  weight?: number | null;
-  weightUnit?: string | null;
-  imageUrl?: string | null;
-  grams?: number | null;
-  remainingInventory?: number | null;
-  options?: unknown[];
-};
-
-export type ProductImage = {
-  id: string;
-  externalId: string;
-  displayUrl?: string | null;
-  url?: string | null;
-  r2Key?: string | null;
-  altText?: string | null;
-  position: number;
-};
-
-export type ProductMedia = {
-  id: string;
-  externalId: string;
-  mediaType: "video" | "image" | "document" | "other";
-  url?: string | null;
-  posterUrl?: string | null;
-  title?: string | null;
-  position: number;
-  width?: number | null;
-  height?: number | null;
-  contentType?: string | null;
-  metadata: Record<string, unknown>;
-};
-
-export type OfferLink = {
-  linkId: string;
-  matchStatus: "candidate" | "selected" | "rejected";
-  matchScore?: number | null;
-  notes?: string | null;
-  variantMap: Record<string, unknown>;
-  offerId: string;
-  url?: string | null;
-  title: string;
-  supplierName?: string | null;
-  priceMin?: number | null;
-  priceMax?: number | null;
-  currency: string;
-  minOrderQuantity?: number | null;
-  unit?: string | null;
-  province?: string | null;
-  city?: string | null;
-  thumbnailUrl?: string;
-  variantCount: number;
-};
-
-export type StoredOfferDetail = {
-  id: string;
-  offerId: string;
-  url?: string | null;
-  title: string;
-  supplierId?: string | null;
-  supplierName?: string | null;
-  priceMin?: number | null;
-  priceMax?: number | null;
-  currency: string;
-  minOrderQuantity?: number | null;
-  unit?: string | null;
-  province?: string | null;
-  city?: string | null;
-  shortDescription?: string | null;
-  totalPrice?: number | null;
-  suggestedPrice?: number | null;
-  originalPrice?: number | null;
-  stockQuantity?: number | null;
-  soldQuantity?: number | null;
-  brand?: string | null;
-  brandId?: string | null;
-  rootCategoryId?: string | null;
-  categoryId?: string | null;
-  sellerNick?: string | null;
-  location?: string | null;
-  itemWeight?: string | null;
-  itemSize?: string | null;
-  shopId?: string | null;
-  descriptionHtml?: string | null;
-  videoUrl?: string | null;
-  sampleId?: string | null;
-  shippingTo?: string | null;
-  hasDiscount?: number | null;
-  isPromotion?: number | null;
-  fetchedAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  variants: Array<{
-    id: string;
-    externalId: string;
-    sku?: string | null;
-    name?: string | null;
-    attributes: Record<string, unknown>;
-    price?: number | null;
-    stock?: number | null;
-  }>;
-  images: Array<{
-    id: string;
-    externalId: string;
-    url?: string | null;
-    r2Key?: string | null;
-    displayUrl?: string | null;
-    altText?: string | null;
-    position: number;
-  }>;
-  priceTiers: Array<{
-    id: string;
-    minQuantity?: number | null;
-    price?: number | null;
-    originalPrice?: number | null;
-    position: number;
-  }>;
-  properties: Array<{
-    id: string;
-    propertyId?: string | null;
-    valueId?: string | null;
-    name: string;
-    value: string;
-    position: number;
-  }>;
-  propertyImages: Array<{ id: string; propertiesKey?: string | null; url: string; position: number }>;
-  descriptionImages: Array<{ id: string; url: string; position: number }>;
-  videos: Array<{ id: string; url: string; posterUrl?: string | null; title?: string | null; position: number }>;
-  latestSnapshot?: {
-    apiName: string;
-    requestNumIid: string;
-    errorCode?: string | null;
-    reason?: string | null;
-    upstreamRequestId?: string | null;
-    fetchedAt: string;
-  } | null;
-};
-
-export type ProductDetail = ProductSummary & {
-  catalogSource?: "1688" | "legacy";
-  supplierId1688?: string | null;
-  minOrderQuantity1688?: number | null;
-  unit1688?: string | null;
-  province1688?: string | null;
-  city1688?: string | null;
-  shortDescription1688?: string | null;
-  totalPrice1688?: number | null;
-  suggestedPrice1688?: number | null;
-  originalPrice1688?: number | null;
-  stockQuantity1688?: number | null;
-  soldQuantity1688?: number | null;
-  brand1688?: string | null;
-  brandId1688?: string | null;
-  rootCategoryId1688?: string | null;
-  categoryId1688?: string | null;
-  sellerNick1688?: string | null;
-  location1688?: string | null;
-  itemWeight1688?: string | null;
-  itemSize1688?: string | null;
-  shopId1688?: string | null;
-  videoUrl1688?: string | null;
-  sampleId1688?: string | null;
-  shippingTo1688?: string | null;
-  hasDiscount1688?: number | null;
-  isPromotion1688?: number | null;
-  fetchedAt1688?: string | null;
-  shopDomain?: string | null;
-  handle?: string | null;
-  descriptionHtml?: string | null;
-  publishedAt?: string | null;
-  compareAtPrice?: number | null;
-  costMin?: number | null;
-  costMax?: number | null;
-  tags: string[];
-  options: Array<{ name: string; values: string[] }>;
-  attributes: Record<string, unknown>;
-  categories: unknown[];
-  content: Record<string, unknown>;
-  notes?: string | null;
-  assignedTo?: string | null;
-  createdAt: string;
-  variants: ProductVariant[];
-  images: ProductImage[];
-  media: ProductMedia[];
-  offers: OfferLink[];
-};
-
 export type DashboardSummary = {
-  total: number;
-  newCount: number;
-  searchingCount: number;
-  matchedCount: number;
-  reviewedCount: number;
-  offerCount: number;
+  collectionTaskCount: number;
+  unqueriedTaskCount: number;
+  queriedTaskCount: number;
+  importedTaskCount: number;
+  shopifyProductCount: number;
+  shopifyStoreCount: number;
+  activeShopifyStoreCount: number;
   activeUsers: number;
-  recentProducts: Array<{
+  recentCollectionTasks: Array<{
     id: string;
-    title: string;
-    status: ProductStatus;
+    name: string;
+    status: SearchTask["status"];
+    resultCount: number;
+    importedCount: number;
     updatedAt: string;
     thumbnailUrl?: string;
-  }>;
-};
-
-export type ProductInput = {
-  sourcePlatform: "1688" | "shopify" | "manual" | "other";
-  sourceStore: string;
-  externalId?: string;
-  sourceUrl?: string;
-  shopDomain?: string;
-  title: string;
-  vendor?: string;
-  productType?: string;
-  spu?: string;
-  publishedAt?: string;
-  inventoryQuantity?: number | null;
-  currency: string;
-  status: ProductStatus;
-  priceMin?: number | null;
-  priceMax?: number | null;
-  tags: string[];
-  attributes?: Record<string, unknown>;
-  categories?: unknown[];
-  content?: Record<string, unknown>;
-  media?: Array<{
-    externalId?: string;
-    mediaType: "video" | "image" | "document" | "other";
-    url?: string;
-    posterUrl?: string;
-    title?: string;
-    position?: number;
-  }>;
-  notes?: string;
-  images: Array<{ url: string; position: number }>;
-  variants: Array<{
-    externalId?: string;
-    sku?: string;
-    title?: string;
-    price?: number | null;
-    inventoryQuantity?: number | null;
   }>;
 };

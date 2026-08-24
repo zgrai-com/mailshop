@@ -172,7 +172,7 @@ export function SearchResultDetailModal({ result, task, detail, loading, error, 
       }}
     >
       <header className="task-dialog-header">
-        <div><span>ITEM DETAIL COMPARISON</span><h2 id="task-detail-title">查询详情对比</h2><small className="mono">{result.offerId}</small></div>
+        <div><span>ITEM DETAIL COMPARISON</span><h2 id="task-detail-title">搜图详情对比</h2><small className="mono">{result.offerId}</small></div>
         <button className="icon-button" type="button" onClick={onClose} aria-label="关闭" title="关闭"><X size={19} /></button>
       </header>
       <div className="task-detail-body">
@@ -181,8 +181,8 @@ export function SearchResultDetailModal({ result, task, detail, loading, error, 
             <header><span>DATABASE TASK</span><h3>{task.productTitle || task.name}</h3><p>{task.description || "任务采集信息"}</p></header>
             <dl className="task-detail-info-list">
               <div><dt>任务名称</dt><dd>{task.name}</dd></div><div><dt>SKU</dt><dd>{task.sku || "-"}</dd></div>
-              <div><dt>来源网站</dt><dd>{task.sourceSite || "-"}</dd></div><div><dt>查询结果</dt><dd>{task.resultCount}</dd></div>
-              <div><dt>查询图片</dt><dd>{task.images.length} 张</dd></div><div><dt>更新时间</dt><dd>{new Date(task.updatedAt).toLocaleString("zh-CN")}</dd></div>
+              <div><dt>来源网站</dt><dd>{task.sourceSite || "-"}</dd></div><div><dt>搜图结果</dt><dd>{task.resultCount}</dd></div>
+              <div><dt>采集图片</dt><dd>{task.images.length} 张</dd></div><div><dt>更新时间</dt><dd>{new Date(task.updatedAt).toLocaleString("zh-CN")}</dd></div>
             </dl>
             <div className="task-detail-image-grid task-detail-task-images">{task.images.map((image, index) => imageButton(image.url, image.alt || image.title || `任务图片 ${index + 1}`))}</div>
             <div className="task-detail-source-result"><span>本轮匹配商品</span><h4>{result.title || result.offerId || "未命名商品"}</h4><p>{result.supplierName || "1688"}{result.location ? ` · ${result.location}` : ""}</p></div>

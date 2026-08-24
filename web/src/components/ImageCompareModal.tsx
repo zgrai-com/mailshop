@@ -55,7 +55,7 @@ export function ImageCompareModal({ originalUrl, resultUrl, title, onClose }: Pr
   }
 
   const transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
-  const panels = [["原图", originalUrl], ["查询结果", resultUrl]] as const;
+  const panels = [["原图", originalUrl], ["搜图结果", resultUrl]] as const;
 
   return <dialog ref={dialogRef} className="image-compare-dialog" aria-labelledby="image-compare-title" onCancel={(event) => { event.preventDefault(); onClose(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <header className="task-dialog-header image-compare-header">

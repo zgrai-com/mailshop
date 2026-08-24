@@ -1,6 +1,61 @@
 import { describe, expect, it } from "vitest";
 
-import { buildShopifyTranslationPrompt, extractGeneratedImage, parseShopifyTranslationResults, SHOPIFY_TRANSLATION_PROMPT_VERSION } from "./ai";
+import {
+  buildShopifyTranslationPrompt,
+  extractGeneratedImage,
+  parseShopifyTranslationResults,
+  resolveAiCredentials,
+  SHOPIFY_TRANSLATION_PROMPT_VERSION,
+  type UnifiedAiSettings,
+} from "./ai";
+
+const unifiedSettings: UnifiedAiSettings = {
+  configured: true,
+  conversation: { configured: true, baseUrl: "https://conversation.example/v1", apiKey: "conversation-key", apiKeyHint: "conv...-key" },
+  imageGeneration: { configured: true, baseUrl: "https://images.example/v1", apiKey: "image-key", apiKeyHint: "imag...-key" },
+  models: {
+    imageFilterModelId: "image-filter-model",
+    imageAnalysisModelId: "image-analysis-model",
+    chatModelId: "chat-model",
+    translationModelId: "translation-model",
+    imageGenerationModelId: "image-generation-model",
+  },
+  updatedAt: null,
+};
+
+describe("unified AI task routing", () => {
+  it.each([
+    ["image_filter", "image-filter-model"],
+    ["image_analysis", "image-analysis-model"],
+    ["chat", "chat-model"],
+    ["translation", "translation-model"],
+  ] as const)("routes %s through the shared conversation service", (task, modelId) => {
+    expect(resolveAiCredentials(unifiedSettings, task)).toEqual({
+      baseUrl: "https://conversation.example/v1",
+      apiKey: "conversation-key",
+      modelId,
+    });
+  });
+
+  it("routes image generation through its separate service", () => {
+    expect(resolveAiCredentials(unifiedSettings, "image_generation")).toEqual({
+      baseUrl: "https://images.example/v1",
+      apiKey: "image-key",
+      modelId: "image-generation-model",
+    });
+  });
+
+  it("rejects a task whose selected service or model is incomplete", () => {
+    expect(resolveAiCredentials({
+      ...unifiedSettings,
+      models: { ...unifiedSettings.models, translationModelId: null },
+    }, "translation")).toBeNull();
+    expect(resolveAiCredentials({
+      ...unifiedSettings,
+      imageGeneration: { ...unifiedSettings.imageGeneration, configured: false },
+    }, "image_generation")).toBeNull();
+  });
+});
 
 describe("Shopify translation prompt", () => {
   it("combines the user prompt with the fixed field mapping and HTML rules", () => {
