@@ -145,6 +145,8 @@ export type ShopifyProductUpdateInput = {
   templateSuffix: string;
   seoTitle: string;
   seoDescription: string;
+  mediaSelectionActive?: boolean;
+  mediaIds?: string[];
   mediaUrls: string[];
   variants: Array<{
     id: string;
@@ -293,7 +295,15 @@ type ShopifyTranslationResourcePage = ShopifyTranslationResourceResponse & {
 };
 
 function requiredTranslationScopes(scopes: string[]): string[] {
-  return ["read_locales", "read_translations", "write_translations"].filter((scope) => !scopes.includes(scope));
+  // Shopify treats a write scope as also granting the corresponding read access.
+  // Depending on the app/version, the token may therefore report only the write scope.
+  const hasReadLocales = scopes.includes("read_locales") || scopes.includes("write_locales");
+  const hasReadTranslations = scopes.includes("read_translations") || scopes.includes("write_translations");
+  return [
+    ...(hasReadLocales ? [] : ["read_locales"]),
+    ...(hasReadTranslations ? [] : ["read_translations"]),
+    ...(scopes.includes("write_translations") ? [] : ["write_translations"]),
+  ];
 }
 
 async function getShopLocales(store: ShopifyStoreRow, accessToken: string): Promise<ShopifyLocale[]> {
@@ -368,7 +378,7 @@ export async function getShopifyProductTranslations(env: Env, userId: string, st
   const credentials = await decryptCredentials(env, store);
   const token = await getAccessToken(store, credentials);
   const missingScopes = requiredTranslationScopes(token.scopes);
-  if (missingScopes.length) throw new ApiError(403, "Shopify 应用缺少多语言权限：" + missingScopes.join(", ") + "，请更新应用权限并重新授权", "shopify_translation_scope_missing", { missingScopes });
+  if (missingScopes.length) throw new ApiError(403, "Shopify 应用缺少多语言权限：" + missingScopes.join(", ") + "，请更新应用权限并重新授权", "shopify_translation_scope_missing", { missingScopes, grantedScopes: token.scopes });
   const locales = await getShopLocales(store, token.accessToken);
   const selectedLocale = locale || locales.find((item) => !item.primary && item.published)?.locale || locales.find((item) => !item.primary)?.locale;
   if (!selectedLocale) throw new ApiError(422, "Shopify 店铺还没有可翻译的目标语言，请先在 Shopify 后台添加语言", "shopify_target_locale_empty");
@@ -381,7 +391,7 @@ export async function getShopifyProductTranslations(env: Env, userId: string, st
     locales,
     markets,
     marketId: marketId || null,
-    missingScopes: token.scopes.includes("read_markets") ? [] : ["read_markets"],
+    missingScopes: token.scopes.includes("read_markets") || token.scopes.includes("write_markets") ? [] : ["read_markets"],
     translatableContent: resources.flatMap((resource) => {
       const metadata = translationResourceMetadata(resource, productId);
       return resource.translatableContent.map((item) => ({ resourceId: resource.resourceId, ...metadata, ...item }));
@@ -405,7 +415,7 @@ export async function registerShopifyTranslations(env: Env, userId: string, inpu
   const credentials = await decryptCredentials(env, store);
   const token = await getAccessToken(store, credentials);
   const missingScopes = requiredTranslationScopes(token.scopes);
-  if (missingScopes.length) throw new ApiError(403, "Shopify 应用缺少多语言权限：" + missingScopes.join(", ") + "，请更新应用权限并重新授权", "shopify_translation_scope_missing", { missingScopes });
+  if (missingScopes.length) throw new ApiError(403, "Shopify 应用缺少多语言权限：" + missingScopes.join(", ") + "，请更新应用权限并重新授权", "shopify_translation_scope_missing", { missingScopes, grantedScopes: token.scopes });
   const locales = await getShopLocales(store, token.accessToken);
   if (!locales.some((item) => item.locale === input.locale)) throw new ApiError(422, "目标语言不在 Shopify 店铺语言列表中", "shopify_locale_invalid");
   if (locales.find((item) => item.locale === input.locale)?.primary) throw new ApiError(422, "主语言是商品源内容，不能作为翻译目标语言", "shopify_locale_primary");
@@ -418,6 +428,9 @@ export async function registerShopifyTranslations(env: Env, userId: string, inpu
     const resource = resourceById.get(item.resourceId);
     const current = resource?.translatableContent.find((content) => content.key === item.key);
     if (!current) throw new ApiError(422, "Shopify 不允许翻译字段：" + item.key, "shopify_translation_key_invalid", { resourceId: item.resourceId, key: item.key });
+    if (item.key === "handle" && item.value.trim() && item.value.trim().toLowerCase() === current.value.trim().toLowerCase()) {
+      throw new ApiError(422, "多语言 Handle 不能与默认 Handle 一致，请填写一个未占用的目标语言 Handle", "shopify_translation_handle_matches_default", { resourceId: item.resourceId, handle: item.value.trim() });
+    }
     if (item.value.trim() && current.digest !== item.translatableContentDigest) throw new ApiError(409, "字段 " + item.key + " 已在 Shopify 中更新，请重新读取后再发布", "shopify_translation_digest_stale", { resourceId: item.resourceId, key: item.key });
   }
   const published: ShopifyTranslation[] = [];
@@ -428,7 +441,7 @@ export async function registerShopifyTranslations(env: Env, userId: string, inpu
     const metadata = translationResourceMetadata(resource, input.productId);
     const translations = items.filter((item) => item.value.trim());
     if (translations.length) {
-      const data = await graphql<{ translationsRegister: { translations?: Array<{ key: string; value: string; locale: string; outdated?: boolean; market?: { id?: string | null; name?: string | null } | null }>; userErrors?: unknown } }>(store, token.accessToken, "mutation RegisterTranslations($resourceId: ID!, $translations: [TranslationInput!]!) { translationsRegister(resourceId: $resourceId, translations: $translations) { translations { key value locale outdated market { id name } } userErrors { field message code } } }", {
+      const data = await graphql<{ translationsRegister: { translations?: Array<{ key: string; value: string; locale: string; outdated?: boolean; market?: { id?: string | null; name?: string | null } | null }>; userErrors?: unknown } }>(store, token.accessToken, "mutation RegisterTranslations($resourceId: ID!, $translations: [TranslationInput!]!) { translationsRegister(resourceId: $resourceId, translations: $translations) { translations { key value locale outdated market { id name } } userErrors { field message } } }", {
         resourceId,
         translations: translations.map((item) => ({ locale: input.locale, key: item.key, value: item.value, translatableContentDigest: item.translatableContentDigest, ...(item.marketId ? { marketId: item.marketId } : {}) })),
       });
@@ -441,7 +454,7 @@ export async function registerShopifyTranslations(env: Env, userId: string, inpu
       const removalGroups = new Map<string, typeof removals>();
       for (const item of removals) removalGroups.set(item.marketId || "", [...(removalGroups.get(item.marketId || "") ?? []), item]);
       for (const [marketId, removalItems] of removalGroups) {
-        const data = await graphql<{ translationsRemove: { userErrors?: unknown } }>(store, token.accessToken, "mutation RemoveTranslations($resourceId: ID!, $locales: [String!]!, $translationKeys: [String!]!, $marketIds: [ID!]) { translationsRemove(resourceId: $resourceId, locales: $locales, translationKeys: $translationKeys, marketIds: $marketIds) { userErrors { field message code } } }", {
+        const data = await graphql<{ translationsRemove: { userErrors?: unknown } }>(store, token.accessToken, "mutation RemoveTranslations($resourceId: ID!, $locales: [String!]!, $translationKeys: [String!]!, $marketIds: [ID!]) { translationsRemove(resourceId: $resourceId, locales: $locales, translationKeys: $translationKeys, marketIds: $marketIds) { userErrors { field message } } }", {
           resourceId,
           locales: [input.locale],
           translationKeys: removalItems.map((item) => item.key),
@@ -475,7 +488,7 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     seo: { title: input.seoTitle || null, description: input.seoDescription || null },
   };
   const data = await graphql<{ productUpdate: { product: RawShopifyProduct | null; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductUpdate($product: ProductUpdateInput!) {
-    productUpdate(product: $product) { product { ${PRODUCT_FIELDS} } userErrors { field message code } }
+    productUpdate(product: $product) { product { ${PRODUCT_FIELDS} } userErrors { field message } }
   }`, { product: productInput });
   const updateError = userErrors(data.productUpdate.userErrors);
   if (updateError || !data.productUpdate.product) throw new ApiError(502, updateError || "Shopify 商品更新失败", "shopify_product_update_failed");
@@ -483,20 +496,43 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     id: variant.id,
     price: variant.price || null,
     compareAtPrice: variant.compareAtPrice || null,
-    sku: variant.sku || null,
+    inventoryItem: { sku: variant.sku || null },
     barcode: variant.barcode || null,
   }));
   if (variantUpdates.length) {
     const variantResult = await graphql<{ productVariantsBulkUpdate: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message code } }
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
     }`, { productId: input.productId, variants: variantUpdates });
     const variantError = userErrors(variantResult.productVariantsBulkUpdate.userErrors);
     if (variantError) throw new ApiError(502, variantError, "shopify_variant_update_failed");
   }
-  if (input.mediaUrls.length) {
+  const existingMediaIds = (data.productUpdate.product.images?.nodes ?? []).map((image) => image.id);
+  const existingMediaUrls = new Set((data.productUpdate.product.images?.nodes ?? []).map((image) => image.url));
+  const mediaUrlsToCreate = input.mediaSelectionActive
+    ? input.mediaUrls.filter((url) => !existingMediaUrls.has(url))
+    : input.mediaUrls;
+  const stagedMediaUrls: string[] = [];
+  for (const [index, imageUrl] of mediaUrlsToCreate.entries()) {
+    const source = /^data:image\//iu.test(imageUrl)
+      ? await stagedDataImageSource(store, token.accessToken, imageUrl, existingMediaIds.length + index)
+      : await stagedRemoteImageSource(store, token.accessToken, imageUrl, existingMediaIds.length + index);
+    stagedMediaUrls.push(source);
+  }
+  if (input.mediaSelectionActive) {
+    const selectedMediaIds = new Set(input.mediaIds ?? []);
+    const mediaToDelete = existingMediaIds.filter((id) => !selectedMediaIds.has(id));
+    if (mediaToDelete.length) {
+      const deleteResult = await graphql<{ productDeleteMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+        productDeleteMedia(productId: $productId, mediaIds: $mediaIds) { userErrors { field message } }
+      }`, { productId: input.productId, mediaIds: mediaToDelete });
+      const deleteError = userErrors(deleteResult.productDeleteMedia.userErrors);
+      if (deleteError) throw new ApiError(502, deleteError, "shopify_media_delete_failed");
+    }
+  }
+  if (stagedMediaUrls.length) {
     const mediaResult = await graphql<{ productCreateMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
-      productCreateMedia(productId: $productId, media: $media) { userErrors { field message code } }
-    }`, { productId: input.productId, media: input.mediaUrls.map((originalSource) => ({ originalSource, mediaContentType: "IMAGE" })) });
+      productCreateMedia(productId: $productId, media: $media) { userErrors { field message } }
+    }`, { productId: input.productId, media: stagedMediaUrls.map((originalSource) => ({ originalSource, mediaContentType: "IMAGE" })) });
     const mediaError = userErrors(mediaResult.productCreateMedia.userErrors);
     if (mediaError) throw new ApiError(502, mediaError, "shopify_media_create_failed");
   }
@@ -508,7 +544,7 @@ export async function deleteShopifyProduct(env: Env, userId: string, storeId: st
   const store = await getStoreRow(env, storeId, userId);
   const credentials = await decryptCredentials(env, store);
   const token = await getAccessToken(store, credentials);
-  const data = await graphql<{ productDelete: { deletedProductId?: string | null; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDelete($input: ProductDeleteInput!) { productDelete(input: $input) { deletedProductId userErrors { field message code } } }`, { input: { id: productId } });
+  const data = await graphql<{ productDelete: { deletedProductId?: string | null; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDelete($input: ProductDeleteInput!) { productDelete(input: $input) { deletedProductId userErrors { field message } } }`, { input: { id: productId } });
   const error = userErrors(data.productDelete.userErrors);
   if (error) throw new ApiError(502, error, "shopify_product_delete_failed");
 }
@@ -735,7 +771,7 @@ async function getAccessToken(store: ShopifyStoreRow, credentials: { clientId: s
   if (!response.ok || !payload.access_token) {
     throw new ApiError(502, payload.error_description || payload.error || "Shopify 应用授权失败", "shopify_auth_failed");
   }
-  return { accessToken: payload.access_token, scopes: (payload.scope || "").split(",").map((scope) => scope.trim()).filter(Boolean) };
+  return { accessToken: payload.access_token, scopes: (payload.scope || "").split(/[\s,]+/u).map((scope) => scope.trim()).filter(Boolean) };
 }
 
 async function graphql<T>(store: ShopifyStoreRow, accessToken: string, query: string, variables: Record<string, unknown>): Promise<T> {
@@ -911,14 +947,25 @@ async function stagedImageSource(env: Env, store: ShopifyStoreRow, accessToken: 
 }
 
 async function stagedRemoteImageSource(store: ShopifyStoreRow, accessToken: string, imageUrl: string, index: number): Promise<string> {
+  let target: URL;
+  try {
+    target = new URL(imageUrl);
+  } catch {
+    throw new ApiError(422, "商品图片地址无效", "shopify_image_url_invalid");
+  }
+  if (!["http:", "https:"].includes(target.protocol)) throw new ApiError(422, "商品图片地址无效", "shopify_image_url_invalid");
   const response = await fetchWithTimeout(imageUrl, {
     method: "GET",
-    headers: { accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8" },
+    headers: {
+      accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8",
+      referer: `${target.origin}/`,
+      "user-agent": "Mozilla/5.0 (compatible; Mailshop/1.0)",
+    },
     redirect: "follow",
   });
   if (!response.ok) {
     await response.body?.cancel("remote image request failed");
-    throw new ApiError(502, "Failed to download the 1688 product image", "shopify_remote_image_failed", { upstreamStatus: response.status });
+    throw new ApiError(502, "远程图片地址已失效或无法访问，请重新生成图片后再保存", "shopify_remote_image_failed", { upstreamStatus: response.status, imageHost: target.hostname });
   }
   const contentLength = Number(response.headers.get("content-length") ?? 0);
   if (contentLength > MAX_PRODUCT_IMAGE_BYTES) {
@@ -931,6 +978,25 @@ async function stagedRemoteImageSource(store: ShopifyStoreRow, accessToken: stri
   if (bytes.byteLength > MAX_PRODUCT_IMAGE_BYTES) {
     throw new ApiError(413, "Product image exceeds the Shopify upload limit", "shopify_image_too_large");
   }
+  return stagedImageBytesSource(store, accessToken, new Uint8Array(bytes), contentType, index);
+}
+
+function decodeDataImageSource(value: string): { bytes: Uint8Array; contentType: string } {
+  const match = value.match(/^data:(image\/(?:avif|gif|jpeg|png|webp));base64,([A-Za-z0-9+/=\s]+)$/iu);
+  if (!match) throw new ApiError(422, "AI 图片数据无效", "shopify_image_data_invalid");
+  try {
+    const binary = atob(match[2].replace(/\s+/gu, ""));
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    if (!bytes.byteLength) throw new Error("empty image");
+    if (bytes.byteLength > MAX_PRODUCT_IMAGE_BYTES) throw new ApiError(413, "Product image exceeds the Shopify upload limit", "shopify_image_too_large");
+    return { bytes, contentType: match[1].toLowerCase() };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(422, "AI 图片数据无效", "shopify_image_data_invalid");
+  }
+}
+
+async function stagedImageBytesSource(store: ShopifyStoreRow, accessToken: string, bytes: Uint8Array, contentType: string, index: number): Promise<string> {
   const filename = fileName({ contentType }, index);
   const data = await graphql<{
     stagedUploadsCreate: { stagedTargets?: Array<{ url?: string; resourceUrl?: string; parameters?: Array<{ name?: string; value?: string }> }>; userErrors?: unknown };
@@ -952,6 +1018,11 @@ async function stagedRemoteImageSource(store: ShopifyStoreRow, accessToken: stri
   const upload = await fetchWithTimeout(target.url, { method: "POST", body: form });
   if (!upload.ok) throw new ApiError(502, "Shopify product image upload failed", "shopify_image_upload_failed");
   return target.resourceUrl;
+}
+
+async function stagedDataImageSource(store: ShopifyStoreRow, accessToken: string, imageUrl: string, index: number): Promise<string> {
+  const { bytes, contentType } = decodeDataImageSource(imageUrl);
+  return stagedImageBytesSource(store, accessToken, bytes, contentType, index);
 }
 
 async function buildFileInputs(env: Env, store: ShopifyStoreRow, accessToken: string, product: ShopifyProduct): Promise<{
@@ -1099,7 +1170,7 @@ export async function publishProductToShopify(env: Env, userId: string, productI
     }>(store, accessToken, `mutation ProductSet($identifier: ProductSetIdentifiers, $input: ProductSetInput!, $synchronous: Boolean!) {
       productSet(identifier: $identifier, input: $input, synchronous: $synchronous) {
         product { id handle }
-        userErrors { field message code }
+        userErrors { field message }
       }
     }`, {
       identifier: existingProductId ? { id: existingProductId } : null,

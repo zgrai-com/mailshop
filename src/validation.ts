@@ -51,6 +51,11 @@ export const aiSettingsSchema = z.object({
   modelId: z.string().trim().min(1).max(255),
 });
 
+export const aiSettingsScopeSchema = z.enum(["image_filter", "chat", "translation", "image_generation"]);
+export const aiSettingsUpdateSchema = aiSettingsSchema.extend({
+  scope: aiSettingsScopeSchema.default("image_filter"),
+});
+
 export const shopifySettingsSchema = z.object({
   shopDomain: z.string().trim().min(1).max(255),
   displayName: z.string().trim().max(255).default(""),
@@ -96,7 +101,12 @@ export const shopifyProductUpdateSchema = z.object({
   templateSuffix: z.string().trim().max(255).default(""),
   seoTitle: z.string().trim().max(70).default(""),
   seoDescription: z.string().trim().max(320).default(""),
-  mediaUrls: z.array(z.string().trim().url().max(2_048)).max(50).default([]),
+  mediaSelectionActive: z.boolean().default(false),
+  mediaIds: z.array(z.string().trim().min(1).max(255)).max(250).default([]),
+  mediaUrls: z.array(z.union([
+    z.string().trim().url().max(2_048),
+    z.string().trim().regex(/^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/=\s]+$/u).max(20_000_000),
+  ])).max(50).default([]),
   variants: z.array(shopifyVariantUpdateSchema).max(250).default([]),
 });
 
@@ -132,8 +142,58 @@ export const shopifyProductTranslationAiSchema = z.object({
   locale: shopifyLocaleSchema,
   marketId: z.string().trim().max(255).optional(),
   fields: z.array(shopifyTranslationFieldSchema).min(1).max(32),
+  prompt: z.string().trim().max(8_000).default(""),
   style: z.string().trim().max(500).default("自然、清晰、符合目标市场电商习惯"),
   glossary: z.string().trim().max(4_000).default(""),
+});
+
+export const shopifyProductSeoAiSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  title: z.string().max(255).default(""),
+  descriptionHtml: z.string().max(500_000).default(""),
+  productType: z.string().max(255).default(""),
+  vendor: z.string().max(255).default(""),
+  tags: z.array(z.string().max(100)).max(250).default([]),
+  seoTitle: z.string().max(70).default(""),
+  seoDescription: z.string().max(320).default(""),
+});
+
+export const shopifyImageAnalyzeSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  imageId: z.string().min(1).max(255),
+  imageUrl: z.string().url().max(2_048),
+  jobId: z.string().trim().min(1).max(255).optional(),
+});
+
+export const shopifyImageEditSchema = shopifyImageAnalyzeSchema.extend({
+  prompt: z.string().trim().min(1).max(12_000),
+});
+
+export const shopifyImageJobCreateSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  jobs: z.array(z.object({
+    id: z.string().trim().min(1).max(255),
+    imageId: z.string().min(1).max(255),
+    operation: z.enum(["translate", "edit"]),
+    locale: z.string().trim().max(32).default(""),
+    status: z.enum(["queued", "waiting", "failed"]).default("queued"),
+    prompt: z.string().trim().max(12_000).nullable().optional(),
+  })).min(1).max(50),
+});
+
+export const shopifyImageJobUpdateSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  status: z.enum(["queued", "waiting", "failed"]).optional(),
+  prompt: z.string().trim().max(12_000).nullable().optional(),
+  resultUrl: z.union([
+    z.string().trim().url().max(4_096),
+    z.string().trim().regex(/^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/=\s]+$/u).max(20_000_000),
+  ]).nullable().optional(),
+  message: z.string().trim().max(2_000).nullable().optional(),
 });
 
 export const shopifyProductTranslationPublishSchema = z.object({
@@ -180,6 +240,8 @@ export const aiCandidatesRequestSchema = z.object({
 });
 
 export type AiSettingsInput = z.infer<typeof aiSettingsSchema>;
+export type AiSettingsScope = z.infer<typeof aiSettingsScopeSchema>;
+export type AiSettingsUpdateInput = z.infer<typeof aiSettingsUpdateSchema>;
 export type ShopifySettingsInput = z.infer<typeof shopifySettingsSchema>;
 export type ShopifyProductTranslationAiInput = z.infer<typeof shopifyProductTranslationAiSchema>;
 export type ShopifyProductTranslationPublishInput = z.infer<typeof shopifyProductTranslationPublishSchema>;

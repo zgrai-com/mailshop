@@ -59,6 +59,8 @@ Mailshop 是一套面向跨境电商选品与货源管理的轻量级商品中�
 - `BOOTSTRAP_TOKEN`：首次创建管理员时使用，初始化成功后接口会拒绝再次执行
 - `SETTINGS_ENCRYPTION_KEY`：独立加密 OneBound 等集成凭据，轮换初始化令牌时不会破坏已保存配置
 - `SERVER_AI_BASE_URL`、`SERVER_AI_API_KEY`、`SERVER_AI_MODEL_ID`：可选的服务器托管 AI 凭据；未在后台保存 AI 配置时作为兜底使用
+- `SERVER_AI_CHAT_BASE_URL`、`SERVER_AI_CHAT_API_KEY`、`SERVER_AI_CHAT_MODEL_ID`：可选的 AI 对话配置兜底
+- `SERVER_AI_IMAGE_GENERATION_BASE_URL`、`SERVER_AI_IMAGE_GENERATION_API_KEY`、`SERVER_AI_IMAGE_GENERATION_MODEL_ID`：可选的 AI 图片生成配置兜底
 
 ## 本地开发
 

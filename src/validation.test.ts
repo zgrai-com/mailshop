@@ -8,10 +8,14 @@ import {
   googleSettingsSchema,
   aiCandidatesRequestSchema,
   aiSettingsSchema,
+  aiSettingsUpdateSchema,
   shopifyPublishSchema,
   shopifyProductTranslationAiSchema,
   shopifyProductTranslationPublishSchema,
   shopifyProductTranslationsQuerySchema,
+  shopifyProductSeoAiSchema,
+  shopifyImageAnalyzeSchema,
+  shopifyImageEditSchema,
   shopifySettingsSchema,
   productInputSchema,
   productListQuerySchema,
@@ -150,6 +154,27 @@ describe("AI schemas", () => {
       apiKey: "sk-example",
       modelId: "gpt-4o-mini",
     }).modelId).toBe("gpt-4o-mini");
+  });
+
+  it("supports separate chat and image-generation scopes", () => {
+    expect(aiSettingsUpdateSchema.parse({
+      scope: "chat",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-example",
+      modelId: "gpt-4o-mini",
+    }).scope).toBe("chat");
+    expect(aiSettingsUpdateSchema.parse({
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-example",
+      modelId: "gpt-image-1",
+    }).scope).toBe("image_filter");
+  });
+
+  it("validates Shopify AI image and SEO requests", () => {
+    const common = { storeId: "00000000-0000-4000-8000-000000000000", productId: "gid://shopify/Product/1", imageId: "gid://shopify/ProductImage/1", imageUrl: "https://cdn.shopify.com/image.jpg" };
+    expect(shopifyImageAnalyzeSchema.parse(common).imageId).toContain("ProductImage");
+    expect(shopifyImageEditSchema.parse({ ...common, prompt: "明亮的棚拍背景" }).prompt).toBe("明亮的棚拍背景");
+    expect(shopifyProductSeoAiSchema.parse({ storeId: common.storeId, productId: common.productId }).tags).toEqual([]);
   });
 
   it("caps AI candidate batches and accepts bounded page HTML snapshots", () => {

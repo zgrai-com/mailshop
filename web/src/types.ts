@@ -31,6 +31,38 @@ export type AiSettings = {
   apiKeyHint: string | null;
   modelId: string | null;
   updatedAt: string | null;
+  imageFilter: AiProviderSettings;
+  chat: AiProviderSettings;
+  translation: AiProviderSettings;
+  imageGeneration: AiProviderSettings;
+};
+
+export type AiProviderSettings = {
+  configured: boolean;
+  baseUrl: string;
+  apiKeyHint: string | null;
+  modelId: string | null;
+  updatedAt: string | null;
+};
+
+export type AiSettingsScope = "image_filter" | "chat" | "translation" | "image_generation";
+
+export type AiRequestLog = {
+  id: string;
+  userId: string | null;
+  userName?: string | null;
+  operation: string;
+  scope: string;
+  status: "success" | "failed";
+  httpStatus: number | null;
+  durationMs: number;
+  modelId: string | null;
+  requestSummary: Record<string, unknown>;
+  responseSummary: Record<string, unknown>;
+  errorMessage: string | null;
+  entityType: string | null;
+  entityId: string | null;
+  createdAt: string;
 };
 
 export type ShopifyStore = {

@@ -227,6 +227,211 @@ export async function recordAudit(
     .run();
 }
 
+let aiLogsSchemaReady: Promise<void> | null = null;
+
+export type AiLogInput = {
+  operation: string;
+  scope: string;
+  status: "success" | "failed";
+  httpStatus?: number | null;
+  durationMs: number;
+  modelId?: string | null;
+  requestSummary?: unknown;
+  responseSummary?: unknown;
+  errorMessage?: string | null;
+  entityType?: string | null;
+  entityId?: string | null;
+};
+
+function boundedJson(value: unknown, maxLength = 8_000): string {
+  const text = jsonText(value, {});
+  return text.length > maxLength
+    ? JSON.stringify({ truncated: true, preview: text.slice(0, Math.max(0, maxLength - 64)) })
+    : text;
+}
+
+export async function ensureAiLogsSchema(env: Env): Promise<void> {
+  if (!aiLogsSchemaReady) {
+    aiLogsSchemaReady = (async () => {
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ai_request_logs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        operation TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+        http_status INTEGER,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        model_id TEXT,
+        request_summary_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(request_summary_json)),
+        response_summary_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(response_summary_json)),
+        error_message TEXT,
+        entity_type TEXT,
+        entity_id TEXT,
+        ip_address TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      )`).run();
+      await env.DB.batch([
+        env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ai_request_logs_user_created ON ai_request_logs(user_id, created_at DESC)"),
+        env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ai_request_logs_created ON ai_request_logs(created_at DESC)"),
+      ]);
+    })();
+  }
+  await aiLogsSchemaReady;
+}
+
+export async function recordAiLog(request: Request, env: Env, userId: string | null, input: AiLogInput): Promise<void> {
+  await ensureAiLogsSchema(env);
+  await env.DB.prepare(`INSERT INTO ai_request_logs
+    (id, user_id, operation, scope, status, http_status, duration_ms, model_id, request_summary_json, response_summary_json, error_message, entity_type, entity_id, ip_address)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+    crypto.randomUUID(), userId, input.operation, input.scope, input.status, input.httpStatus ?? null,
+    Math.max(0, Math.round(input.durationMs)), input.modelId ?? null, boundedJson(input.requestSummary),
+    boundedJson(input.responseSummary), input.errorMessage?.slice(0, 2_000) ?? null,
+    input.entityType ?? null, input.entityId ?? null, clientIp(request),
+  ).run();
+}
+
+export async function listAiLogs(env: Env, userId: string, isAdmin: boolean, limit = 100): Promise<Array<Record<string, unknown>>> {
+  await ensureAiLogsSchema(env);
+  const safeLimit = Math.min(200, Math.max(1, Math.floor(limit)));
+  const result = isAdmin
+    ? await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id ORDER BY l.created_at DESC LIMIT ?`).bind(safeLimit).all()
+    : await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id WHERE l.user_id = ? ORDER BY l.created_at DESC LIMIT ?`).bind(userId, safeLimit).all();
+  return result.results.map((row) => ({
+    ...row,
+    requestSummary: parseJsonValue(row.requestSummaryJson, {}),
+    responseSummary: parseJsonValue(row.responseSummaryJson, {}),
+  }));
+}
+
+export type ShopifyImageJob = {
+  id: string;
+  imageId: string;
+  operation: "translate" | "edit";
+  locale: string;
+  status: "queued" | "waiting" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  prompt: string | null;
+  resultUrl: string | null;
+  message: string | null;
+};
+
+let shopifyImageJobsSchemaReady: Promise<void> | null = null;
+
+export async function ensureShopifyImageJobsSchema(env: Env): Promise<void> {
+  if (!shopifyImageJobsSchemaReady) {
+    shopifyImageJobsSchemaReady = (async () => {
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS shopify_image_jobs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        store_id TEXT NOT NULL REFERENCES shopify_stores(id) ON DELETE CASCADE,
+        product_id TEXT NOT NULL,
+        image_id TEXT NOT NULL,
+        operation TEXT NOT NULL CHECK (operation IN ('translate', 'edit')),
+        locale TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status IN ('queued', 'waiting', 'failed')),
+        prompt TEXT,
+        result_url TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      )`).run();
+      await env.DB.batch([
+        env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_shopify_image_jobs_product ON shopify_image_jobs(user_id, store_id, product_id, created_at DESC)"),
+        env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_shopify_image_jobs_status ON shopify_image_jobs(user_id, status, updated_at DESC)"),
+      ]);
+    })();
+  }
+  await shopifyImageJobsSchemaReady;
+}
+
+function mapShopifyImageJob(row: Record<string, unknown>): ShopifyImageJob {
+  return {
+    id: String(row.id),
+    imageId: String(row.imageId),
+    operation: row.operation === "translate" ? "translate" : "edit",
+    locale: String(row.locale ?? ""),
+    status: row.status === "waiting" ? "waiting" : row.status === "failed" ? "failed" : "queued",
+    createdAt: String(row.createdAt),
+    updatedAt: String(row.updatedAt),
+    prompt: typeof row.prompt === "string" ? row.prompt : null,
+    resultUrl: typeof row.resultUrl === "string" ? row.resultUrl : null,
+    message: typeof row.message === "string" ? row.message : null,
+  };
+}
+
+export async function listShopifyImageJobs(env: Env, userId: string, storeId: string, productId: string): Promise<ShopifyImageJob[]> {
+  await ensureShopifyImageJobsSchema(env);
+  const result = await env.DB.prepare(`SELECT id, image_id AS imageId, operation, locale, status, prompt,
+      result_url AS resultUrl, error_message AS message, created_at AS createdAt, updated_at AS updatedAt
+      FROM shopify_image_jobs WHERE user_id = ? AND store_id = ? AND product_id = ? ORDER BY created_at DESC`).bind(userId, storeId, productId).all<Record<string, unknown>>();
+  return result.results.map(mapShopifyImageJob);
+}
+
+export type ShopifyImageJobCreateInput = {
+  id: string;
+  imageId: string;
+  operation: "translate" | "edit";
+  locale?: string;
+  status: "queued" | "waiting" | "failed";
+  prompt?: string | null;
+};
+
+export async function createShopifyImageJobs(env: Env, userId: string, storeId: string, productId: string, jobs: ShopifyImageJobCreateInput[]): Promise<ShopifyImageJob[]> {
+  await ensureShopifyImageJobsSchema(env);
+  await env.DB.batch(jobs.map((job) => env.DB.prepare(`INSERT INTO shopify_image_jobs
+      (id, user_id, store_id, product_id, image_id, operation, locale, status, prompt, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ON CONFLICT(id) DO UPDATE SET image_id = excluded.image_id, operation = excluded.operation,
+        locale = excluded.locale, status = excluded.status, prompt = excluded.prompt,
+        result_url = NULL, error_message = NULL, updated_at = excluded.updated_at
+      WHERE shopify_image_jobs.user_id = excluded.user_id AND shopify_image_jobs.store_id = excluded.store_id
+        AND shopify_image_jobs.product_id = excluded.product_id`).bind(
+    job.id, userId, storeId, productId, job.imageId, job.operation, job.locale ?? "", job.status, job.prompt ?? null,
+  )));
+  return listShopifyImageJobs(env, userId, storeId, productId);
+}
+
+export type ShopifyImageJobUpdateInput = {
+  status?: "queued" | "waiting" | "failed";
+  prompt?: string | null;
+  resultUrl?: string | null;
+  message?: string | null;
+};
+
+export async function updateShopifyImageJob(env: Env, userId: string, storeId: string, productId: string, jobId: string, input: ShopifyImageJobUpdateInput): Promise<ShopifyImageJob> {
+  await ensureShopifyImageJobsSchema(env);
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (input.status !== undefined) { sets.push("status = ?"); values.push(input.status); }
+  if (input.prompt !== undefined) { sets.push("prompt = ?"); values.push(input.prompt); }
+  if (input.resultUrl !== undefined) { sets.push("result_url = ?"); values.push(input.resultUrl); }
+  if (input.message !== undefined) { sets.push("error_message = ?"); values.push(input.message); }
+  if (!sets.length) {
+    const existing = await env.DB.prepare(`SELECT id, image_id AS imageId, operation, locale, status, prompt,
+      result_url AS resultUrl, error_message AS message, created_at AS createdAt, updated_at AS updatedAt
+      FROM shopify_image_jobs WHERE id = ? AND user_id = ? AND store_id = ? AND product_id = ?`).bind(jobId, userId, storeId, productId).first<Record<string, unknown>>();
+    if (!existing) throw new ApiError(404, "AI 图片任务不存在", "shopify_image_job_not_found");
+    return mapShopifyImageJob(existing);
+  }
+  sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')");
+  const result = await env.DB.prepare(`UPDATE shopify_image_jobs SET ${sets.join(", ")}
+    WHERE id = ? AND user_id = ? AND store_id = ? AND product_id = ?`).bind(...values, jobId, userId, storeId, productId).run();
+  if (!result.meta.changes) throw new ApiError(404, "AI 图片任务不存在", "shopify_image_job_not_found");
+  const updated = await env.DB.prepare(`SELECT id, image_id AS imageId, operation, locale, status, prompt,
+    result_url AS resultUrl, error_message AS message, created_at AS createdAt, updated_at AS updatedAt
+    FROM shopify_image_jobs WHERE id = ?`).bind(jobId).first<Record<string, unknown>>();
+  if (!updated) throw new ApiError(404, "AI 图片任务不存在", "shopify_image_job_not_found");
+  return mapShopifyImageJob(updated);
+}
+
+export async function deleteShopifyImageJob(env: Env, userId: string, storeId: string, productId: string, jobId: string): Promise<void> {
+  await ensureShopifyImageJobsSchema(env);
+  const result = await env.DB.prepare("DELETE FROM shopify_image_jobs WHERE id = ? AND user_id = ? AND store_id = ? AND product_id = ?").bind(jobId, userId, storeId, productId).run();
+  if (!result.meta.changes) throw new ApiError(404, "AI 图片任务不存在", "shopify_image_job_not_found");
+}
+
 function productVariantStatements(env: Env, productId: string, input: ProductInput): D1PreparedStatement[] {
   const statements: D1PreparedStatement[] = [
     env.DB.prepare("DELETE FROM product_variants WHERE product_id = ?").bind(productId),

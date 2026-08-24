@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { buildShopifyTranslationPrompt, preservesShopifyProtectedTokens, SHOPIFY_TRANSLATION_PROMPT_VERSION } from "./ai";
+import { buildShopifyTranslationPrompt, extractGeneratedImage, parseShopifyTranslationResults, SHOPIFY_TRANSLATION_PROMPT_VERSION } from "./ai";
 
 describe("Shopify translation prompt", () => {
-  it("uses stable field ids and includes the localization quality rubric", () => {
+  it("combines the user prompt with the fixed field mapping and HTML rules", () => {
     const prompt = buildShopifyTranslationPrompt({
       storeId: "5a8c0989-67a9-4a51-bf16-591a2d9d408d",
       productId: "gid://shopify/Product/1",
       locale: "fr",
       marketId: "gid://shopify/Market/2",
+      prompt: "优先使用简洁、自然的法语电商表达。",
       style: "简洁高端",
       glossary: "AirFlex 保持英文",
       fields: [
@@ -17,21 +18,37 @@ describe("Shopify translation prompt", () => {
       ],
     });
 
-    expect(SHOPIFY_TRANSLATION_PROMPT_VERSION).toBe("shopify-product-translation-v3");
-    expect(prompt).toContain("事实忠实度、母语自然度、电商表达清晰度");
-    expect(prompt).toContain("跨字段术语一致性");
-    expect(prompt).toContain('"id":"0"');
-    expect(prompt).toContain('"id":"1"');
-    expect(prompt).toContain('"sourceLocale":"en"');
+    expect(SHOPIFY_TRANSLATION_PROMPT_VERSION).toBe("shopify-product-translation-v6");
+    expect(prompt).toContain('"resourceId":"gid://shopify/Product/1"');
+    expect(prompt).toContain("body_html/descriptionHtml");
+    expect(prompt).toContain("普通文本应翻译");
+    expect(prompt).toContain('"translations"');
+    expect(prompt).toContain('"title":"翻译后的 title"');
     expect(prompt).toContain("AirFlex 保持英文");
+    expect(prompt).toContain("优先使用简洁、自然的法语电商表达。");
   });
 
-  it("rejects translations that alter protected commerce tokens", () => {
-    const source = '<p data-sku="SKU-RED-01">Save 20% at https://example.com/{{ product.id }}</p>';
-    expect(preservesShopifyProtectedTokens(source, '<p data-sku="SKU-RED-01">Économisez 20% sur https://example.com/{{ product.id }}</p>')).toBe(true);
-    expect(preservesShopifyProtectedTokens(source, '<p data-sku="SKU-RED-02">Économisez 20%</p>')).toBe(false);
-    expect(preservesShopifyProtectedTokens(source, '<p data-sku="SKU-RED-01">Économisez 25% sur https://example.com/{{ product.id }}</p>')).toBe(false);
-    expect(preservesShopifyProtectedTokens("<p>First</p><p>Second</p>", "<p>Premier</p>")).toBe(false);
-    expect(preservesShopifyProtectedTokens("<strong><em>Text</em></strong>", "<em><strong>Texte</strong></em>")).toBe(false);
+  it("accepts direct field keys, numeric ids, and legacy key-based AI output", () => {
+    expect(parseShopifyTranslationResults({ translations: [{
+      resourceId: "gid://shopify/Product/1",
+      title: "Titre traduit",
+      handle: "robe-airflex",
+      body_html: "<p>Texte traduit</p>",
+    }]})).toEqual([
+      { resourceId: "gid://shopify/Product/1", key: "title", value: "Titre traduit" },
+      { resourceId: "gid://shopify/Product/1", key: "handle", value: "robe-airflex" },
+      { resourceId: "gid://shopify/Product/1", key: "body_html", value: "<p>Texte traduit</p>" },
+    ]);
+    expect(parseShopifyTranslationResults([{ id: 0, value: "Titre traduit" }])).toEqual([{ id: "0", value: "Titre traduit" }]);
+    expect(parseShopifyTranslationResults([{ key: "title", value: "Titre traduit" }])).toEqual([{ key: "title", value: "Titre traduit" }]);
   });
+
+  it("extracts image URLs wrapped in AIRouter markdown", () => {
+    expect(extractGeneratedImage({ output_text: "![image_1](<https://img.example/result.png>)" })).toBe("https://img.example/result.png");
+  });
+
+  it("skips an echoed source image URL when extracting the generated result", () => {
+    expect(extractGeneratedImage({ output_text: "source https://img.example/source.jpg result ![image](<https://img.example/result.png>)" }, ["https://img.example/source.jpg"])).toBe("https://img.example/result.png");
+  });
+
 });

@@ -1,21 +1,33 @@
 import { ApiError } from "./http";
 import { decryptSetting, encryptSetting } from "./settings-crypto";
-import type { AiCandidate, AiPageRegion, AiPageSnapshot, AiSettingsInput, ShopifyProductTranslationAiInput } from "./validation";
+import type { AiCandidate, AiPageRegion, AiPageSnapshot, AiSettingsInput, AiSettingsScope, AiSettingsUpdateInput, ShopifyProductTranslationAiInput } from "./validation";
 
 const AI_REQUEST_TIMEOUT_MS = 300_000;
-export const SHOPIFY_TRANSLATION_PROMPT_VERSION = "shopify-product-translation-v3";
+const AI_IMAGE_RESULT_TIMEOUT_MS = 30_000;
+const MAX_AI_IMAGE_RESULT_BYTES = 14 * 1024 * 1024;
+export const SHOPIFY_TRANSLATION_PROMPT_VERSION = "shopify-product-translation-v6";
 
 type AiSettingsRow = {
   base_url_ciphertext: string | null;
   api_key_ciphertext: string | null;
   model_id_ciphertext: string | null;
+  chat_base_url_ciphertext: string | null;
+  chat_api_key_ciphertext: string | null;
+  chat_model_id_ciphertext: string | null;
+  translation_base_url_ciphertext: string | null;
+  translation_api_key_ciphertext: string | null;
+  translation_model_id_ciphertext: string | null;
+  image_generation_base_url_ciphertext: string | null;
+  image_generation_api_key_ciphertext: string | null;
+  image_generation_model_id_ciphertext: string | null;
   updated_at: string | null;
 };
 
-function environmentCredentials(env: Env): AiSettingsInput | null {
-  const baseUrl = String(env.SERVER_AI_BASE_URL || env.AI_BASE_URL || "").trim();
-  const apiKey = String(env.SERVER_AI_API_KEY || env.AI_API_KEY || "").trim();
-  const modelId = String(env.SERVER_AI_MODEL_ID || env.AI_MODEL_ID || "").trim();
+function environmentCredentials(env: Env, scope: AiSettingsScope): AiSettingsInput | null {
+  const prefix = scope === "chat" ? "AI_CHAT" : scope === "translation" ? "AI_TRANSLATION" : scope === "image_generation" ? "AI_IMAGE_GENERATION" : "AI";
+  const baseUrl = String(env[`SERVER_${prefix}_BASE_URL` as keyof Env] || env[`${prefix}_BASE_URL` as keyof Env] || "").trim();
+  const apiKey = String(env[`SERVER_${prefix}_API_KEY` as keyof Env] || env[`${prefix}_API_KEY` as keyof Env] || "").trim();
+  const modelId = String(env[`SERVER_${prefix}_MODEL_ID` as keyof Env] || env[`${prefix}_MODEL_ID` as keyof Env] || "").trim();
   return baseUrl && apiKey && modelId ? { baseUrl, apiKey, modelId } : null;
 }
 
@@ -43,11 +55,38 @@ async function ensureSchema(env: Env): Promise<void> {
         base_url_ciphertext TEXT,
         api_key_ciphertext TEXT,
         model_id_ciphertext TEXT,
+        chat_base_url_ciphertext TEXT,
+        chat_api_key_ciphertext TEXT,
+        chat_model_id_ciphertext TEXT,
+        translation_base_url_ciphertext TEXT,
+        translation_api_key_ciphertext TEXT,
+        translation_model_id_ciphertext TEXT,
+        image_generation_base_url_ciphertext TEXT,
+        image_generation_api_key_ciphertext TEXT,
+        image_generation_model_id_ciphertext TEXT,
         updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       )`,
-    ).run().then(() => undefined);
+    ).run().then(async () => {
+      for (const column of [
+        "chat_base_url_ciphertext",
+        "chat_api_key_ciphertext",
+        "chat_model_id_ciphertext",
+        "translation_base_url_ciphertext",
+        "translation_api_key_ciphertext",
+        "translation_model_id_ciphertext",
+        "image_generation_base_url_ciphertext",
+        "image_generation_api_key_ciphertext",
+        "image_generation_model_id_ciphertext",
+      ]) {
+        try {
+          await env.DB.prepare(`ALTER TABLE ai_settings ADD COLUMN ${column} TEXT`).run();
+        } catch (error) {
+          if (!String(error).toLowerCase().includes("duplicate column")) throw error;
+        }
+      }
+    });
   }
   await schemaReady;
 }
@@ -55,7 +94,11 @@ async function ensureSchema(env: Env): Promise<void> {
 async function readSettingsRow(env: Env): Promise<AiSettingsRow | null> {
   await ensureSchema(env);
   return env.DB.prepare(
-    `SELECT base_url_ciphertext, api_key_ciphertext, model_id_ciphertext, updated_at
+    `SELECT base_url_ciphertext, api_key_ciphertext, model_id_ciphertext,
+            chat_base_url_ciphertext, chat_api_key_ciphertext, chat_model_id_ciphertext,
+            translation_base_url_ciphertext, translation_api_key_ciphertext, translation_model_id_ciphertext,
+            image_generation_base_url_ciphertext, image_generation_api_key_ciphertext,
+            image_generation_model_id_ciphertext, updated_at
        FROM ai_settings WHERE id = 1`,
   ).first<AiSettingsRow>();
 }
@@ -66,64 +109,95 @@ export async function getAiSettings(env: Env): Promise<{
   apiKeyHint: string | null;
   modelId: string | null;
   updatedAt: string | null;
+  imageFilter: AiProviderSettings;
+  chat: AiProviderSettings;
+  imageGeneration: AiProviderSettings;
+  translation: AiProviderSettings;
 }> {
   const row = await readSettingsRow(env);
-  const configured = Boolean(row?.base_url_ciphertext && row.api_key_ciphertext && row.model_id_ciphertext);
-  if (!configured) {
-    const credentials = environmentCredentials(env);
-    if (!credentials) return { configured: false, baseUrl: "", apiKeyHint: null, modelId: null, updatedAt: row?.updated_at ?? null };
-    return {
-      configured: true,
-      baseUrl: credentials.baseUrl,
-      apiKeyHint: credentials.apiKey.length > 10 ? `${credentials.apiKey.slice(0, 4)}...${credentials.apiKey.slice(-4)}` : "server environment",
-      modelId: credentials.modelId,
-      updatedAt: null,
-    };
-  }
-  const [baseUrl, modelId, apiKey] = await Promise.all([
-    decryptSetting(env, row!.base_url_ciphertext!, "ai_settings_invalid"),
-    decryptSetting(env, row!.model_id_ciphertext!, "ai_settings_invalid"),
-    decryptSetting(env, row!.api_key_ciphertext!, "ai_settings_invalid"),
+  const provider = async (scope: AiSettingsScope, ciphertexts: { base: string | null; key: string | null; model: string | null }): Promise<AiProviderSettings> => {
+    const configured = Boolean(ciphertexts.base && ciphertexts.key && ciphertexts.model);
+    if (!configured) {
+      const credentials = environmentCredentials(env, scope);
+      return credentials ? { configured: true, baseUrl: credentials.baseUrl, apiKeyHint: credentials.apiKey.length > 10 ? `${credentials.apiKey.slice(0, 4)}...${credentials.apiKey.slice(-4)}` : "server environment", modelId: credentials.modelId, updatedAt: null } : { configured: false, baseUrl: "", apiKeyHint: null, modelId: null, updatedAt: row?.updated_at ?? null };
+    }
+    const [baseUrl, modelId, apiKey] = await Promise.all([
+      decryptSetting(env, ciphertexts.base!, "ai_settings_invalid"),
+      decryptSetting(env, ciphertexts.model!, "ai_settings_invalid"),
+      decryptSetting(env, ciphertexts.key!, "ai_settings_invalid"),
+    ]);
+    return { configured: true, baseUrl, apiKeyHint: apiKey.length > 10 ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}` : "已加密保存", modelId, updatedAt: row?.updated_at ?? null };
+  };
+  const [imageFilter, chat, translation, imageGeneration] = await Promise.all([
+    provider("image_filter", { base: row?.base_url_ciphertext ?? null, key: row?.api_key_ciphertext ?? null, model: row?.model_id_ciphertext ?? null }),
+    provider("chat", { base: row?.chat_base_url_ciphertext ?? null, key: row?.chat_api_key_ciphertext ?? null, model: row?.chat_model_id_ciphertext ?? null }),
+    provider("translation", { base: row?.translation_base_url_ciphertext ?? null, key: row?.translation_api_key_ciphertext ?? null, model: row?.translation_model_id_ciphertext ?? null }),
+    provider("image_generation", { base: row?.image_generation_base_url_ciphertext ?? null, key: row?.image_generation_api_key_ciphertext ?? null, model: row?.image_generation_model_id_ciphertext ?? null }),
   ]);
   return {
-    configured: true,
-    baseUrl,
-    apiKeyHint: apiKey.length > 10 ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}` : "已加密保存",
-    modelId,
+    configured: imageFilter.configured,
+    baseUrl: imageFilter.baseUrl,
+    apiKeyHint: imageFilter.apiKeyHint,
+    modelId: imageFilter.modelId,
     updatedAt: row?.updated_at ?? null,
+    imageFilter,
+    chat,
+    translation,
+    imageGeneration,
   };
 }
 
-export async function saveAiSettings(env: Env, input: AiSettingsInput, userId: string): Promise<void> {
+export type AiProviderSettings = {
+  configured: boolean;
+  baseUrl: string;
+  apiKeyHint: string | null;
+  modelId: string | null;
+  updatedAt: string | null;
+};
+
+export async function saveAiSettings(env: Env, input: AiSettingsInput | AiSettingsUpdateInput, userId: string): Promise<void> {
   await ensureSchema(env);
   const [baseUrl, apiKey, modelId] = await Promise.all([
     encryptSetting(env, input.baseUrl),
     encryptSetting(env, input.apiKey),
     encryptSetting(env, input.modelId),
   ]);
+  const scope = "scope" in input ? input.scope : "image_filter";
+  const columns = scope === "chat"
+    ? ["chat_base_url_ciphertext", "chat_api_key_ciphertext", "chat_model_id_ciphertext"]
+    : scope === "translation"
+      ? ["translation_base_url_ciphertext", "translation_api_key_ciphertext", "translation_model_id_ciphertext"]
+      : scope === "image_generation"
+      ? ["image_generation_base_url_ciphertext", "image_generation_api_key_ciphertext", "image_generation_model_id_ciphertext"]
+      : ["base_url_ciphertext", "api_key_ciphertext", "model_id_ciphertext"];
   await env.DB.prepare(
-    `INSERT INTO ai_settings (id, base_url_ciphertext, api_key_ciphertext, model_id_ciphertext, updated_by, updated_at)
+    `INSERT INTO ai_settings (id, ${columns.join(", ")}, updated_by, updated_at)
      VALUES (1, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
      ON CONFLICT(id) DO UPDATE SET
-       base_url_ciphertext = excluded.base_url_ciphertext,
-       api_key_ciphertext = excluded.api_key_ciphertext,
-       model_id_ciphertext = excluded.model_id_ciphertext,
+       ${columns.map((column) => `${column} = excluded.${column}`).join(", ")},
        updated_by = excluded.updated_by,
        updated_at = excluded.updated_at`,
   ).bind(baseUrl, apiKey, modelId, userId).run();
 }
 
-async function readCredentials(env: Env): Promise<AiSettingsInput> {
+async function readCredentials(env: Env, scope: AiSettingsScope = "image_filter"): Promise<AiSettingsInput> {
   const row = await readSettingsRow(env);
-  const fallback = environmentCredentials(env);
-  if (fallback && (!row?.base_url_ciphertext || !row.api_key_ciphertext || !row.model_id_ciphertext)) return fallback;
-  if (!row?.base_url_ciphertext || !row.api_key_ciphertext || !row.model_id_ciphertext) {
+  const columns = scope === "chat"
+    ? { base: row?.chat_base_url_ciphertext, key: row?.chat_api_key_ciphertext, model: row?.chat_model_id_ciphertext }
+    : scope === "translation"
+      ? { base: row?.translation_base_url_ciphertext, key: row?.translation_api_key_ciphertext, model: row?.translation_model_id_ciphertext }
+      : scope === "image_generation"
+      ? { base: row?.image_generation_base_url_ciphertext, key: row?.image_generation_api_key_ciphertext, model: row?.image_generation_model_id_ciphertext }
+      : { base: row?.base_url_ciphertext, key: row?.api_key_ciphertext, model: row?.model_id_ciphertext };
+  const fallback = environmentCredentials(env, scope);
+  if (fallback && (!columns.base || !columns.key || !columns.model)) return fallback;
+  if (!columns.base || !columns.key || !columns.model) {
     throw new ApiError(503, "AI 模型尚未配置", "ai_not_configured");
   }
   const [baseUrl, apiKey, modelId] = await Promise.all([
-    decryptSetting(env, row.base_url_ciphertext, "ai_settings_invalid"),
-    decryptSetting(env, row.api_key_ciphertext, "ai_settings_invalid"),
-    decryptSetting(env, row.model_id_ciphertext, "ai_settings_invalid"),
+    decryptSetting(env, columns.base, "ai_settings_invalid"),
+    decryptSetting(env, columns.key, "ai_settings_invalid"),
+    decryptSetting(env, columns.model, "ai_settings_invalid"),
   ]);
   return { baseUrl, apiKey, modelId };
 }
@@ -384,54 +458,171 @@ async function requestCompletion(credentials: AiSettingsInput, body: Record<stri
   }
 }
 
-type ShopifyTranslationResult = { id: string; value: string };
-
-function structuralTokens(value: string): string[] {
-  return value.match(/(?:<[^>]+>|https?:\/\/[^\s"'<>]+|\{\{[^}]+\}\}|\{%[^%]+%\}|\$\{[^}]+\}|%\{[^}]+\})/gu) ?? [];
-}
-
-function commerceTokens(value: string): string[] {
-  const productCodes = value.match(/\b(?=[A-Za-z0-9._/-]{3,}\b)(?=[A-Za-z0-9._/-]*\d)(?=[A-Za-z0-9._/-]*[A-Za-z])[A-Za-z0-9._/-]+\b|\b[A-Z][A-Z0-9._/-]{2,}\b/gu) ?? [];
-  const currencies = value.match(/(?:[$€£¥₹₩₽]|\b(?:USD|EUR|GBP|CNY|RMB|JPY|CAD|AUD|HKD|SGD|KRW|INR)\b)/giu) ?? [];
-  return [...productCodes, ...currencies];
-}
-
-function normalized(values: string[]): string[] {
-  return values.map((value) => value.toLowerCase());
-}
-
-export function preservesShopifyProtectedTokens(source: string, translated: string): boolean {
-  const sameSequence = (left: string[], right: string[]) => JSON.stringify(normalized(left)) === JSON.stringify(normalized(right));
-  if (!sameSequence(structuralTokens(source), structuralTokens(translated))) return false;
-  if (!sameSequence(commerceTokens(source), commerceTokens(translated))) return false;
-  return sameSequence(source.match(/\d+/gu) ?? [], translated.match(/\d+/gu) ?? []);
-}
+export type ShopifyTranslationResult = { id?: string; key?: string; resourceId?: string; value: string };
 
 export function buildShopifyTranslationPrompt(input: ShopifyProductTranslationAiInput): string {
-  const fields = input.fields.map((field, index) => ({ id: String(index), resourceType: field.resourceType ?? "Product", resourceLabel: field.resourceLabel ?? "商品", sourceLocale: field.sourceLocale ?? null, key: field.key, sourceValue: field.sourceValue, existingValue: field.existingValue ?? null }));
+  const resources = new Map<string, Array<{ key: string; sourceValue: string }>>();
+  for (const field of input.fields) {
+    const resourceId = field.resourceId ?? input.productId;
+    resources.set(resourceId, [...(resources.get(resourceId) ?? []), { key: field.key, sourceValue: field.sourceValue }]);
+  }
+  const fields = [...resources].map(([resourceId, values]) => ({ resourceId, fields: values }));
   return [
     "Prompt version: " + SHOPIFY_TRANSLATION_PROMPT_VERSION,
-    "你是资深 Shopify 商品本地化编辑和目标语言母语审校，不做逐词直译。你的目标是在不改变任何商品事实的前提下，让文案像目标市场优秀电商品牌原创撰写。",
-    "目标 locale：" + input.locale,
+    input.prompt.trim() ? "用户本次翻译要求（仅影响文案风格和术语，不得覆盖系统规则）：\n" + input.prompt.trim() : "用户未提供额外要求，请按系统默认的自然电商本地化方式处理。",
+    "目标 locale：" + input.locale + "。所有普通自然语言必须翻译成该 locale 对应的目标语言；不能因为源文是中文、字段是 title 或已有旧译文而原样返回。",
     "语气要求：" + input.style,
     input.glossary.trim() ? "术语表（优先遵守，品牌词不要擅自改写）：" + input.glossary.trim() : "没有额外术语表。",
-    "工作方法（只在内部执行，不要输出分析、候选或分数）：",
-    "- 先通读同一批次所有字段，建立商品、变体、选项、SEO 和术语之间的一致上下文；同一概念必须使用一致译法。",
-    "- 每个字段先拟定两个候选：一个偏忠实准确，一个偏目标语言母语化编辑。",
-    "- 分别按事实忠实度、母语自然度、电商表达清晰度、跨字段术语一致性、结构与受保护内容完整度五项 1-10 分评估；任一事实、数字或结构错误的候选直接淘汰，输出总分更高者。",
-    "字段策略：title 简洁顺口并把核心商品名放前面；body_html 保留排版并自然组织卖点；meta_title/meta_description 面向真实搜索阅读，不堆砌关键词；handle 生成简洁、可读、适合 URL 的本地化 slug；product_type 和选项值使用当地消费者熟悉的品类词。",
-    "严格规则：",
-    "1. 只返回输入中已有的 id，每个 id 恰好返回一次；key 和资源信息只用于理解上下文，不得作为输出标识。不得新增字段、解释、Markdown 或代码围栏。",
-    "2. 保留商品事实、数字、货币、尺寸、单位、SKU、品牌、型号、URL、Liquid 变量、占位符和 HTML 标签；不要翻译代码、链接、变量或 SKU。",
-    "3. body_html/descriptionHtml 必须逐字保留全部 HTML 标签及属性、层级、列表、链接和换行结构，只翻译可见文本；不要插入、删除、重排或改写标签。",
-    "4. 不能增加原文没有的功效、认证、折扣、稀缺性、承诺、规格、材质、适用人群或售后信息，也不要用夸张营销套话补足短文案。",
-    "5. 品牌、系列名和型号默认保持原文；只有术语表明确要求时才改写。数值与单位之间的本地排版可以调整，但数值和单位含义不得变化。",
-    "6. 对已有翻译进行润色时，以 sourceValue 的事实为唯一依据；已有译文只作为术语和语气参考。无法安全判断时返回 sourceValue，不要猜测。",
-    "7. 根据每个字段的 sourceLocale 理解源语言；如果为空则自行识别。使用目标 locale 对应地区的自然拼写、标点和电商表达，但不得换算价格、尺寸、重量或其他单位。",
-    "8. 输出前再次检查所有 id、HTML、URL、Liquid、占位符、SKU、数字、货币、尺寸、单位、品牌和型号均完整无误，并检查同一术语在所有字段中保持一致。",
-    "输出严格 JSON：{\"translations\":[{\"id\":\"输入 id\",\"value\":\"翻译后的字符串\"}]}",
-    JSON.stringify({ fields }),
+    "系统固定处理规则（优先级高于用户要求）：",
+    "1. 逐字段翻译 sourceValue，允许改变自然语言内容；不能因为已有翻译存在而跳过。品牌、系列名、型号、SKU、URL、Liquid 变量、占位符、数字、货币、尺寸和单位必须保持事实一致。",
+    "2. title、handle、product_type、vendor、option/name 等普通文本应翻译。handle 必须以目标语言原生文字返回，不得罗马化、拼音化或改成英文；日语必须使用日文汉字、平假名或片假名。handle 不得与 sourceValue 相同，必须使用未占用的目标语言 URL 标识，并保留数字、SKU、型号和品牌。",
+    "3. body_html/descriptionHtml 必须返回完整 HTML。逐字保留所有标签、属性、层级、列表、链接和换行，只翻译标签之间的可见文本；不得新增、删除、重排或修改任何 HTML 标签或属性。",
+    "4. 不得增加原文没有的功效、认证、折扣、承诺、规格或售后信息；无法安全判断时返回 sourceValue，而不是空字符串。",
+    "5. 只返回严格 JSON，不要解释、Markdown 或代码围栏。必须返回 {\"translations\":[{\"resourceId\":\"输入 resourceId\",\"title\":\"翻译后的 title\",\"body_html\":\"翻译后的完整 HTML\"}]}。字段名必须直接使用输入 fields 中的 key，例如 title、handle、body_html；同一个 resourceId 的每个字段返回一次。resourceId 用于区分多个同名字段（例如多个 variant.title）。",
+    JSON.stringify({ resources: fields }),
   ].join("\n");
+}
+
+export function parseShopifyTranslationResults(raw: unknown): ShopifyTranslationResult[] {
+  const results: ShopifyTranslationResult[] = [];
+  const items = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as { translations?: unknown }).translations)
+      ? (raw as { translations: unknown[] }).translations
+      : raw && typeof raw === "object"
+        ? [raw]
+        : [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const value = item as Record<string, unknown>;
+    const id = typeof value.id === "string" || typeof value.id === "number" ? String(value.id).trim() : "";
+    const key = typeof value.key === "string" ? value.key.trim() : "";
+    const resourceId = typeof value.resourceId === "string" ? value.resourceId.trim() : "";
+    const translated = typeof value.value === "string" ? value.value : null;
+    if (translated !== null && (id || key)) {
+      results.push({ id: id || undefined, key: key || undefined, resourceId: resourceId || undefined, value: translated });
+      continue;
+    }
+    for (const [fieldKey, fieldValue] of Object.entries(value)) {
+      if (fieldKey === "resourceId" || fieldKey === "id" || fieldKey === "key" || fieldKey === "value") continue;
+      if (typeof fieldValue !== "string") continue;
+      results.push({ key: fieldKey, resourceId: resourceId || undefined, value: fieldValue });
+    }
+  }
+  return results;
+}
+
+export async function analyzeShopifyImageStyle(env: Env, input: { imageUrl: string }): Promise<{ prompt: string; analysis: string }> {
+  const credentials = await readCredentials(env, "chat");
+  const result = await requestCompletion(credentials, {
+    model: credentials.modelId,
+    max_output_tokens: 2_500,
+    input: [{ role: "user", content: [
+      { type: "input_text", text: "分析这张商品图片的视觉风格，并生成一段可编辑的图片修改提示词。必须保留原图中的衣服、服装细节、模特身份、姿势和脸部特征，只允许描述背景、光线、构图、色彩和商业摄影质感的调整。严格 JSON 输出：{\"analysis\":\"简短风格分析\",\"prompt\":\"可直接用于图像编辑的提示词\"}" },
+      { type: "input_image", image_url: input.imageUrl },
+    ] }],
+  });
+  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "图片风格分析失败"), "shopify_image_analysis_failed");
+  const parsed = parseModelJson(responseOutputText(result.payload));
+  const value = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  const prompt = typeof value.prompt === "string" ? value.prompt.trim() : "保留原图的衣服、服装细节、模特身份、姿势和脸部特征，优化背景、光线和商业摄影质感。";
+  return { prompt, analysis: typeof value.analysis === "string" ? value.analysis.trim() : "已完成图片风格分析" };
+}
+
+export function extractGeneratedImage(payload: ResponsePayload | null, excludedUrls: string[] = []): string | null {
+  const excluded = new Set(excludedUrls.filter(Boolean));
+  const text = JSON.stringify(payload ?? {})
+    .replace(/\\u003c/giu, "<")
+    .replace(/\\u003e/giu, ">")
+    .replace(/\\\//gu, "/");
+  const markdownMatches = [...text.matchAll(/!\[[^\]]*\]\(\s*<?(https?:\/\/[^\s)>]+)>?\s*\)/giu)];
+  const markdownImage = markdownMatches.map((match) => match[1]).find((url) => !excluded.has(url));
+  if (markdownImage) return markdownImage;
+  const directMatches = [...text.matchAll(/(?:https?:\/\/[^"'\s<>\)]+|data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)/giu)];
+  return directMatches.map((match) => match[0]).find((url) => !excluded.has(url)) ?? null;
+}
+
+function imageContentType(value: string | null, imageUrl: string): string | null {
+  const headerType = value?.split(";", 1)[0]?.trim().toLowerCase();
+  if (headerType && ["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"].includes(headerType)) return headerType;
+  const extension = new URL(imageUrl).pathname.split(".").at(-1)?.toLowerCase();
+  return extension === "avif" ? "image/avif" : extension === "gif" ? "image/gif" : extension === "jpg" || extension === "jpeg" ? "image/jpeg" : extension === "webp" ? "image/webp" : extension === "png" ? "image/png" : null;
+}
+
+function base64Image(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  return btoa(binary);
+}
+
+async function materializeGeneratedImage(imageUrl: string): Promise<string> {
+  if (imageUrl.startsWith("data:image/")) return imageUrl;
+  let target: URL;
+  try {
+    target = new URL(imageUrl);
+  } catch {
+    throw new ApiError(502, "AI 返回的图片地址无效", "shopify_image_result_invalid");
+  }
+  if (!["http:", "https:"].includes(target.protocol)) throw new ApiError(502, "AI 返回的图片地址无效", "shopify_image_result_invalid");
+  const signal = AbortSignal.timeout(AI_IMAGE_RESULT_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(target, {
+      method: "GET",
+      headers: {
+        accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8",
+        referer: `${target.origin}/`,
+        "user-agent": "Mozilla/5.0 (compatible; Mailshop/1.0)",
+      },
+      redirect: "follow",
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") throw new ApiError(504, "下载 AI 图片结果超时，请手动重试任务", "shopify_image_result_timeout");
+    throw new ApiError(502, "下载 AI 图片结果失败，请手动重试任务", "shopify_image_result_download_failed");
+  }
+  if (!response.ok) {
+    await response.body?.cancel("AI image result request failed");
+    throw new ApiError(502, "AI 返回的图片地址已失效，请手动重试任务", "shopify_image_result_download_failed", { upstreamStatus: response.status, imageHost: target.hostname });
+  }
+  const contentLength = Number(response.headers.get("content-length") ?? 0);
+  if (contentLength > MAX_AI_IMAGE_RESULT_BYTES) {
+    await response.body?.cancel("AI image result too large");
+    throw new ApiError(413, "AI 图片结果超过 Shopify 上传限制", "shopify_image_result_too_large");
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.byteLength || bytes.byteLength > MAX_AI_IMAGE_RESULT_BYTES) throw new ApiError(413, "AI 图片结果超过 Shopify 上传限制", "shopify_image_result_too_large");
+  const contentType = imageContentType(response.headers.get("content-type"), imageUrl);
+  if (!contentType) throw new ApiError(502, "AI 图片结果不是支持的图片格式", "shopify_image_result_content_type_invalid");
+  return `data:${contentType};base64,${base64Image(bytes)}`;
+}
+
+export async function editShopifyImage(env: Env, input: { imageUrl: string; prompt: string }): Promise<{ imageUrl: string | null; prompt: string }> {
+  const credentials = await readCredentials(env, "image_generation");
+  const prompt = `${input.prompt.trim()}\n硬性要求：保留原图的衣服、服装细节、模特身份、姿势和脸部特征，不生成新模特，不改变服装款式。`;
+  const result = await requestCompletion(credentials, {
+    model: credentials.modelId,
+    max_output_tokens: 1_000,
+    input: [{ role: "user", content: [{ type: "input_text", text: prompt }, { type: "input_image", image_url: input.imageUrl }] }],
+    tools: [{ type: "image_generation", size: "1024x1024", quality: "high" }],
+  });
+  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "图片生成失败"), "shopify_image_generation_failed");
+  const imageUrl = extractGeneratedImage(result.payload, [input.imageUrl]);
+  if (!imageUrl) throw new ApiError(502, "图片生成接口返回成功，但没有图片地址", "shopify_image_generation_empty");
+  return { imageUrl: await materializeGeneratedImage(imageUrl), prompt };
+}
+
+export async function generateShopifySeo(env: Env, input: { title: string; descriptionHtml: string; productType: string; vendor: string; tags: string[]; seoTitle?: string; seoDescription?: string }): Promise<{ seoTitle: string; seoDescription: string }> {
+  const credentials = await readCredentials(env, "chat");
+  const result = await requestCompletion(credentials, {
+    model: credentials.modelId,
+    max_output_tokens: 900,
+    input: [{ role: "user", content: [{ type: "input_text", text: `为 Shopify 商品生成 SEO 标题和 SEO 描述。不要编造原文没有的功能、材质、认证或承诺。标题不超过 70 个字符，描述不超过 320 个字符。严格 JSON 输出：{"seoTitle":"","seoDescription":""}\n${JSON.stringify(input)}` }] }],
+  });
+  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "SEO 生成失败"), "shopify_seo_ai_failed");
+  const parsed = parseModelJson(responseOutputText(result.payload));
+  const value = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  return { seoTitle: typeof value.seoTitle === "string" ? value.seoTitle.trim().slice(0, 70) : "", seoDescription: typeof value.seoDescription === "string" ? value.seoDescription.trim().slice(0, 320) : "" };
 }
 
 export async function translateShopifyContent(env: Env, input: ShopifyProductTranslationAiInput): Promise<{
@@ -439,30 +630,40 @@ export async function translateShopifyContent(env: Env, input: ShopifyProductTra
   translations: Array<{ resourceId: string; resourceType: string; resourceLabel: string; key: string; value: string; sourceValue: string; originalValue: string; digest: string; changed: boolean }>;
   promptVersion: string;
 }> {
-  const credentials = await readCredentials(env);
+  const credentials = await readCredentials(env, "translation");
+  const requestPrompt = buildShopifyTranslationPrompt(input);
   const result = await requestCompletion(credentials, {
     model: credentials.modelId,
     max_output_tokens: Math.min(12_000, Math.max(1_500, input.fields.reduce((total, field) => total + Math.min(field.sourceValue.length, 1_500), 0))),
-    input: [{ role: "user", content: [{ type: "input_text", text: buildShopifyTranslationPrompt(input) }] }],
+    input: [{ role: "user", content: [{ type: "input_text", text: requestPrompt }] }],
   });
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "AI 翻译失败（HTTP " + result.response.status + "）"), "shopify_translation_ai_failed");
   if (!result.payload) throw new ApiError(502, "AI 翻译没有返回内容", "shopify_translation_ai_empty");
-  const parsed = parseModelJson(responseOutputText(result.payload));
-  const raw = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { translations?: unknown }).translations : parsed;
+  const rawResponse = responseOutputText(result.payload);
+  const parsed = parseModelJson(rawResponse);
+  const raw = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "translations" in parsed
+    ? (parsed as { translations?: unknown }).translations
+    : parsed;
   const byId = new Map<string, ShopifyTranslationResult>();
-  for (const item of Array.isArray(raw) ? raw : []) {
-    if (!item || typeof item !== "object") continue;
-    const value = item as Record<string, unknown>;
-    const id = typeof value.id === "string" ? value.id.trim() : "";
-    const translated = typeof value.value === "string" ? value.value : null;
-    if (id && translated !== null && !byId.has(id)) byId.set(id, { id, value: translated });
+  const byKey = new Map<string, ShopifyTranslationResult>();
+  for (const output of parseShopifyTranslationResults(raw)) {
+    if (output.id && !byId.has(output.id)) byId.set(output.id, output);
+    if (output.key) {
+      const lookupKey = output.resourceId ? `${output.resourceId}\u0000${output.key}` : output.key;
+      if (!byKey.has(lookupKey)) byKey.set(lookupKey, output);
+    }
   }
   return {
     locale: input.locale,
     promptVersion: SHOPIFY_TRANSLATION_PROMPT_VERSION,
     translations: input.fields.map((field, index) => {
-      const candidate = byId.get(String(index))?.value?.trim() ?? "";
-      const safeValue = candidate && preservesShopifyProtectedTokens(field.sourceValue, candidate) ? candidate : field.existingValue ?? "";
+      const byIdResult = byId.get(String(index));
+      const byResourceKey = field.resourceId ? byKey.get(`${field.resourceId}\u0000${field.key}`) : undefined;
+      const sameKeyFields = input.fields.filter((item) => item.key === field.key);
+      const byUniqueKey = sameKeyFields.length === 1 ? byKey.get(field.key) : undefined;
+      const candidate = (byIdResult ?? byResourceKey ?? byUniqueKey)?.value?.trim() ?? "";
+      const accepted = Boolean(candidate);
+      const safeValue = accepted ? candidate : field.existingValue ?? field.sourceValue;
       return {
         resourceId: field.resourceId ?? input.productId,
         resourceType: field.resourceType ?? "Product",
@@ -472,7 +673,7 @@ export async function translateShopifyContent(env: Env, input: ShopifyProductTra
         sourceValue: field.sourceValue,
         originalValue: field.existingValue ?? "",
         digest: field.digest ?? "",
-        changed: safeValue !== (field.existingValue ?? ""),
+        changed: accepted && safeValue !== (field.existingValue ?? ""),
       };
     }),
   };

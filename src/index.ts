@@ -44,6 +44,12 @@ import {
   patchProduct,
   patchUser,
   recordAudit,
+  recordAiLog,
+  listAiLogs,
+  listShopifyImageJobs,
+  createShopifyImageJobs,
+  updateShopifyImageJob,
+  deleteShopifyImageJob,
   recordSearchTaskImports,
   listSearchTasks,
   startSearchTask,
@@ -73,7 +79,7 @@ import {
   withSecurityHeaders,
 } from "./http";
 import { handleImageProxy } from "./image-proxy";
-import { classifyImageCandidates, getAiSettings, saveAiSettings, translateShopifyContent } from "./ai";
+import { analyzeShopifyImageStyle, classifyImageCandidates, editShopifyImage, generateShopifySeo, getAiSettings, saveAiSettings, translateShopifyContent } from "./ai";
 import { allowedExtensionOrigins, extensionOriginFromRequest } from "./extension-origin";
 import { deleteShopifyProduct, deleteShopifyStore, getShopifyProduct, getShopifyProductTranslations, getShopifySettings, listShopifyProducts, publishProductToShopify, registerShopifyTranslations, saveShopifySettings, testShopifyStore, updateShopifyProduct } from "./shopify";
 import {
@@ -96,7 +102,7 @@ import {
   searchTaskSyncSchema,
   searchTaskImportSchema,
   searchTaskRunSchema,
-  aiSettingsSchema,
+  aiSettingsUpdateSchema,
   aiCandidatesRequestSchema,
   shopifySettingsSchema,
   shopifyPublishSchema,
@@ -104,6 +110,11 @@ import {
   shopifyProductUpdateSchema,
   shopifyProductTranslationsQuerySchema,
   shopifyProductTranslationAiSchema,
+  shopifyProductSeoAiSchema,
+  shopifyImageAnalyzeSchema,
+  shopifyImageEditSchema,
+  shopifyImageJobCreateSchema,
+  shopifyImageJobUpdateSchema,
   shopifyProductTranslationPublishSchema,
 } from "./validation";
 import type { SearchTaskRunInput } from "./validation";
@@ -114,6 +125,14 @@ function methodNotAllowed(allowed: string[]): Response {
     405,
     { allow: allowed.join(", ") },
   );
+}
+
+async function safeRecordAiLog(request: Request, env: Env, userId: string | null, input: Parameters<typeof recordAiLog>[3]): Promise<void> {
+  try {
+    await recordAiLog(request, env, userId, input);
+  } catch (error) {
+    console.error(JSON.stringify({ level: "error", event: "ai_log_write_failed", error: error instanceof Error ? error.message : String(error) }));
+  }
 }
 
 const PUBLIC_IMAGE_SEARCH_PATH = "/api/public/onebound/image-search";
@@ -396,10 +415,13 @@ async function handlePublicExtensionAi(request: Request, env: Env): Promise<Resp
     candidateCount: input.candidates.length,
     regionCount: input.regionSnapshots.length,
   });
+  const startedAt = Date.now();
   try {
     const result = await classifyImageCandidates(env, input.candidates, input.pageSnapshot ?? null, input.stage, input.regionSnapshots);
+    await safeRecordAiLog(request, env, user.id, { operation: "extension.image_classify", scope: "image_filter", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, modelId: serverAi.imageFilter.modelId, requestSummary: { stage: input.stage, candidateCount: input.candidates.length, regionCount: input.regionSnapshots.length }, responseSummary: { resultCount: result.results.length, regionCount: result.regions?.length ?? 0 } });
     return json({ ok: true, credits: { balance: charge.balance, charged: charge.cost }, ...result });
   } catch (error) {
+    await safeRecordAiLog(request, env, user.id, { operation: "extension.image_classify", scope: "image_filter", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, modelId: serverAi.imageFilter.modelId, requestSummary: { stage: input.stage, candidateCount: input.candidates.length, regionCount: input.regionSnapshots.length }, errorMessage: error instanceof Error ? error.message : String(error) });
     await refundAiRequest(env, user.id, charge);
     throw error;
   }
@@ -459,6 +481,18 @@ function shopifyProductTranslationRoute(pathname: string): { storeId: string; pr
   const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/translations(?:\/(ai))?$/iu);
   if (!match) return null;
   return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "ai" ? "ai" : "read" };
+}
+
+function shopifyProductAiRoute(pathname: string): { storeId: string; productId: string; action: "seo" | "image_analyze" | "image_edit" } | null {
+  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/ai\/(seo|image-analyze|image-edit)$/iu);
+  if (!match) return null;
+  return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "seo" ? "seo" : match[3] === "image-analyze" ? "image_analyze" : "image_edit" };
+}
+
+function shopifyImageJobsRoute(pathname: string): { storeId: string; productId: string; jobId?: string } | null {
+  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/ai\/image-jobs(?:\/([^/]+))?$/iu);
+  if (!match) return null;
+  return { storeId: match[1], productId: decodeURIComponent(match[2]), jobId: match[3] ? decodeURIComponent(match[3]) : undefined };
 }
 
 function oneboundItemRoute(pathname: string): { offerId: string } | null {
@@ -678,6 +712,11 @@ async function handleAuthenticatedApi(
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
     return json({ ok: true, credits: { balance: await getCreditBalance(env, user.id), transactions: await listCreditTransactions(env, user.id) } });
   }
+  if (url.pathname === "/api/ai-logs") {
+    if (request.method !== "GET") return methodNotAllowed(["GET"]);
+    const limit = Number(url.searchParams.get("limit") ?? 100);
+    return json({ ok: true, logs: await listAiLogs(env, user.id, user.role === "admin", limit) });
+  }
   if (url.pathname === "/api/auth/logout") {
     if (request.method !== "POST") return methodNotAllowed(["POST"]);
     await revokeSession(request, env);
@@ -779,7 +818,7 @@ async function handleAuthenticatedApi(
     assertAdmin(user);
     if (request.method === "GET") return json({ ok: true, settings: await getAiSettings(env) });
     if (request.method === "PUT") {
-      const input = await readJson(request, aiSettingsSchema);
+      const input = await readJson(request, aiSettingsUpdateSchema);
       await saveAiSettings(env, input, user.id);
       ctx.waitUntil(recordAudit(request, env, user.id, "integration.ai.update", "settings", "ai"));
       return json({ ok: true, settings: await getAiSettings(env) });
@@ -795,6 +834,91 @@ async function handleAuthenticatedApi(
       return json({ ok: true, store });
     }
     return methodNotAllowed(["GET", "PUT"]);
+  }
+  const shopifyImageJobs = shopifyImageJobsRoute(url.pathname);
+  if (shopifyImageJobs) {
+    const product = await getShopifyProduct(env, user.id, shopifyImageJobs.storeId, shopifyImageJobs.productId);
+    if (request.method === "GET" && !shopifyImageJobs.jobId) {
+      return json({ ok: true, jobs: await listShopifyImageJobs(env, user.id, shopifyImageJobs.storeId, shopifyImageJobs.productId) });
+    }
+    if (request.method === "POST" && !shopifyImageJobs.jobId) {
+      const parsed = await readJson(request, shopifyImageJobCreateSchema);
+      if (parsed.storeId !== shopifyImageJobs.storeId || parsed.productId !== shopifyImageJobs.productId) throw new ApiError(422, "图片任务资源不匹配当前路由", "shopify_image_job_resource_mismatch");
+      const imageIds = new Set(product.product.images.map((image) => image.id));
+      if (parsed.jobs.some((job) => !imageIds.has(job.imageId))) throw new ApiError(422, "图片任务包含不属于当前商品的图片", "shopify_image_job_image_invalid");
+      return json({ ok: true, jobs: await createShopifyImageJobs(env, user.id, shopifyImageJobs.storeId, shopifyImageJobs.productId, parsed.jobs) }, 201);
+    }
+    if (!shopifyImageJobs.jobId) return methodNotAllowed(["GET", "POST"]);
+    if (request.method === "PATCH") {
+      const parsed = await readJson(request, shopifyImageJobUpdateSchema);
+      if (parsed.storeId !== shopifyImageJobs.storeId || parsed.productId !== shopifyImageJobs.productId) throw new ApiError(422, "图片任务资源不匹配当前路由", "shopify_image_job_resource_mismatch");
+      return json({ ok: true, job: await updateShopifyImageJob(env, user.id, shopifyImageJobs.storeId, shopifyImageJobs.productId, shopifyImageJobs.jobId, parsed) });
+    }
+    if (request.method === "DELETE") {
+      await deleteShopifyImageJob(env, user.id, shopifyImageJobs.storeId, shopifyImageJobs.productId, shopifyImageJobs.jobId);
+      return json({ ok: true, deleted: true });
+    }
+    return methodNotAllowed(["PATCH", "DELETE"]);
+  }
+  const shopifyProductAi = shopifyProductAiRoute(url.pathname);
+  if (shopifyProductAi) {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const product = await getShopifyProduct(env, user.id, shopifyProductAi.storeId, shopifyProductAi.productId);
+    if (shopifyProductAi.action === "seo") {
+      const parsed = await readJson(request, shopifyProductSeoAiSchema);
+      if (parsed.storeId !== shopifyProductAi.storeId || parsed.productId !== shopifyProductAi.productId) {
+        throw new ApiError(422, "SEO 请求的店铺或商品不匹配当前路由", "shopify_seo_resource_mismatch");
+      }
+      const charge = await chargeAiRequest(env, user.id, { feature: "shopify_seo", storeId: parsed.storeId, productId: parsed.productId });
+      const startedAt = Date.now();
+      try {
+        const result = await generateShopifySeo(env, parsed);
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.seo", scope: "chat", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { title: parsed.title, productType: parsed.productType, vendor: parsed.vendor, tagCount: parsed.tags.length }, responseSummary: { seoTitle: result.seoTitle, seoDescription: result.seoDescription }, entityType: "shopify_product", entityId: parsed.productId });
+        return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
+      } catch (error) {
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.seo", scope: "chat", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { title: parsed.title, productType: parsed.productType, vendor: parsed.vendor, tagCount: parsed.tags.length }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
+        await refundAiRequest(env, user.id, charge).catch(() => undefined);
+        throw error;
+      }
+    }
+    if (shopifyProductAi.action === "image_analyze") {
+      const parsed = await readJson(request, shopifyImageAnalyzeSchema);
+      if (parsed.storeId !== shopifyProductAi.storeId || parsed.productId !== shopifyProductAi.productId) {
+        throw new ApiError(422, "图片分析请求的店铺或商品不匹配当前路由", "shopify_image_resource_mismatch");
+      }
+      const image = product.product.images?.find((item) => item.id === parsed.imageId);
+      if (!image || image.url !== parsed.imageUrl) throw new ApiError(422, "图片不属于当前商品", "shopify_image_resource_mismatch");
+      const charge = await chargeAiRequest(env, user.id, { feature: shopifyProductAi.action, storeId: parsed.storeId, productId: parsed.productId, imageId: parsed.imageId });
+      const startedAt = Date.now();
+      try {
+        const result = await analyzeShopifyImageStyle(env, parsed);
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.image_analyze", scope: "chat", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { imageId: parsed.imageId, imageUrl: parsed.imageUrl.slice(0, 200) }, responseSummary: { analysis: result.analysis, prompt: result.prompt }, entityType: "shopify_product", entityId: parsed.productId });
+        return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
+      } catch (error) {
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.image_analyze", scope: "chat", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { imageId: parsed.imageId }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
+        await refundAiRequest(env, user.id, charge).catch(() => undefined);
+        throw error;
+      }
+    }
+    const parsed = await readJson(request, shopifyImageEditSchema);
+    if (parsed.storeId !== shopifyProductAi.storeId || parsed.productId !== shopifyProductAi.productId) {
+      throw new ApiError(422, "图片编辑请求的店铺或商品不匹配当前路由", "shopify_image_resource_mismatch");
+    }
+    const image = product.product.images?.find((item) => item.id === parsed.imageId);
+    if (!image || image.url !== parsed.imageUrl) throw new ApiError(422, "图片不属于当前商品", "shopify_image_resource_mismatch");
+    const charge = await chargeAiRequest(env, user.id, { feature: shopifyProductAi.action, storeId: parsed.storeId, productId: parsed.productId, imageId: parsed.imageId });
+    const startedAt = Date.now();
+    try {
+      const result = await editShopifyImage(env, parsed);
+      if (parsed.jobId) await updateShopifyImageJob(env, user.id, shopifyProductAi.storeId, shopifyProductAi.productId, parsed.jobId, { status: "queued", resultUrl: result.imageUrl, message: null, prompt: result.prompt }).catch(() => undefined);
+      await safeRecordAiLog(request, env, user.id, { operation: "shopify.image_edit", scope: "image_generation", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { imageId: parsed.imageId, prompt: parsed.prompt }, responseSummary: { imageUrl: result.imageUrl?.startsWith("data:") ? "[base64 图片已返回]" : result.imageUrl, prompt: result.prompt }, entityType: "shopify_product", entityId: parsed.productId });
+      return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
+    } catch (error) {
+      if (parsed.jobId) await updateShopifyImageJob(env, user.id, shopifyProductAi.storeId, shopifyProductAi.productId, parsed.jobId, { status: "failed", message: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+      await safeRecordAiLog(request, env, user.id, { operation: "shopify.image_edit", scope: "image_generation", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { imageId: parsed.imageId, prompt: parsed.prompt }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
+      await refundAiRequest(env, user.id, charge).catch(() => undefined);
+      throw error;
+    }
   }
   const shopifyTranslationRoute = shopifyProductTranslationRoute(url.pathname);
   if (shopifyTranslationRoute) {
@@ -819,10 +943,13 @@ async function handleAuthenticatedApi(
         return { ...field, resourceId: source.resourceId, resourceType: source.resourceType, resourceLabel: source.resourceLabel, sourceLocale: source.locale, sourceValue: source.value, existingValue: field.existingValue ?? existingByKey.get(identity), digest: source.digest };
       });
       const charge = await chargeAiRequest(env, user.id, { feature: "shopify_translation", storeId: parsed.storeId, productId: parsed.productId, locale: parsed.locale, fieldCount: fields.length });
+      const startedAt = Date.now();
       try {
         const result = await translateShopifyContent(env, { ...parsed, fields });
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.translation", scope: "translation", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { locale: parsed.locale, marketId: parsed.marketId, fieldCount: fields.length, style: parsed.style }, responseSummary: { locale: result.locale, translations: result.translations, translationCount: result.translations.length, changedCount: result.translations.filter((item) => item.changed).length }, entityType: "shopify_product", entityId: parsed.productId });
         return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
       } catch (error) {
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.translation", scope: "translation", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { locale: parsed.locale, marketId: parsed.marketId, fieldCount: fields.length, style: parsed.style }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
         await refundAiRequest(env, user.id, charge).catch(() => undefined);
         throw error;
       }

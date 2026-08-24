@@ -14,6 +14,7 @@ import {
   PackageSearch,
   RefreshCw,
   Search,
+  ScrollText,
   Settings,
   Store,
   Users,
@@ -37,6 +38,7 @@ import { ShopifyProductEditorPage } from "./components/ShopifyProductEditorPage"
 import { UserManager } from "./components/UserManager";
 import { UserDashboard } from "./components/UserDashboard";
 import { CreditsPage } from "./components/CreditsPage";
+import { AiLogsPage } from "./components/AiLogsPage";
 import { SearchTasksPage } from "./components/SearchTasksPage";
 import { proxiedImageUrl } from "./media";
 import type {
@@ -50,11 +52,13 @@ import type {
   OneBoundSettings,
   GoogleSettings,
   AiSettings,
+  AiSettingsScope,
+  AiRequestLog,
   ShopifyStore,
   User,
 } from "./types";
 
-type View = "dashboard" | "products" | "shopify-products" | "tasks" | "credits" | "accounts" | "settings" | "shopify";
+type View = "dashboard" | "products" | "shopify-products" | "tasks" | "credits" | "ai-logs" | "accounts" | "settings" | "shopify";
 
 const viewPaths: Record<View, string> = {
   dashboard: "/dashboard",
@@ -62,6 +66,7 @@ const viewPaths: Record<View, string> = {
   "shopify-products": "/shopify/products",
   tasks: "/tasks",
   credits: "/credits",
+  "ai-logs": "/ai-logs",
   shopify: "/shopify",
   accounts: "/accounts",
   settings: "/settings",
@@ -184,6 +189,8 @@ export default function App() {
   const [errorDialog, setErrorDialog] = useState<unknown>(null);
   const [creditTransactions, setCreditTransactions] = useState<import("./types").CreditTransaction[]>([]);
   const [loadingCredits, setLoadingCredits] = useState(false);
+  const [aiLogs, setAiLogs] = useState<AiRequestLog[]>([]);
+  const [loadingAiLogs, setLoadingAiLogs] = useState(false);
   const [searchTasks, setSearchTasks] = useState<import("./types").SearchTask[]>([]);
   const [loadingSearchTasks, setLoadingSearchTasks] = useState(false);
   const [searchTasksTotal, setSearchTasksTotal] = useState(0);
@@ -305,6 +312,7 @@ export default function App() {
       "shopify-products": "Shopify 商品",
       tasks: "查询任务",
       credits: "积分管理",
+      "ai-logs": "AI 请求日志",
       shopify: "Shopify 店铺",
       accounts: "账号管理",
       settings: "系统设置",
@@ -386,6 +394,22 @@ export default function App() {
       setLoadingCredits(false);
     }
   }, [handleApiError]);
+
+  const loadAiLogs = useCallback(async () => {
+    setLoadingAiLogs(true);
+    try {
+      const result = await api<{ logs: AiRequestLog[] }>("/api/ai-logs?limit=100");
+      setAiLogs(result.logs);
+    } catch (caught) {
+      handleApiError(caught);
+    } finally {
+      setLoadingAiLogs(false);
+    }
+  }, [handleApiError]);
+
+  useEffect(() => {
+    if (view === "ai-logs" && user) void loadAiLogs();
+  }, [loadAiLogs, user, view]);
 
   const loadSearchTasks = useCallback(async () => {
     setLoadingSearchTasks(true);
@@ -705,15 +729,15 @@ export default function App() {
     }
   }
 
-  async function saveAiSettings(baseUrl: string, apiKey: string, modelId: string) {
+  async function saveAiSettings(scope: AiSettingsScope, baseUrl: string, apiKey: string, modelId: string) {
     setSaving(true);
     try {
       const result = await api<{ settings: AiSettings }>("/api/integrations/ai", {
         method: "PUT",
-        body: JSON.stringify({ baseUrl, apiKey, modelId }),
+        body: JSON.stringify({ scope, baseUrl, apiKey, modelId }),
       });
       setAiSettings(result.settings);
-      notify("success", "AI 模型配置已保存");
+      notify("success", scope === "chat" ? "AI 对话配置已保存" : scope === "translation" ? "AI 翻译配置已保存" : scope === "image_generation" ? "AI 图片生成配置已保存" : "AI 图片识别配置已保存");
     } catch (caught) {
       handleApiError(caught);
       throw caught;
@@ -850,6 +874,7 @@ export default function App() {
           <a className={view === "products" ? "active" : ""} href={viewPaths.products} onClick={(event) => handleNavigation(event, "products")}><PackageSearch size={18} /><span>采集商品</span>{summary?.searchingCount ? <em>{summary.searchingCount}</em> : null}</a>
           <a className={view === "shopify-products" ? "active" : ""} href={viewPaths["shopify-products"]} onClick={(event) => handleNavigation(event, "shopify-products")}><Store size={18} /><span>Shopify 商品</span>{shopifyStores.length ? <em>{shopifyStores.length}</em> : null}</a>
           <a className={view === "credits" ? "active" : ""} href={viewPaths.credits} onClick={(event) => handleNavigation(event, "credits")}><Coins size={18} /><span>积分管理</span></a>
+          <a className={view === "ai-logs" ? "active" : ""} href={viewPaths["ai-logs"]} onClick={(event) => handleNavigation(event, "ai-logs")}><ScrollText size={18} /><span>AI 请求日志</span></a>
           <a className={view === "tasks" ? "active" : ""} href={viewPaths.tasks} onClick={(event) => handleNavigation(event, "tasks")}><ListChecks size={18} /><span>查询任务</span></a>
           <a className={view === "shopify" ? "active" : ""} href={viewPaths.shopify} onClick={(event) => handleNavigation(event, "shopify")}><Store size={18} /><span>Shopify 店铺</span>{shopifyStores.length ? <em>{shopifyStores.length}</em> : null}</a>
           {user.role === "admin" && <><a className={view === "accounts" ? "active" : ""} href={viewPaths.accounts} onClick={(event) => handleNavigation(event, "accounts")}><Users size={18} /><span>账号管理</span></a><a className={view === "settings" ? "active" : ""} href={viewPaths.settings} onClick={(event) => handleNavigation(event, "settings")}><Settings size={18} /><span>系统设置</span></a></>}
@@ -865,6 +890,8 @@ export default function App() {
           <UserDashboard user={user} summary={summary} onProducts={() => navigate("products")} onCredits={() => navigate("credits")} />
         ) : view === "credits" ? (
           <CreditsPage balance={user.credits} transactions={creditTransactions} loading={loadingCredits} />
+        ) : view === "ai-logs" ? (
+          <AiLogsPage logs={aiLogs} loading={loadingAiLogs} onRefresh={() => void loadAiLogs()} />
         ) : view === "tasks" ? (
           <SearchTasksPage
             tasks={searchTasks}
