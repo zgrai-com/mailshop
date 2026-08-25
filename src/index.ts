@@ -982,14 +982,14 @@ async function handleAuthenticatedApi(
   if (shopifyTranslationRoute) {
     if (request.method === "GET") {
       const query = shopifyProductTranslationsQuerySchema.parse(parseQuery(url));
-      return json({ ok: true, ...(await getShopifyProductTranslations(env, user.id, shopifyTranslationRoute.storeId, shopifyTranslationRoute.productId, query.locale, query.marketId)) });
+      return json({ ok: true, ...(await getShopifyProductTranslations(env, user.id, shopifyTranslationRoute.storeId, shopifyTranslationRoute.productId, query.locale, query.marketId, query.sourceLocale)) });
     }
     if (request.method === "POST" && shopifyTranslationRoute.action === "ai") {
       const parsed = await readJson(request, shopifyProductTranslationAiSchema);
       if (parsed.storeId !== shopifyTranslationRoute.storeId || parsed.productId !== shopifyTranslationRoute.productId) {
         throw new ApiError(422, "翻译请求的店铺或商品不匹配当前路由", "shopify_translation_resource_mismatch");
       }
-      const current = await getShopifyProductTranslations(env, user.id, parsed.storeId, parsed.productId, parsed.locale, parsed.marketId);
+      const current = await getShopifyProductTranslations(env, user.id, parsed.storeId, parsed.productId, parsed.locale, parsed.marketId, parsed.sourceLocale);
       const translationIdentity = (resourceId: string, key: string) => `${resourceId}\u0000${key}`;
       const contentByKey = new Map(current.translatableContent.map((item) => [translationIdentity(item.resourceId, item.key), item] as const));
       const existingByKey = new Map(current.translations.map((item) => [translationIdentity(item.resourceId, item.key), item.value] as const));

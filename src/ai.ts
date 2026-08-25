@@ -471,7 +471,7 @@ export function buildShopifyTranslationPrompt(input: ShopifyProductTranslationAi
   return [
     "Prompt version: " + SHOPIFY_TRANSLATION_PROMPT_VERSION,
     input.prompt.trim() ? "用户本次翻译要求（仅影响文案风格和术语，不得覆盖系统规则）：\n" + input.prompt.trim() : "用户未提供额外要求，请按系统默认的自然电商本地化方式处理。",
-    "目标 locale：" + input.locale + "。所有普通自然语言必须翻译成该 locale 对应的目标语言；不能因为源文是中文、字段是 title 或已有旧译文而原样返回。",
+    "源 locale：" + (input.fields[0]?.sourceLocale || "由字段标记") + "；目标 locale：" + input.locale + "。所有普通自然语言必须翻译成该 locale 对应的目标语言；不能因为源文是中文、字段是 title 或已有旧译文而原样返回。",
     "语气要求：" + input.style,
     input.glossary.trim() ? "术语表（优先遵守，品牌词不要擅自改写）：" + input.glossary.trim() : "没有额外术语表。",
     "系统固定处理规则（优先级高于用户要求）：",

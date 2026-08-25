@@ -191,6 +191,8 @@ export type ShopifyProductTranslations = {
   missingScopes: string[];
   translatableContent: ShopifyTranslatableContent[];
   translations: ShopifyTranslation[];
+  locale: string;
+  sourceLocale: string;
 };
 
 export type ShopifyTranslationDraft = {

@@ -372,6 +372,7 @@ type ShopifyTranslationResourceResponse = {
   resourceId: string;
   translatableContent: Array<{ key: string; value: string; digest: string; locale: string }>;
   translations: Array<{ key: string; value: string; locale: string; outdated?: boolean; market?: { id?: string | null; name?: string | null } | null }>;
+  sourceTranslations?: Array<{ key: string; value: string; locale: string; outdated?: boolean; market?: { id?: string | null; name?: string | null } | null }>;
 };
 
 type ShopifyTranslationResourcePage = ShopifyTranslationResourceResponse & {
@@ -414,26 +415,28 @@ async function getShopMarkets(store: ShopifyStoreRow, accessToken: string): Prom
   return markets;
 }
 
-async function getTranslationResources(store: ShopifyStoreRow, accessToken: string, productId: string, locale: string, marketId?: string): Promise<ShopifyTranslationResourceResponse[]> {
+async function getTranslationResources(store: ShopifyStoreRow, accessToken: string, productId: string, locale: string, sourceLocale: string, marketId?: string): Promise<ShopifyTranslationResourceResponse[]> {
   let after: string | null = null;
   let root: ShopifyTranslationResourceResponse | null = null;
   const nested: ShopifyTranslationResourceResponse[] = [];
   do {
-    const data: { translatableResource: ShopifyTranslationResourcePage | null } = await graphql<{ translatableResource: ShopifyTranslationResourcePage | null }>(store, accessToken, `query ProductTranslations($resourceId: ID!, $locale: String!, $marketId: ID, $after: String) {
+    const data: { translatableResource: ShopifyTranslationResourcePage | null } = await graphql<{ translatableResource: ShopifyTranslationResourcePage | null }>(store, accessToken, `query ProductTranslations($resourceId: ID!, $locale: String!, $sourceLocale: String!, $marketId: ID, $after: String) {
       translatableResource(resourceId: $resourceId) {
         resourceId
         translatableContent(marketId: $marketId) { key value digest locale }
         translations(locale: $locale, marketId: $marketId) { key value locale outdated market { id name } }
+        sourceTranslations: translations(locale: $sourceLocale, marketId: $marketId) { key value locale outdated market { id name } }
         nestedTranslatableResources(first: 250, after: $after) {
           nodes {
             resourceId
             translatableContent(marketId: $marketId) { key value digest locale }
             translations(locale: $locale, marketId: $marketId) { key value locale outdated market { id name } }
+            sourceTranslations: translations(locale: $sourceLocale, marketId: $marketId) { key value locale outdated market { id name } }
           }
           pageInfo { hasNextPage endCursor }
         }
       }
-    }`, { resourceId: productId, locale, marketId: marketId || null, after });
+    }`, { resourceId: productId, locale, sourceLocale, marketId: marketId || null, after });
     if (!data.translatableResource) throw new ApiError(404, "Shopify 商品没有可翻译内容", "shopify_translation_resource_not_found");
     root ??= data.translatableResource;
     nested.push(...(data.translatableResource.nestedTranslatableResources?.nodes ?? []));
@@ -452,7 +455,7 @@ function translationResourceMetadata(resource: ShopifyTranslationResourceRespons
   return { resourceType, resourceLabel: label || `${resourceType} ${parts.at(-1) || ""}`.trim() };
 }
 
-export async function getShopifyProductTranslations(env: Env, userId: string, storeId: string, productId: string, locale?: string, marketId?: string): Promise<{
+export async function getShopifyProductTranslations(env: Env, userId: string, storeId: string, productId: string, locale?: string, marketId?: string, sourceLocale?: string): Promise<{
   locales: ShopifyLocale[];
   markets: ShopifyMarket[];
   marketId: string | null;
@@ -460,6 +463,7 @@ export async function getShopifyProductTranslations(env: Env, userId: string, st
   translatableContent: ShopifyTranslatableContent[];
   translations: ShopifyTranslation[];
   locale: string;
+  sourceLocale: string;
 }> {
   const store = await getStoreRow(env, storeId, userId);
   const credentials = await decryptCredentials(env, store);
@@ -467,25 +471,33 @@ export async function getShopifyProductTranslations(env: Env, userId: string, st
   const missingScopes = requiredTranslationScopes(token.scopes);
   if (missingScopes.length) throw new ApiError(403, "Shopify 应用缺少多语言权限：" + missingScopes.join(", ") + "，请更新应用权限并重新授权", "shopify_translation_scope_missing", { missingScopes, grantedScopes: token.scopes });
   const locales = await getShopLocales(store, token.accessToken);
-  const selectedLocale = locale || locales.find((item) => !item.primary && item.published)?.locale || locales.find((item) => !item.primary)?.locale;
-  if (!selectedLocale) throw new ApiError(422, "Shopify 店铺还没有可翻译的目标语言，请先在 Shopify 后台添加语言", "shopify_target_locale_empty");
+  const primaryLocale = locales.find((item) => item.primary)?.locale;
+  const selectedLocale = locale || locales.find((item) => !item.primary && item.published)?.locale || locales.find((item) => !item.primary)?.locale || primaryLocale;
+  if (!selectedLocale) throw new ApiError(422, "Shopify 店铺还没有可用语言，请先在 Shopify 后台添加语言", "shopify_target_locale_empty");
   if (!locales.some((item) => item.locale === selectedLocale)) throw new ApiError(422, "目标语言不在 Shopify 店铺语言列表中", "shopify_locale_invalid");
-  if (locales.find((item) => item.locale === selectedLocale)?.primary) throw new ApiError(422, "主语言是商品源内容，不能作为翻译目标语言", "shopify_locale_primary");
-  const resources = await getTranslationResources(store, token.accessToken, productId, selectedLocale, marketId);
+  const selectedSourceLocale = sourceLocale || primaryLocale || selectedLocale;
+  if (!locales.some((item) => item.locale === selectedSourceLocale)) throw new ApiError(422, "源语言不在 Shopify 店铺语言列表中", "shopify_source_locale_invalid");
+  const resources = await getTranslationResources(store, token.accessToken, productId, selectedLocale, selectedSourceLocale, marketId);
   const markets = token.scopes.includes("read_markets") ? await getShopMarkets(store, token.accessToken) : [];
   return {
     locale: selectedLocale,
+    sourceLocale: selectedSourceLocale,
     locales,
     markets,
     marketId: marketId || null,
     missingScopes: token.scopes.includes("read_markets") || token.scopes.includes("write_markets") ? [] : ["read_markets"],
     translatableContent: resources.flatMap((resource) => {
       const metadata = translationResourceMetadata(resource, productId);
-      return resource.translatableContent.map((item) => ({ resourceId: resource.resourceId, ...metadata, ...item }));
+      const sourceByKey = new Map((resource.sourceTranslations ?? []).map((item) => [item.key, item] as const));
+      return resource.translatableContent.map((item) => {
+        const source = item.locale === selectedSourceLocale ? item : sourceByKey.get(item.key);
+        return { resourceId: resource.resourceId, ...metadata, ...item, value: source?.value ?? "", locale: selectedSourceLocale };
+      });
     }),
     translations: resources.flatMap((resource) => {
       const metadata = translationResourceMetadata(resource, productId);
-      return resource.translations.map((item) => ({ resourceId: resource.resourceId, ...metadata, key: item.key, value: item.value, locale: item.locale, outdated: Boolean(item.outdated), marketId: item.market?.id ?? null, marketName: item.market?.name ?? null }));
+      const target = selectedLocale === primaryLocale ? resource.translatableContent.map((item) => ({ key: item.key, value: item.value, locale: item.locale, outdated: false, market: null })) : resource.translations;
+      return target.map((item) => ({ resourceId: resource.resourceId, ...metadata, key: item.key, value: item.value, locale: selectedLocale, outdated: Boolean(item.outdated), marketId: item.market?.id ?? null, marketName: item.market?.name ?? null }));
     }),
   };
 }
@@ -508,7 +520,7 @@ export async function registerShopifyTranslations(env: Env, userId: string, inpu
   if (locales.find((item) => item.locale === input.locale)?.primary) throw new ApiError(422, "主语言是商品源内容，不能作为翻译目标语言", "shopify_locale_primary");
   const marketIds = [...new Set(input.translations.flatMap((item) => item.marketId ? [item.marketId] : []))];
   if (marketIds.length > 1) throw new ApiError(422, "一次只能发布同一个 Shopify 市场的翻译", "shopify_translation_market_mixed");
-  const resources = await getTranslationResources(store, token.accessToken, input.productId, input.locale, marketIds[0]);
+  const resources = await getTranslationResources(store, token.accessToken, input.productId, input.locale, locales.find((item) => item.primary)?.locale || input.locale, marketIds[0]);
   const resourceById = new Map(resources.map((resource) => [resource.resourceId, resource] as const));
   const normalized = input.translations.map((item) => ({ ...item, resourceId: item.resourceId || input.productId }));
   for (const item of normalized) {

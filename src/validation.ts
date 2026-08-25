@@ -140,6 +140,7 @@ const shopifyTranslationPublishItemSchema = z.object({
 
 export const shopifyProductTranslationsQuerySchema = z.object({
   locale: shopifyLocaleSchema.optional(),
+  sourceLocale: shopifyLocaleSchema.optional(),
   marketId: z.string().trim().max(255).optional(),
 });
 
@@ -147,6 +148,7 @@ export const shopifyProductTranslationAiSchema = z.object({
   storeId: z.string().uuid(),
   productId: z.string().min(1).max(255),
   locale: shopifyLocaleSchema,
+  sourceLocale: shopifyLocaleSchema.optional(),
   marketId: z.string().trim().max(255).optional(),
   fields: z.array(shopifyTranslationFieldSchema).min(1).max(32),
   prompt: z.string().trim().max(8_000).default(""),

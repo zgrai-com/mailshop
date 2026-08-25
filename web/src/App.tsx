@@ -218,12 +218,12 @@ export default function App() {
     })}`);
   }, [taskPage, taskPageSize, taskSearch, taskStatus, view]);
   useEffect(() => {
-    if (user && view === "credits") void loadCredits();
-    if (user && view === "ai-logs") void loadAiLogs();
+    if (user?.id && view === "credits") void loadCredits();
+    if (user?.id && view === "ai-logs") void loadAiLogs();
     if (user?.role === "admin" && view === "audit-logs") void loadAuditLogs();
     if (user?.role === "admin" && view === "accounts") void loadUsers();
     if (user?.role === "admin" && view === "settings") void loadSettings();
-  }, [loadAiLogs, loadAuditLogs, loadCredits, loadSettings, loadUsers, user, view]);
+  }, [loadAiLogs, loadAuditLogs, loadCredits, loadSettings, loadUsers, user?.id, user?.role, view]);
   useEffect(() => {
     if (!user) return;
     const adminOnlyViews: View[] = ["audit-logs", "accounts", "settings"];
