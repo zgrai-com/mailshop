@@ -4172,7 +4172,6 @@ textarea::placeholder {
 
 .dashboard-view,
 .credits-view,
-.ai-logs-view,
 .audit-logs-view {
   min-height: 100%;
   padding: 30px 34px 48px;
@@ -4288,7 +4287,6 @@ textarea::placeholder {
 .admin-activity-table table { min-width: 700px; }
 .admin-activity-table td > strong, .admin-activity-table td > small { display: block; }
 .admin-activity-table td > small { margin-top: 3px; color: var(--color-muted); font-size: 10px; }
-.admin-activity-table .ai-log-status { display: inline-flex; align-items: center; gap: 5px; }
 .admin-activity-table td:last-child { display: flex; align-items: center; gap: 4px; }
 .admin-empty-state { display: grid; min-height: 170px; place-items: center; align-content: center; gap: 8px; color: var(--color-muted); }
 
@@ -4373,33 +4371,8 @@ textarea::placeholder {
 .credit-negative { color: var(--color-coral); }
 .credit-empty { display: grid; min-height: 180px; place-items: center; align-content: center; gap: 8px; color: var(--color-muted); }
 
-.ai-log-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-top: 26px; border: 1px solid var(--color-line-strong); background: var(--color-line); }
-.ai-log-summary > div { display: grid; grid-template-columns: 22px 1fr; gap: 2px 9px; align-content: center; min-height: 96px; background: var(--color-surface); padding: 16px 18px; }
-.ai-log-summary svg { grid-row: 1 / 3; color: var(--color-accent); }
-.ai-log-summary strong { font-family: var(--font-mono); font-size: 22px; }
-.ai-log-summary span { color: var(--color-muted); font-size: 10px; }
-.ai-log-panel { margin-top: 22px; border: 1px solid var(--color-line-strong); background: var(--color-surface); }
-.ai-log-panel > header { display: flex; min-height: 66px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--color-line); padding: 0 18px; }
-.ai-log-panel > header > div { display: grid; gap: 3px; }
-.ai-log-panel > header span { color: var(--color-muted); font-family: var(--font-mono); font-size: 9px; }
-.ai-log-panel > header h2 { font-size: 16px; }
-.ai-log-panel > header small { color: var(--color-muted); font-size: 10px; }
-.ai-log-table { min-width: 1080px; }
-.ai-log-table td > strong, .ai-log-table td > small { display: block; }
-.ai-log-table td > small { margin-top: 3px; color: var(--color-muted); font-size: 10px; }
-.ai-log-summary-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); font-size: 10px; }
-.ai-log-status { display: inline-flex; border-radius: 999px; padding: 4px 8px; font-size: 10px; font-weight: 700; }
-.ai-log-status.success { background: var(--color-accent-soft); color: var(--color-accent); }
-.ai-log-status.failed { background: var(--color-coral-soft); color: var(--color-coral); }
-.ai-log-detail-row:hover { background: var(--color-surface-soft) !important; }
-.ai-log-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; background: var(--color-surface-soft); padding: 14px 16px !important; text-align: left; }
-.ai-log-detail strong { display: block; margin-bottom: 7px; font-size: 11px; }
-.ai-log-detail pre { max-height: 180px; margin: 0; overflow: auto; border: 1px solid var(--color-line); background: var(--color-surface); padding: 9px; color: var(--color-muted); font: 10px/1.5 var(--font-mono); white-space: pre-wrap; }
-.ai-log-empty { display: grid; min-height: 200px; place-items: center; align-content: center; gap: 8px; color: var(--color-muted); }
-.ai-log-empty strong { color: var(--color-ink); }
-
 @media (max-width: 768px) {
-  .dashboard-view, .admin-dashboard-view, .credits-view, .ai-logs-view, .audit-logs-view { padding: 18px 14px 24px; }
+  .dashboard-view, .admin-dashboard-view, .credits-view, .audit-logs-view { padding: 18px 14px 24px; }
   .admin-dashboard-heading { flex-direction: column; }
   .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-dashboard-grid { grid-template-columns: 1fr; }
@@ -4407,9 +4380,6 @@ textarea::placeholder {
   .dashboard-metrics button { min-height: 116px; }
   .credit-summary-band { align-items: flex-start; flex-direction: column; }
   .credit-summary-band dl { width: 100%; justify-content: space-between; gap: 16px; }
-  .ai-log-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .ai-log-panel > header { align-items: flex-start; flex-direction: column; padding: 14px 16px; }
-  .ai-log-detail { grid-template-columns: 1fr; }
 }
 
 .settings-panel {

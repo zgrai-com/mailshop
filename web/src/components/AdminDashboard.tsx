@@ -1,29 +1,18 @@
-import { Activity, AlertTriangle, CheckCircle2, ClipboardList, FileText, Gauge, ListChecks, Settings, Store, Users } from "lucide-react";
+import { Activity, CheckCircle2, ClipboardList, Gauge, ListChecks, Settings, Store, Users } from "lucide-react";
 
-import type { AiRequestLog, AuditLog, DashboardSummary, User } from "../types";
+import type { AuditLog, DashboardSummary, User } from "../types";
 
 type Props = {
   user: User;
   summary: DashboardSummary | null;
-  logs: AiRequestLog[];
   auditLogs: AuditLog[];
-  onLogs: () => void;
   onAuditLogs: () => void;
   onAccounts: () => void;
   onSettings: () => void;
 };
 
-function percent(value: number, total: number): string {
-  if (!total) return "0%";
-  return `${Math.round((value / total) * 100)}%`;
-}
-
-export function AdminDashboard({ user, summary, logs, auditLogs, onLogs, onAuditLogs, onAccounts, onSettings }: Props) {
-  const successCount = logs.filter((log) => log.status === "success").length;
-  const failedCount = logs.filter((log) => log.status === "failed").length;
-  const averageDuration = logs.length ? Math.round(logs.reduce((total, log) => total + log.durationMs, 0) / logs.length) : 0;
+export function AdminDashboard({ user, summary, auditLogs, onAuditLogs, onAccounts, onSettings }: Props) {
   const healthItems = [
-    { label: "AI 服务", value: logs.length ? `${percent(successCount, logs.length)} 成功率` : "暂无请求", tone: failedCount ? "warn" : "good", icon: failedCount ? AlertTriangle : CheckCircle2 },
     { label: "采集任务", value: `${summary?.collectionTaskCount ?? 0} 个任务`, tone: "neutral", icon: ListChecks },
   ];
 
@@ -38,7 +27,6 @@ export function AdminDashboard({ user, summary, logs, auditLogs, onLogs, onAudit
         <div><Users size={19} /><span>活跃账号</span><strong>{summary?.activeUsers ?? 0}</strong><small>用户访问权限与状态</small></div>
         <div><ListChecks size={19} /><span>采集任务</span><strong>{summary?.collectionTaskCount ?? 0}</strong><small>{summary?.importedTaskCount ?? 0} 个已导入</small></div>
         <div><Store size={19} /><span>Shopify 店铺</span><strong>{summary?.activeShopifyStoreCount ?? 0}</strong><small>{summary?.shopifyProductCount ?? 0} 个货源已导入</small></div>
-        <div><Activity size={19} /><span>AI 请求</span><strong>{logs.length}</strong><small>{averageDuration}ms 平均耗时</small></div>
       </section>
 
       <div className="admin-dashboard-grid">
@@ -54,7 +42,6 @@ export function AdminDashboard({ user, summary, logs, auditLogs, onLogs, onAudit
           <div className="admin-action-list">
             <button type="button" onClick={onAccounts}><Users size={17} /><span><strong>账号管理</strong><small>创建、停用和重置用户密码</small></span></button>
             <button type="button" onClick={onAuditLogs}><ClipboardList size={17} /><span><strong>操作日志</strong><small>追踪登录、配置和管理操作</small></span></button>
-            <button type="button" onClick={onLogs}><FileText size={17} /><span><strong>AI 请求日志</strong><small>查看失败请求、模型与耗时</small></span></button>
             <button type="button" onClick={onSettings}><Settings size={17} /><span><strong>系统设置</strong><small>AI、Google 与 OneBound 集成</small></span></button>
           </div>
         </section>

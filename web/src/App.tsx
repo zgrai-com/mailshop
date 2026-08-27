@@ -1,13 +1,12 @@
 import {
   ClipboardList, Coins, LayoutDashboard, ListChecks, LoaderCircle, LogOut, Menu,
-  PackageSearch, ScrollText, Settings, Store, Users, X,
+  PackageSearch, Settings, Store, Users, X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
 import { api, ApiClientError, toQuery } from "./api";
 import { AdminDashboard } from "./components/AdminDashboard";
-import { AiLogsPage } from "./components/AiLogsPage";
 import { AuditLogsPage } from "./components/AuditLogsPage";
 import { CreditsPage } from "./components/CreditsPage";
 import { ErrorDialog } from "./components/ErrorDialog";
@@ -20,12 +19,12 @@ import { ShopifyStoresPage } from "./components/ShopifyStoresPage";
 import { UserDashboard } from "./components/UserDashboard";
 import { UserManager } from "./components/UserManager";
 import type {
-  AiRequestLog, AiSettings, AiSettingsInput, AuditLog, DashboardSummary,
+  AiSettings, AiSettingsInput, AuditLog, DashboardSummary,
   GoogleSettings, OneBoundSettings, ShopifyStore, User,
 } from "./types";
 
 type View = "dashboard" | "tasks" | "shopify-products" | "shopify" | "credits"
-  | "ai-logs" | "audit-logs" | "accounts" | "settings";
+  | "audit-logs" | "accounts" | "settings";
 
 const viewPaths: Record<View, string> = {
   dashboard: "/dashboard",
@@ -33,7 +32,6 @@ const viewPaths: Record<View, string> = {
   "shopify-products": "/shopify/products",
   shopify: "/shopify",
   credits: "/credits",
-  "ai-logs": "/ai-logs",
   "audit-logs": "/audit-logs",
   accounts: "/accounts",
   settings: "/settings",
@@ -82,8 +80,6 @@ export default function App() {
   const [errorDialog, setErrorDialog] = useState<unknown>(null);
   const [creditTransactions, setCreditTransactions] = useState<import("./types").CreditTransaction[]>([]);
   const [loadingCredits, setLoadingCredits] = useState(false);
-  const [aiLogs, setAiLogs] = useState<AiRequestLog[]>([]);
-  const [loadingAiLogs, setLoadingAiLogs] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loadingAuditLogs, setLoadingAuditLogs] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
@@ -167,12 +163,6 @@ export default function App() {
     } catch (error) { handleApiError(error); } finally { setLoadingCredits(false); }
   }, [handleApiError]);
 
-  const loadAiLogs = useCallback(async () => {
-    setLoadingAiLogs(true);
-    try { setAiLogs((await api<{ logs: AiRequestLog[] }>("/api/ai-logs?limit=100")).logs); }
-    catch (error) { handleApiError(error); } finally { setLoadingAiLogs(false); }
-  }, [handleApiError]);
-
   const loadAuditLogs = useCallback(async () => {
     setLoadingAuditLogs(true);
     try { setAuditLogs((await api<{ logs: AuditLog[] }>("/api/audit-logs?limit=100")).logs); }
@@ -219,11 +209,10 @@ export default function App() {
   }, [taskPage, taskPageSize, taskSearch, taskStatus, view]);
   useEffect(() => {
     if (user?.id && view === "credits") void loadCredits();
-    if (user?.id && view === "ai-logs") void loadAiLogs();
     if (user?.role === "admin" && view === "audit-logs") void loadAuditLogs();
     if (user?.role === "admin" && view === "accounts") void loadUsers();
     if (user?.role === "admin" && view === "settings") void loadSettings();
-  }, [loadAiLogs, loadAuditLogs, loadCredits, loadSettings, loadUsers, user?.id, user?.role, view]);
+  }, [loadAuditLogs, loadCredits, loadSettings, loadUsers, user?.id, user?.role, view]);
   useEffect(() => {
     if (!user) return;
     const adminOnlyViews: View[] = ["audit-logs", "accounts", "settings"];
@@ -379,7 +368,6 @@ export default function App() {
             <a className={view === "settings" ? "active" : ""} href={viewPaths.settings} onClick={(event) => handleNavigation(event, "settings")}><Settings size={18} /><span>系统设置</span></a>
             <a className={view === "audit-logs" ? "active" : ""} href={viewPaths["audit-logs"]} onClick={(event) => handleNavigation(event, "audit-logs")}><ClipboardList size={18} /><span>操作日志</span></a>
           </>}
-          <a className={view === "ai-logs" ? "active" : ""} href={viewPaths["ai-logs"]} onClick={(event) => handleNavigation(event, "ai-logs")}><ScrollText size={18} /><span>AI 请求日志</span></a>
         </nav>
         <footer className="sidebar-footer"><div className="sidebar-user"><span>{user.displayName.slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName}</strong><small>{user.email || user.username}</small><small className="credit-balance">{isAdmin ? "系统管理员" : `${user.credits.toLocaleString()} 积分`}</small></div></div><button className="icon-button" type="button" onClick={logout} aria-label="退出登录" title="退出登录"><LogOut size={18} /></button></footer>
       </aside>
@@ -388,7 +376,7 @@ export default function App() {
         <header className="mobile-topbar"><button className="icon-button" type="button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={20} /></button><strong>MAILSHOP</strong><span className="mobile-credit-badge">{isAdmin ? "管理员" : `${user.credits.toLocaleString()} 积分`}</span><span className="avatar-small">{user.displayName.slice(0, 1).toUpperCase()}</span></header>
         {view === "dashboard" ? (
           isAdmin
-            ? <AdminDashboard user={user} summary={summary} logs={aiLogs} auditLogs={auditLogs} onLogs={() => navigate("ai-logs")} onAuditLogs={() => navigate("audit-logs")} onAccounts={() => navigate("accounts")} onSettings={() => navigate("settings")} />
+            ? <AdminDashboard user={user} summary={summary} auditLogs={auditLogs} onAuditLogs={() => navigate("audit-logs")} onAccounts={() => navigate("accounts")} onSettings={() => navigate("settings")} />
             : <UserDashboard user={user} summary={summary} onTasks={() => navigate("tasks")} onShopifyProducts={() => navigate("shopify-products")} onStores={() => navigate("shopify")} onCredits={() => navigate("credits")} />
         ) : view === "tasks" ? (
           <SearchTasksPage tasks={tasks} total={taskTotal} page={taskPage} pageSize={taskPageSize} search={taskSearch} status={taskStatus} loading={loadingTasks} stores={stores} onSearchChange={(value) => { setTaskSearch(value); setTaskPage(1); }} onStatusChange={(value) => { setTaskStatus(value); setTaskPage(1); }} onPageChange={setTaskPage} onPageSizeChange={(value) => { setTaskPageSize(value); setTaskPage(1); }} onRefresh={() => void loadTasks()} onRun={runTask} onImport={importTask} />
@@ -400,8 +388,6 @@ export default function App() {
           <ShopifyStoresPage stores={stores} loading={loadingSettings} saving={saving} onSave={saveStore} onTest={testStore} onDelete={deleteStore} />
         ) : view === "credits" ? (
           <CreditsPage balance={user.credits} transactions={creditTransactions} loading={loadingCredits} />
-        ) : view === "ai-logs" ? (
-          <AiLogsPage logs={aiLogs} loading={loadingAiLogs} onRefresh={() => void loadAiLogs()} />
         ) : view === "audit-logs" && isAdmin ? (
           <AuditLogsPage logs={auditLogs} loading={loadingAuditLogs} onRefresh={() => void loadAuditLogs()} />
         ) : view === "accounts" && isAdmin ? (
