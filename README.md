@@ -1,10 +1,10 @@
 # Mailshop 采集任务与 Shopify 中台
 
-Mailshop 是一套面向跨境电商选品的采集与 Shopify 管理工具。浏览器插件负责创建采集任务，服务端保存任务图片和搜图轮次，用户确认 1688 结果后直接导入 Shopify 商品。
+Mailshop 是一套面向跨境电商选品的采集与 Shopify 管理工具。普通用户可通过 CSV/JSON 批量导入或浏览器插件创建采集任务，服务端保存任务图片和搜图轮次，用户确认 1688 结果后直接导入 Shopify 商品。
 
 统一业务流程为：
 
-`浏览器插件创建采集任务 -> 任务内执行 1688 搜图 -> 选择结果导入 Shopify 商品`
+`批量文件或浏览器插件创建采集任务 -> 任务内执行 1688 搜图 -> 选择结果导入 Shopify 商品`
 
 项目采用 Cloudflare Workers 全栈部署：D1 保存任务、搜图、店铺和导入关系，R2 保存上传图片，React 管理界面通过 Worker Static Assets 托管。
 
@@ -12,6 +12,7 @@ Mailshop 是一套面向跨境电商选品的采集与 Shopify 管理工具。�
 
 - 支持 Google 账号登录；新账号自动获得 10,000 积分，以图搜图每次消耗 20 积分，AI 请求和商品详情每次消耗 5 积分
 - 普通用户使用仪表台、采集任务、Shopify 商品、Shopify 店铺和积分管理；系统配置与账号管理仅管理员可见
+- 普通用户可在采集任务页导入 CSV/JSON 文件，逐行预览校验并批量创建或更新任务
 - 浏览器插件采集网页商品信息与多张图片，并同步为服务器采集任务
 - 采集任务保留每张源图的多轮 1688 搜图结果、参数、页码和积分消耗
 - 选择目标 Shopify 店铺，单条或批量把 1688 结果直接创建或更新为 Shopify 草稿商品
@@ -23,6 +24,33 @@ Mailshop 是一套面向跨境电商选品的采集与 Shopify 管理工具。�
 - 支持从 Fehaute 商品页解析并导入完整商品数据
 
 旧的本地商品导入接口和数据表继续保留给爬虫及历史数据兼容，但不再作为普通用户的采集工作流入口。后台统一使用 `/api/collection-tasks`，旧 `/api/search-tasks` 仅作为兼容别名。
+
+### 普通用户批量导入
+
+采集任务页支持 CSV 和 JSON。CSV 表头为：
+
+```text
+client_id,name,product_title,description,sku,source_site,product_url,source_image_url,images
+```
+
+`images` 使用 `|` 分隔多个图片 URL。每行至少需要商品标题、HTTP(S) 商品 URL 和一张图片；同一用户的商品 URL 只能创建一个采集任务，重复 URL 会逐行返回失败提示。页面也提供 CSV/JSON 模板下载。
+
+已登录用户也可以调用 `POST /api/collection-tasks/batch`：
+
+```json
+{
+  "items": [
+    {
+      "clientId": "source-product-123",
+      "productTitle": "Sample dress",
+      "productUrl": "https://example.com/products/sample-dress",
+      "images": ["https://cdn.example.com/sample-dress.jpg"]
+    }
+  ]
+}
+```
+
+接口最多接收 100 条记录，逐行返回 `created` 或 `failed`，不会因为单条校验失败或重复 URL 而丢弃其他有效记录。
 
 ## 技术栈
 
@@ -280,7 +308,7 @@ Remove-Item Env:INGEST_API_KEY
 - `product_offer_links`：Shopify 商品与 1688 Offer 的一对多关系
 - `users`、`sessions`、`login_attempts`、`oauth_states`
 - `credit_wallets`、`credit_transactions`：积分余额与完整流水
-- `shopify_stores`、`shopify_product_publications`：Shopify 店铺凭据、连接状态和商品发布记录
+- `shopify_stores`、`shopify_store_bindings`、`shopify_product_publications`：Shopify 店铺、用户绑定、凭据、连接状态和商品发布记录
 - `audit_logs`
 
 ## 发布商品到 Shopify

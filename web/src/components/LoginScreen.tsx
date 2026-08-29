@@ -60,7 +60,7 @@ export function LoginScreen({ onLogin }: Props) {
           </header>
           <form onSubmit={submit}>
             <label className="field-label">
-              <span>账号</span>
+              <span>账号或邮箱</span>
               <span className="input-with-icon"><UserRound size={17} /><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></span>
             </label>
             <label className="field-label">

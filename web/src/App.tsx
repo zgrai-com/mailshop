@@ -1,6 +1,6 @@
 import {
   ClipboardList, Coins, LayoutDashboard, ListChecks, LoaderCircle, LogOut, Menu,
-  PackageSearch, Settings, Store, Users, X,
+  PackageSearch, Settings, Store, UserRoundCog, Users, X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
@@ -8,9 +8,11 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import { api, ApiClientError, toQuery } from "./api";
 import { AdminDashboard } from "./components/AdminDashboard";
 import { AuditLogsPage } from "./components/AuditLogsPage";
+import { BatchImportGuidePage } from "./components/BatchImportGuidePage";
 import { CreditsPage } from "./components/CreditsPage";
 import { ErrorDialog } from "./components/ErrorDialog";
 import { LoginScreen } from "./components/LoginScreen";
+import { ProfileSettingsPage } from "./components/ProfileSettingsPage";
 import { SearchTasksPage } from "./components/SearchTasksPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { ShopifyProductEditorPage } from "./components/ShopifyProductEditorPage";
@@ -19,12 +21,13 @@ import { ShopifyStoresPage } from "./components/ShopifyStoresPage";
 import { UserDashboard } from "./components/UserDashboard";
 import { UserManager } from "./components/UserManager";
 import type {
-  AiSettings, AiSettingsInput, AuditLog, DashboardSummary,
+  AiSettings, AiSettingsInput, AuditLog, CollectionTaskBatchItem, CollectionTaskBatchResponse, DashboardSummary,
   GoogleSettings, OneBoundSettings, ShopifyStore, User,
+  SearchTaskLifecycle,
 } from "./types";
 
 type View = "dashboard" | "tasks" | "shopify-products" | "shopify" | "credits"
-  | "audit-logs" | "accounts" | "settings";
+  | "audit-logs" | "accounts" | "settings" | "profile" | "batch-import-guide";
 
 const viewPaths: Record<View, string> = {
   dashboard: "/dashboard",
@@ -35,6 +38,8 @@ const viewPaths: Record<View, string> = {
   "audit-logs": "/audit-logs",
   accounts: "/accounts",
   settings: "/settings",
+  profile: "/profile",
+  "batch-import-guide": "/batch-import-guide",
 };
 
 function viewFromPath(pathname: string): View {
@@ -47,10 +52,12 @@ function viewFromPath(pathname: string): View {
 function readTaskRoute() {
   const params = new URLSearchParams(window.location.search);
   const status = params.get("status");
+  const lifecycle = params.get("lifecycle");
   const pageSize = Number(params.get("pageSize"));
   return {
     search: params.get("search") ?? "",
     status: (["unqueried", "queried", "imported"].includes(status || "") ? status : "all") as "all" | "unqueried" | "queried" | "imported",
+    lifecycle: (["active", "archived", "deleted", "all"].includes(lifecycle || "") ? lifecycle : "active") as SearchTaskLifecycle,
     page: Math.max(1, Number(params.get("page")) || 1),
     pageSize: [5, 10, 20].includes(pageSize) ? pageSize : 5,
   };
@@ -94,6 +101,7 @@ export default function App() {
   const [taskSearch, setTaskSearch] = useState(initialTask.search);
   const [debouncedTaskSearch, setDebouncedTaskSearch] = useState(initialTask.search);
   const [taskStatus, setTaskStatus] = useState(initialTask.status);
+  const [taskLifecycle, setTaskLifecycle] = useState<SearchTaskLifecycle>(initialTask.lifecycle);
   const [taskPage, setTaskPage] = useState(initialTask.page);
   const [taskPageSize, setTaskPageSize] = useState(initialTask.pageSize);
   const [productId, setProductId] = useState<string | null>(initialProduct.productId);
@@ -139,20 +147,21 @@ export default function App() {
     catch (error) { handleApiError(error); }
   }, [handleApiError, user]);
 
-  const loadTasks = useCallback(async () => {
+  const loadTasks = useCallback(async (pageOverride = taskPage) => {
     setLoadingTasks(true);
     try {
       const result = await api<{ tasks: import("./types").SearchTask[]; total: number }>(
-        `/api/collection-tasks${toQuery({ search: debouncedTaskSearch, status: taskStatus, page: taskPage, pageSize: taskPageSize })}`,
+        `/api/collection-tasks${toQuery({ search: debouncedTaskSearch, status: taskStatus, lifecycle: taskLifecycle, page: pageOverride, pageSize: taskPageSize })}`,
       );
       setTasks(result.tasks);
       setTaskTotal(result.total);
     } catch (error) {
       handleApiError(error);
+      throw error;
     } finally {
       setLoadingTasks(false);
     }
-  }, [debouncedTaskSearch, handleApiError, taskPage, taskPageSize, taskStatus]);
+  }, [debouncedTaskSearch, handleApiError, taskPage, taskPageSize, taskStatus, taskLifecycle]);
 
   const loadCredits = useCallback(async () => {
     setLoadingCredits(true);
@@ -203,10 +212,11 @@ export default function App() {
     window.history.replaceState({}, "", `${viewPaths.tasks}${toQuery({
       search: taskSearch,
       status: taskStatus !== "all" ? taskStatus : undefined,
+      lifecycle: taskLifecycle !== "active" ? taskLifecycle : undefined,
       page: taskPage > 1 ? taskPage : undefined,
       pageSize: taskPageSize !== 5 ? taskPageSize : undefined,
     })}`);
-  }, [taskPage, taskPageSize, taskSearch, taskStatus, view]);
+  }, [taskLifecycle, taskPage, taskPageSize, taskSearch, taskStatus, view]);
   useEffect(() => {
     if (user?.id && view === "credits") void loadCredits();
     if (user?.role === "admin" && view === "audit-logs") void loadAuditLogs();
@@ -228,6 +238,7 @@ export default function App() {
       setTaskSearch(task.search);
       setDebouncedTaskSearch(task.search);
       setTaskStatus(task.status);
+      setTaskLifecycle(task.lifecycle);
       setTaskPage(task.page);
       setTaskPageSize(task.pageSize);
       const product = readProductRoute();
@@ -253,6 +264,27 @@ export default function App() {
     }
   }
 
+  async function importCollectionTasks(items: CollectionTaskBatchItem[]): Promise<CollectionTaskBatchResponse> {
+    setSaving(true);
+    try {
+      const result = await api<CollectionTaskBatchResponse>("/api/collection-tasks/batch", {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      });
+      setTaskPage(1);
+      await Promise.all([loadTasks(1), loadSummary()]);
+      notify(result.failed ? "error" : "success", result.failed
+        ? `已创建 ${result.created} 个任务，${result.failed} 个重复或失败`
+        : `已创建 ${result.created} 个采集任务`);
+      return result;
+    } catch (error) {
+      handleApiError(error);
+      throw error;
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function importTask(taskId: string, runId: string, storeId: string, offerIds?: string[]) {
     setSaving(true);
     try {
@@ -265,6 +297,34 @@ export default function App() {
         ? `已导入 ${result.imported.length} 个 Shopify 商品，${result.failures.length} 个失败`
         : `已导入 ${result.imported.length} 个 Shopify 商品`);
     } catch (error) { handleApiError(error); } finally { setSaving(false); }
+  }
+
+  async function updateTaskLifecycle(taskId: string, input: { archived?: boolean; deleted?: boolean }) {
+    setSaving(true);
+    try {
+      await api(`/api/collection-tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(input) });
+      setTaskPage(1);
+      await Promise.all([loadTasks(1), loadSummary()]);
+      notify("success", input.deleted ? "任务已移入回收站" : input.archived ? "任务已归档" : "任务已恢复");
+    } catch (error) {
+      handleApiError(error);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteTask(taskId: string) {
+    setSaving(true);
+    try {
+      await api(`/api/collection-tasks/${taskId}`, { method: "DELETE" });
+      setTaskPage(1);
+      await Promise.all([loadTasks(1), loadSummary()]);
+      notify("success", "任务已移入回收站");
+    } catch (error) {
+      handleApiError(error);
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function saveOneBound(key: string, secret: string) {
@@ -295,6 +355,23 @@ export default function App() {
       })).settings);
       notify("success", "AI 配置已保存");
     } catch (error) { handleApiError(error); throw error; } finally { setSaving(false); }
+  }
+
+  async function changePassword(currentPassword: string, password: string) {
+    setSaving(true);
+    try {
+      await api("/api/auth/password", {
+        method: "POST",
+        body: JSON.stringify({ ...(currentPassword ? { currentPassword } : {}), password }),
+      });
+      notify("success", "密码已修改，请使用新密码重新登录");
+      setUser(null);
+    } catch (error) {
+      if (!(error instanceof ApiClientError && error.code === "current_password_invalid")) handleApiError(error);
+      throw error;
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function saveStore(shopDomain: string, displayName: string, clientId: string, clientSecret: string) {
@@ -368,6 +445,7 @@ export default function App() {
             <a className={view === "settings" ? "active" : ""} href={viewPaths.settings} onClick={(event) => handleNavigation(event, "settings")}><Settings size={18} /><span>系统设置</span></a>
             <a className={view === "audit-logs" ? "active" : ""} href={viewPaths["audit-logs"]} onClick={(event) => handleNavigation(event, "audit-logs")}><ClipboardList size={18} /><span>操作日志</span></a>
           </>}
+          <a className={view === "profile" ? "active" : ""} href={viewPaths.profile} onClick={(event) => handleNavigation(event, "profile")}><UserRoundCog size={18} /><span>个人设置</span></a>
         </nav>
         <footer className="sidebar-footer"><div className="sidebar-user"><span>{user.displayName.slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName}</strong><small>{user.email || user.username}</small><small className="credit-balance">{isAdmin ? "系统管理员" : `${user.credits.toLocaleString()} 积分`}</small></div></div><button className="icon-button" type="button" onClick={logout} aria-label="退出登录" title="退出登录"><LogOut size={18} /></button></footer>
       </aside>
@@ -379,7 +457,9 @@ export default function App() {
             ? <AdminDashboard user={user} summary={summary} auditLogs={auditLogs} onAuditLogs={() => navigate("audit-logs")} onAccounts={() => navigate("accounts")} onSettings={() => navigate("settings")} />
             : <UserDashboard user={user} summary={summary} onTasks={() => navigate("tasks")} onShopifyProducts={() => navigate("shopify-products")} onStores={() => navigate("shopify")} onCredits={() => navigate("credits")} />
         ) : view === "tasks" ? (
-          <SearchTasksPage tasks={tasks} total={taskTotal} page={taskPage} pageSize={taskPageSize} search={taskSearch} status={taskStatus} loading={loadingTasks} stores={stores} onSearchChange={(value) => { setTaskSearch(value); setTaskPage(1); }} onStatusChange={(value) => { setTaskStatus(value); setTaskPage(1); }} onPageChange={setTaskPage} onPageSizeChange={(value) => { setTaskPageSize(value); setTaskPage(1); }} onRefresh={() => void loadTasks()} onRun={runTask} onImport={importTask} />
+          <SearchTasksPage tasks={tasks} total={taskTotal} page={taskPage} pageSize={taskPageSize} search={taskSearch} status={taskStatus} lifecycle={taskLifecycle} loading={loadingTasks} stores={stores} onSearchChange={(value) => { setTaskSearch(value); setTaskPage(1); }} onStatusChange={(value) => { setTaskStatus(value); setTaskPage(1); }} onLifecycleChange={(value) => { setTaskLifecycle(value); setTaskPage(1); }} onPageChange={setTaskPage} onPageSizeChange={(value) => { setTaskPageSize(value); setTaskPage(1); }} onRefresh={() => void loadTasks()} onBatchImport={importCollectionTasks} onRun={runTask} onImport={importTask} onUpdateLifecycle={updateTaskLifecycle} onDelete={deleteTask} />
+        ) : view === "batch-import-guide" ? (
+          <BatchImportGuidePage onOpenTasks={isAdmin ? undefined : () => navigate("tasks")} />
         ) : view === "shopify-products" ? (
           productId
             ? <ShopifyProductEditorPage stores={stores} storeId={productStoreId} productId={productId} returnPath={productReturnPath} onBack={backFromProduct} onError={handleApiError} onNotify={(message) => notify("success", message)} />
@@ -399,6 +479,8 @@ export default function App() {
             onPatch={async (userId, input) => setUsers((await api<{ users: User[] }>(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify(input) })).users)}
             onPassword={async (userId, password) => { await api(`/api/users/${userId}/password`, { method: "POST", body: JSON.stringify({ password }) }); if (userId === user.id) setUser(null); }}
           />
+        ) : view === "profile" ? (
+          <ProfileSettingsPage user={user} saving={saving} onChangePassword={changePassword} />
         ) : (
           <SettingsPage onebound={onebound} google={google} ai={ai} loading={loadingSettings} saving={saving} onSaveOneBound={saveOneBound} onSaveGoogle={saveGoogle} onSaveAi={saveAi} />
         )}

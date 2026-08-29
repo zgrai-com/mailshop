@@ -5,9 +5,11 @@ import type {
   ProductListQuery,
   ProductPatch,
   SearchTaskListQuery,
+  SearchTaskLifecycleUpdate,
   SearchTaskRunInput,
   SearchTaskSyncInput,
 } from "./validation";
+import { normalizeTaskUrl } from "./task-url";
 
 type JsonRow = Record<string, unknown>;
 
@@ -100,6 +102,39 @@ function hydrateJson(row: JsonRow, fields: Array<[string, unknown]>): JsonRow {
 
 let searchTasksSchemaReady: Promise<void> | null = null;
 
+let shopifyStoreBindingsSchemaReady: Promise<void> | null = null;
+
+async function ensureShopifyStoreBindingsSchema(env: Env): Promise<void> {
+  if (!shopifyStoreBindingsSchemaReady) {
+    shopifyStoreBindingsSchemaReady = (async () => {
+      await env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS shopify_store_bindings (
+          store_id TEXT NOT NULL REFERENCES shopify_stores(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          client_id_ciphertext TEXT,
+          client_secret_ciphertext TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          PRIMARY KEY (store_id, user_id)
+        )`,
+      ).run();
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO shopify_store_bindings (store_id, user_id, client_id_ciphertext, client_secret_ciphertext)
+         SELECT id, owner_user_id, client_id_ciphertext, client_secret_ciphertext
+           FROM shopify_stores
+          WHERE owner_user_id IS NOT NULL`,
+      ).run();
+      await env.DB.prepare(
+        "CREATE INDEX IF NOT EXISTS idx_shopify_store_bindings_user ON shopify_store_bindings(user_id, updated_at DESC)",
+      ).run();
+    })().catch((error) => {
+      shopifyStoreBindingsSchemaReady = null;
+      throw error;
+    });
+  }
+  await shopifyStoreBindingsSchemaReady;
+}
+
 export async function ensureSearchTasksSchema(env: Env): Promise<void> {
   if (!searchTasksSchemaReady) {
     searchTasksSchemaReady = (async () => {
@@ -122,9 +157,12 @@ export async function ensureSearchTasksSchema(env: Env): Promise<void> {
         sku TEXT,
         source_site TEXT,
         product_url TEXT,
+        product_url_key TEXT,
         images_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(images_json)),
         selected_image_id TEXT,
         selected_image_url TEXT,
+        archived_at TEXT,
+        deleted_at TEXT,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         completed_at TEXT,
@@ -139,13 +177,44 @@ export async function ensureSearchTasksSchema(env: Env): Promise<void> {
         ["sku", "ALTER TABLE search_tasks ADD COLUMN sku TEXT"],
         ["source_site", "ALTER TABLE search_tasks ADD COLUMN source_site TEXT"],
         ["product_url", "ALTER TABLE search_tasks ADD COLUMN product_url TEXT"],
+        ["product_url_key", "ALTER TABLE search_tasks ADD COLUMN product_url_key TEXT"],
         ["images_json", "ALTER TABLE search_tasks ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(images_json))"],
         ["selected_image_id", "ALTER TABLE search_tasks ADD COLUMN selected_image_id TEXT"],
         ["selected_image_url", "ALTER TABLE search_tasks ADD COLUMN selected_image_url TEXT"],
+        ["archived_at", "ALTER TABLE search_tasks ADD COLUMN archived_at TEXT"],
+        ["deleted_at", "ALTER TABLE search_tasks ADD COLUMN deleted_at TEXT"],
       ] as const;
       for (const [name, sql] of additions) if (!existing.has(name)) await env.DB.prepare(sql).run();
       await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_tasks_user_updated ON search_tasks(user_id, updated_at DESC)").run();
       await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_tasks_user_product_title ON search_tasks(user_id, product_title)").run();
+      await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_search_tasks_user_lifecycle ON search_tasks(user_id, deleted_at, archived_at, updated_at DESC)").run();
+
+      // Backfill the URL key in JavaScript so legacy rows get the same
+      // canonicalization as newly created tasks. If old data contains
+      // duplicates, keep the newest task indexed and leave older keys null;
+      // the application still reports those legacy URLs as duplicates.
+      const legacyUrls = await env.DB.prepare(
+        `SELECT id, user_id AS userId, product_url AS productUrl, product_url_key AS productUrlKey,
+                updated_at AS updatedAt, created_at AS createdAt
+           FROM search_tasks
+          WHERE product_url IS NOT NULL AND trim(product_url) <> ''
+          ORDER BY user_id, updated_at DESC, created_at DESC, id DESC`,
+      ).all<JsonRow>();
+      await env.DB.prepare("DROP INDEX IF EXISTS idx_search_tasks_user_product_url_key").run();
+      const seenUrlKeys = new Set<string>();
+      const keyUpdates = legacyUrls.results.flatMap((row) => {
+        const key = normalizeTaskUrl(typeof row.productUrl === "string" ? row.productUrl : null);
+        if (!key || seenUrlKeys.has(`${row.userId}:${key}`)) {
+          return [env.DB.prepare("UPDATE search_tasks SET product_url_key = NULL WHERE id = ?").bind(row.id)];
+        }
+        seenUrlKeys.add(`${row.userId}:${key}`);
+        if (row.productUrlKey === key) return [];
+        return [env.DB.prepare("UPDATE search_tasks SET product_url_key = ? WHERE id = ?").bind(key, row.id)];
+      });
+      if (keyUpdates.length) await env.DB.batch(keyUpdates);
+      await env.DB.prepare(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_search_tasks_user_product_url_key ON search_tasks(user_id, product_url_key) WHERE product_url_key IS NOT NULL",
+      ).run();
       await env.DB.batch([
         env.DB.prepare(
           `CREATE TABLE IF NOT EXISTS search_task_runs (
@@ -1154,9 +1223,14 @@ export async function getProductImage(
 export async function dashboardSummary(env: Env, viewer?: ProductViewer): Promise<JsonRow> {
   await ensureSearchTasksSchema(env);
   const isAdmin = viewer?.role === "admin";
-  const taskScope = isAdmin ? "" : " WHERE st.user_id = ?";
+  const taskScope = isAdmin
+    ? " WHERE st.archived_at IS NULL AND st.deleted_at IS NULL"
+    : " WHERE st.user_id = ? AND st.archived_at IS NULL AND st.deleted_at IS NULL";
   const taskBindings = isAdmin ? [] : [viewer?.id ?? ""];
-  const storeScope = isAdmin ? "" : " WHERE owner_user_id = ?";
+  if (!isAdmin) await ensureShopifyStoreBindingsSchema(env);
+  const storeScope = isAdmin
+    ? ""
+    : " WHERE EXISTS (SELECT 1 FROM shopify_store_bindings sb WHERE sb.store_id = shopify_stores.id AND sb.user_id = ?)";
   const storeBindings = isAdmin ? [] : [viewer?.id ?? ""];
   const [taskCountResult, storeCountResult, userCountResult, recentResult] = await env.DB.batch<JsonRow>([
     env.DB.prepare(
@@ -1215,6 +1289,7 @@ const searchTaskSelect = `SELECT id, client_id AS clientId, name, status, source
         product_title AS productTitle, description, sku, source_site AS sourceSite,
         product_url AS productUrl, images_json AS images, selected_image_id AS selectedImageId,
         selected_image_url AS selectedImageUrl,
+        archived_at AS archivedAt, deleted_at AS deletedAt,
         created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt
    FROM search_tasks`;
 
@@ -1319,37 +1394,142 @@ async function hydrateSearchTasks(env: Env, rows: JsonRow[]): Promise<JsonRow[]>
   });
 }
 
+type SearchTaskUrlRecord = {
+  id: string;
+  name: string;
+  productUrl: string | null;
+  archivedAt: string | null;
+  deletedAt: string | null;
+};
+
+async function listSearchTaskUrlRecords(env: Env, userId: string): Promise<SearchTaskUrlRecord[]> {
+  const result = await env.DB.prepare(
+    `SELECT id, name, product_url AS productUrl, archived_at AS archivedAt, deleted_at AS deletedAt
+       FROM search_tasks
+      WHERE user_id = ? AND product_url IS NOT NULL AND trim(product_url) <> ''`,
+  ).bind(userId).all<SearchTaskUrlRecord>();
+  return result.results;
+}
+
+function duplicateTaskUrlError(input: SearchTaskSyncInput, existing: SearchTaskUrlRecord): ApiError {
+  return new ApiError(409, "该用户已存在相同商品 URL 的采集任务", "search_task_duplicate_url", {
+    productUrl: input.productUrl ?? null,
+    existingTaskId: existing.id,
+    existingTaskName: existing.name,
+    existingTaskArchived: Boolean(existing.archivedAt),
+    existingTaskDeleted: Boolean(existing.deletedAt),
+  });
+}
+
 export async function upsertSearchTask(env: Env, userId: string, input: SearchTaskSyncInput): Promise<JsonRow> {
   await ensureSearchTasksSchema(env);
+  const normalizedUrl = normalizeTaskUrl(input.productUrl);
+  if (input.productUrl && !normalizedUrl) {
+    throw new ApiError(422, "商品 URL 必须是 HTTP(S) 地址", "search_task_product_url_invalid");
+  }
+  if (normalizedUrl) {
+    const existing = (await listSearchTaskUrlRecords(env, userId))
+      .find((row) => normalizeTaskUrl(row.productUrl) === normalizedUrl);
+    if (existing) throw duplicateTaskUrlError(input, existing);
+  }
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   const firstImageUrl = input.images[0]?.url ?? null;
-  await env.DB.prepare(
+  let storageClientId = input.clientId;
+  const existingClient = await env.DB.prepare(
+    "SELECT id FROM search_tasks WHERE user_id = ? AND client_id = ?",
+  ).bind(userId, storageClientId).first<{ id: string }>();
+  if (existingClient) storageClientId = `${input.clientId.slice(0, 120)}:${crypto.randomUUID()}`.slice(0, 160);
+  const insert = (clientId: string) => env.DB.prepare(
     `INSERT INTO search_tasks
       (id, user_id, client_id, name, status, source_image_url, source_page, options_json,
        result_count, results_json, error, charged_credits, product_title, description, sku,
-       source_site, product_url, images_json, created_at, updated_at, completed_at)
-     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, 0, '[]', NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-     ON CONFLICT(user_id, client_id) DO UPDATE SET
-       name = excluded.name,
-       source_image_url = COALESCE(search_tasks.selected_image_url, excluded.source_image_url),
-       source_page = excluded.source_page,
-       options_json = excluded.options_json,
-       product_title = excluded.product_title,
-       description = excluded.description,
-       sku = excluded.sku,
-       source_site = excluded.source_site,
-       product_url = excluded.product_url,
-       images_json = excluded.images_json,
-       updated_at = excluded.updated_at`,
+       source_site, product_url, product_url_key, images_json, created_at, updated_at, completed_at)
+     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, 0, '[]', NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   ).bind(
-    id, userId, input.clientId, input.name, firstImageUrl, input.productUrl ?? null,
+    id, userId, clientId, input.name, firstImageUrl, normalizedUrl ?? input.productUrl ?? null,
     jsonText(input.options, {}), input.productTitle ?? null, input.description ?? null, input.sku ?? null,
-    input.sourceSite ?? null, input.productUrl ?? null, jsonText(input.images, []), now, now,
-  ).run();
-  const row = await env.DB.prepare(`${searchTaskSelect} WHERE user_id = ? AND client_id = ?`)
-    .bind(userId, input.clientId).first<JsonRow>();
+    input.sourceSite ?? null, normalizedUrl ?? input.productUrl ?? null, normalizedUrl,
+    jsonText(input.images, []), now, now,
+  );
+  try {
+    await insert(storageClientId).run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/product_url_key|idx_search_tasks_user_product_url_key/iu.test(message)) {
+      const existing = normalizedUrl
+        ? (await listSearchTaskUrlRecords(env, userId)).find((row) => normalizeTaskUrl(row.productUrl) === normalizedUrl)
+        : null;
+      if (existing) throw duplicateTaskUrlError(input, existing);
+    }
+    if (/client_id|idx_search_tasks_user_client/iu.test(message) && storageClientId === input.clientId) {
+      storageClientId = `${input.clientId.slice(0, 120)}:${crypto.randomUUID()}`.slice(0, 160);
+      await insert(storageClientId).run();
+    } else {
+      throw error;
+    }
+  }
+  const row = await env.DB.prepare(`${searchTaskSelect} WHERE user_id = ? AND id = ?`)
+    .bind(userId, id).first<JsonRow>();
   return (await hydrateSearchTasks(env, row ? [row] : []))[0] ?? {};
+}
+
+export async function upsertSearchTasksBatch(env: Env, userId: string, inputs: SearchTaskSyncInput[]): Promise<{
+  createdCount: number;
+  updatedCount: number;
+  results: Array<{ index: number; clientId: string; taskId: string; status: "created" }>;
+  failures: Array<{ index: number; clientId: string; code: string; message: string; details?: unknown }>;
+}> {
+  await ensureSearchTasksSchema(env);
+  if (!inputs.length) return { createdCount: 0, updatedCount: 0, results: [], failures: [] };
+
+  const existingUrls = await listSearchTaskUrlRecords(env, userId);
+  const existingByUrl = new Map<string, SearchTaskUrlRecord>();
+  for (const row of existingUrls) {
+    const key = normalizeTaskUrl(row.productUrl);
+    if (key && !existingByUrl.has(key)) existingByUrl.set(key, row);
+  }
+  const results: Array<{ index: number; clientId: string; taskId: string; status: "created" }> = [];
+  const failures: Array<{ index: number; clientId: string; code: string; message: string; details?: unknown }> = [];
+  let createdCount = 0;
+
+  for (const [index, input] of inputs.entries()) {
+    const normalizedUrl = normalizeTaskUrl(input.productUrl);
+    const existing = normalizedUrl ? existingByUrl.get(normalizedUrl) : undefined;
+    if (existing) {
+      failures.push({
+        index,
+        clientId: input.clientId,
+        code: "search_task_duplicate_url",
+        message: duplicateTaskUrlError(input, existing).message,
+        details: duplicateTaskUrlError(input, existing).details,
+      });
+      continue;
+    }
+    try {
+      const task = await upsertSearchTask(env, userId, input);
+      const taskId = typeof task.id === "string" ? task.id : "";
+      results.push({ index, clientId: input.clientId, taskId, status: "created" });
+      createdCount += 1;
+      if (normalizedUrl) existingByUrl.set(normalizedUrl, {
+        id: taskId,
+        name: input.name,
+        productUrl: input.productUrl ?? null,
+        archivedAt: null,
+        deletedAt: null,
+      });
+    } catch (error) {
+      failures.push({
+        index,
+        clientId: input.clientId,
+        code: error instanceof ApiError ? error.code : "task_write_failed",
+        message: error instanceof Error ? error.message : String(error),
+        details: error instanceof ApiError ? error.details : undefined,
+      });
+    }
+  }
+
+  return { createdCount, updatedCount: 0, results, failures };
 }
 
 export async function listSearchTasks(env: Env, userId: string, query: SearchTaskListQuery): Promise<{
@@ -1361,6 +1541,9 @@ export async function listSearchTasks(env: Env, userId: string, query: SearchTas
   await ensureSearchTasksSchema(env);
   const where = ["user_id = ?"];
   const bindings: unknown[] = [userId];
+  if (query.lifecycle === "active") where.push("archived_at IS NULL AND deleted_at IS NULL");
+  if (query.lifecycle === "archived") where.push("archived_at IS NOT NULL AND deleted_at IS NULL");
+  if (query.lifecycle === "deleted") where.push("deleted_at IS NOT NULL");
   if (query.status === "unqueried") where.push("NOT EXISTS (SELECT 1 FROM search_task_runs WHERE task_id = search_tasks.id AND status = 'completed') AND NOT EXISTS (SELECT 1 FROM search_task_imports WHERE task_id = search_tasks.id)");
   if (query.status === "queried") where.push("EXISTS (SELECT 1 FROM search_task_runs WHERE task_id = search_tasks.id AND status = 'completed') AND NOT EXISTS (SELECT 1 FROM search_task_imports WHERE task_id = search_tasks.id)");
   if (query.status === "imported") where.push("EXISTS (SELECT 1 FROM search_task_imports WHERE task_id = search_tasks.id)");
@@ -1397,6 +1580,34 @@ export async function getSearchTask(env: Env, userId: string, taskId: string): P
   const row = await env.DB.prepare(`${searchTaskSelect} WHERE id = ? AND user_id = ?`)
     .bind(taskId, userId).first<JsonRow>();
   return row ? (await hydrateSearchTasks(env, [row]))[0] ?? null : null;
+}
+
+export async function updateSearchTaskLifecycle(
+  env: Env,
+  userId: string,
+  taskId: string,
+  input: SearchTaskLifecycleUpdate,
+): Promise<JsonRow | null> {
+  await ensureSearchTasksSchema(env);
+  const current = await env.DB.prepare(
+    "SELECT archived_at AS archivedAt, deleted_at AS deletedAt FROM search_tasks WHERE id = ? AND user_id = ?",
+  ).bind(taskId, userId).first<{ archivedAt: string | null; deletedAt: string | null }>();
+  if (!current) return null;
+  const now = new Date().toISOString();
+  const deleted = input.deleted === undefined ? current.deletedAt : input.deleted ? now : null;
+  const archived = deleted
+    ? null
+    : input.archived === undefined
+      ? current.archivedAt
+      : input.archived
+        ? now
+        : null;
+  await env.DB.prepare(
+    `UPDATE search_tasks
+        SET archived_at = ?, deleted_at = ?, updated_at = ?
+      WHERE id = ? AND user_id = ?`,
+  ).bind(archived, deleted, now, taskId, userId).run();
+  return getSearchTask(env, userId, taskId);
 }
 
 export async function startSearchTask(
@@ -1517,8 +1728,12 @@ export async function recordCollectionTaskImports(
 
 export async function deleteSearchTask(env: Env, userId: string, taskId: string): Promise<boolean> {
   await ensureSearchTasksSchema(env);
-  const result = await env.DB.prepare("DELETE FROM search_tasks WHERE id = ? AND user_id = ?")
-    .bind(taskId, userId).run();
+  const result = await env.DB.prepare(
+    `UPDATE search_tasks
+        SET archived_at = NULL, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+  ).bind(taskId, userId).run();
   return result.meta.changes === 1;
 }
 
@@ -1888,12 +2103,13 @@ export async function addUploadedImage(
 export async function listUsers(env: Env): Promise<JsonRow[]> {
   const result = await env.DB.prepare(
     `SELECT u.id, u.username, u.display_name AS displayName, u.email, u.avatar_url AS avatarUrl,
-            u.auth_provider AS authProvider, u.role, w.balance AS credits, u.is_active AS isActive,
+            u.auth_provider AS authProvider, (u.password_hash <> '') AS hasPassword, u.role,
+            w.balance AS credits, u.is_active AS isActive,
             u.created_at AS createdAt, u.updated_at AS updatedAt, u.last_login_at AS lastLoginAt
        FROM users u JOIN credit_wallets w ON w.user_id = u.id
        ORDER BY u.is_active DESC, u.created_at`,
   ).all<JsonRow>();
-  return result.results.map((row) => ({ ...row, isActive: row.isActive === 1 }));
+  return result.results.map((row) => ({ ...row, isActive: row.isActive === 1, hasPassword: row.hasPassword === 1 }));
 }
 
 export async function patchUser(

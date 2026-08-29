@@ -5,6 +5,7 @@ import {
   clearSessionCookie,
   createSession,
   enforceLoginRateLimit,
+  getUserCredential,
   getLoginUser,
   hashPassword,
   insertUser,
@@ -54,7 +55,9 @@ import {
   recordCollectionTaskImports,
   listSearchTasks,
   startSearchTask,
+  updateSearchTaskLifecycle,
   upsertSearchTask,
+  upsertSearchTasksBatch,
   removeOfferLink,
   upsertOfferLink,
   upsertProduct,
@@ -101,6 +104,9 @@ import {
   imageSearchSchema,
   googleSettingsSchema,
   searchTaskSyncSchema,
+  selfPasswordChangeSchema,
+  collectionTaskBatchItemSchema,
+  collectionTaskBatchSchema,
   collectionTaskImportSchema,
   searchTaskRunSchema,
   aiSettingsUpdateSchema,
@@ -117,8 +123,10 @@ import {
   shopifyImageJobCreateSchema,
   shopifyImageJobUpdateSchema,
   shopifyProductTranslationPublishSchema,
+  searchTaskLifecycleUpdateSchema,
 } from "./validation";
-import type { CollectionTaskImportInput, SearchTaskRunInput } from "./validation";
+import type { CollectionTaskBatchItemInput, CollectionTaskImportInput, SearchTaskRunInput, SearchTaskSyncInput } from "./validation";
+import { normalizeTaskUrl } from "./task-url";
 
 function methodNotAllowed(allowed: string[]): Response {
   return json(
@@ -162,7 +170,7 @@ function withPublicCors(request: Request, response: Response, env: Env): Respons
     "access-control-allow-headers",
     "content-type, x-mailshop-client, x-mailshop-session, x-mailshop-extension-id",
   );
-  corsResponse.headers.set("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
+  corsResponse.headers.set("access-control-allow-methods", "GET, POST, PATCH, DELETE, OPTIONS");
   corsResponse.headers.set("access-control-allow-credentials", "true");
   corsResponse.headers.set("access-control-max-age", "86400");
   return corsResponse;
@@ -251,6 +259,8 @@ async function executeSearchTask(
 ): Promise<{ task: Record<string, unknown> | null; credits: { balance: number; charged: number } }> {
   const task = await getSearchTask(env, userId, taskId);
   if (!task) throw new ApiError(404, "任务不存在", "search_task_not_found");
+  if (task.deletedAt) throw new ApiError(410, "任务已删除，无法继续搜图", "search_task_deleted");
+  if (task.archivedAt) throw new ApiError(409, "任务已归档，请先取消归档后再搜图", "search_task_archived");
   const image = taskImage(task, input.imageId);
   if (!image) throw new ApiError(422, "所选图片不属于该任务", "search_task_image_not_found");
   const { imageId, ...options } = input;
@@ -297,6 +307,8 @@ async function importCollectionTaskResults(
 ) {
   const task = await getSearchTask(env, userId, taskId);
   if (!task) throw new ApiError(404, "采集任务不存在", "collection_task_not_found");
+  if (task.deletedAt) throw new ApiError(410, "任务已删除，无法导入结果", "collection_task_deleted");
+  if (task.archivedAt) throw new ApiError(409, "任务已归档，请先取消归档后再导入结果", "collection_task_archived");
   const runs = Array.isArray(task.runs)
     ? task.runs.filter((run): run is Record<string, unknown> => Boolean(run && typeof run === "object" && !Array.isArray(run)))
     : [];
@@ -341,6 +353,211 @@ async function importCollectionTaskResults(
     task: await getSearchTask(env, userId, taskId),
     offerIds,
   };
+}
+
+function batchValidationDetails(error: { issues: ReadonlyArray<{ path: ReadonlyArray<unknown>; message: string }> }) {
+  return error.issues.map((issue) => ({
+    path: issue.path.map((part) => String(part)).join("."),
+    message: issue.message,
+  }));
+}
+
+function normalizeBatchRecord(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const value = raw as Record<string, unknown>;
+  const imagesValue = value.images ?? value.imageUrls ?? value.image_urls;
+  const images = typeof imagesValue === "string"
+    ? imagesValue.split("|").map((image) => image.trim()).filter(Boolean)
+    : imagesValue;
+  return {
+    ...value,
+    clientId: value.clientId ?? value.client_id,
+    name: value.name,
+    productTitle: value.productTitle ?? value.product_title ?? value.title,
+    description: value.description,
+    sku: value.sku,
+    sourceSite: value.sourceSite ?? value.source_site,
+    productUrl: value.productUrl ?? value.product_url ?? value.sourcePage ?? value.source_page,
+    sourceImageUrl: value.sourceImageUrl ?? value.source_image_url,
+    images,
+  };
+}
+
+function normalizeBatchImage(image: CollectionTaskBatchItemInput["images"][number], index: number) {
+  if (typeof image === "string") {
+    return {
+      id: `image-${index + 1}`,
+      url: image,
+      width: 0,
+      height: 0,
+      alt: "",
+      title: "",
+      source: "manual-import",
+    };
+  }
+  return {
+    ...image,
+    id: image.id || `image-${index + 1}`,
+    source: image.source || "manual-import",
+  };
+}
+
+function stableBatchClientId(input: CollectionTaskBatchItemInput, productTitle: string, sourceSite: string): string {
+  if (input.clientId?.trim()) return input.clientId.trim();
+  const seed = input.productUrl || input.sku || productTitle;
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < seed.length; index += 1) {
+    const code = seed.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ code, 0x85ebca6b);
+  }
+  const digest = `${(first >>> 0).toString(16).padStart(8, "0")}${(second >>> 0).toString(16).padStart(8, "0")}`;
+  return `manual:${digest}:${sourceSite}`.slice(0, 160);
+}
+
+function normalizeBatchItem(input: CollectionTaskBatchItemInput): SearchTaskSyncInput {
+  const productTitle = (input.productTitle || input.name || "").trim();
+  const name = (input.name || productTitle).trim().slice(0, 120);
+  const seenImages = new Set<string>();
+  const images = input.images
+    .map((image, imageIndex) => normalizeBatchImage(image, imageIndex))
+    .filter((image) => {
+      if (seenImages.has(image.url)) return false;
+      seenImages.add(image.url);
+      return true;
+    });
+  if (!images.length && input.sourceImageUrl) {
+    images.push(normalizeBatchImage(input.sourceImageUrl, 0));
+  }
+  const sourceSite = input.sourceSite?.trim() || new URL(input.productUrl).hostname;
+  const normalizedProductUrl = normalizeTaskUrl(input.productUrl);
+  if (!normalizedProductUrl) throw new ApiError(422, "商品 URL 必须是 HTTP(S) 地址", "search_task_product_url_invalid");
+  const clientId = stableBatchClientId(input, productTitle, sourceSite);
+  return searchTaskSyncSchema.parse({
+    clientId,
+    name,
+    productTitle: productTitle || name,
+    description: input.description ?? null,
+    sku: input.sku ?? null,
+    sourceSite,
+    productUrl: normalizedProductUrl,
+    images,
+    options: input.options,
+  });
+}
+
+async function handleCollectionTaskBatch(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  user: SessionUser,
+): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed(["POST"]);
+  const payload = await readJson(request, collectionTaskBatchSchema);
+  const results: Array<{
+    index: number;
+    clientId?: string;
+    status: "created" | "updated" | "failed";
+    taskId?: string;
+    error?: { code: string; message: string; details?: unknown };
+  }> = [];
+  const validEntries: Array<{ index: number; input: SearchTaskSyncInput }> = [];
+  const seenProductUrls = new Map<string, number>();
+
+  payload.items.forEach((raw, index) => {
+    const parsed = collectionTaskBatchItemSchema.safeParse(normalizeBatchRecord(raw));
+    if (!parsed.success) {
+      const rawRecord = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+      const rawClientId = rawRecord?.clientId ?? rawRecord?.client_id;
+      results.push({
+        index,
+        clientId: typeof rawClientId === "string" && rawClientId.trim() ? rawClientId.trim() : undefined,
+        status: "failed",
+        error: {
+          code: "validation_error",
+          message: "商品资料校验失败",
+          details: batchValidationDetails(parsed.error),
+        },
+      });
+      return;
+    }
+
+    try {
+      const input = normalizeBatchItem(parsed.data);
+      const productUrlKey = normalizeTaskUrl(input.productUrl);
+      if (productUrlKey) {
+        const firstIndex = seenProductUrls.get(productUrlKey);
+        if (firstIndex !== undefined) {
+          results.push({
+            index,
+            clientId: input.clientId,
+            status: "failed",
+            error: {
+              code: "search_task_duplicate_url",
+              message: `商品 URL 与第 ${firstIndex + 1} 行重复`,
+              details: { productUrl: input.productUrl, duplicateOfIndex: firstIndex },
+            },
+          });
+          return;
+        }
+        seenProductUrls.set(productUrlKey, index);
+      }
+      validEntries.push({ index, input });
+    } catch (error) {
+      results.push({
+        index,
+        clientId: parsed.data.clientId,
+        status: "failed",
+        error: {
+          code: "normalization_error",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  });
+
+  const written = await upsertSearchTasksBatch(env, user.id, validEntries.map((entry) => entry.input));
+  const writtenByIndex = new Map(written.results.map((item) => [item.index, item]));
+  const failureByIndex = new Map(written.failures.map((item) => [item.index, item]));
+  for (const entry of validEntries) {
+    const writtenIndex = validEntries.indexOf(entry);
+    const success = writtenByIndex.get(writtenIndex);
+    if (success) {
+      results.push({ index: entry.index, clientId: success.clientId, status: success.status, taskId: success.taskId });
+      continue;
+    }
+    results.push({
+      index: entry.index,
+      clientId: entry.input.clientId,
+      status: "failed",
+      error: {
+        code: failureByIndex.get(writtenIndex)?.code ?? "task_write_failed",
+        message: failureByIndex.get(writtenIndex)?.message ?? "任务写入失败",
+        details: failureByIndex.get(writtenIndex)?.details,
+      },
+    });
+  }
+
+  results.sort((left, right) => left.index - right.index);
+  const failedCount = results.filter((item) => item.status === "failed").length;
+  ctx.waitUntil(recordAudit(request, env, user.id, "collection_task.batch_import", "collection_task", null, {
+    source: "manual_file",
+    total: payload.items.length,
+    created: written.createdCount,
+    updated: written.updatedCount,
+    failed: failedCount,
+  }));
+  return json({
+    ok: true,
+    created: written.createdCount,
+    updated: written.updatedCount,
+    failed: failedCount,
+    createdCount: written.createdCount,
+    updatedCount: written.updatedCount,
+    failedCount,
+    results,
+  });
 }
 
 async function handlePublicExtensionAccount(request: Request, env: Env): Promise<Response> {
@@ -437,6 +654,12 @@ async function handlePublicExtensionTasks(request: Request, env: Env, ctx: Execu
 
   const taskRoute = url.pathname.match(/^\/api\/public\/extension\/(?:collection-tasks|tasks)\/([0-9a-f-]{36})$/iu);
   if (taskRoute) {
+    if (request.method === "PATCH") {
+      const input = await readJson(request, searchTaskLifecycleUpdateSchema);
+      const task = await updateSearchTaskLifecycle(env, user.id, taskRoute[1], input);
+      if (!task) throw new ApiError(404, "任务不存在", "search_task_not_found");
+      return json({ ok: true, task: extensionSearchTask(task) });
+    }
     if (request.method !== "DELETE") return methodNotAllowed(["DELETE", "OPTIONS"]);
     if (!(await deleteSearchTask(env, user.id, taskRoute[1]))) {
       throw new ApiError(404, "任务不存在", "search_task_not_found");
@@ -637,10 +860,12 @@ async function handleLogin(request: Request, env: Env, ctx: ExecutionContext): P
         id: user.id,
         username: user.username,
         displayName: user.display_name,
-        email: null,
-        avatarUrl: null,
+        email: user.email,
+        avatarUrl: user.avatar_url,
         credits: await getCreditBalance(env, user.id),
         role: user.role,
+        authProvider: user.auth_provider,
+        hasPassword: Boolean(user.password_hash),
       },
       expiresAt: session.expiresAt,
     },
@@ -673,6 +898,8 @@ async function handleBootstrap(request: Request, env: Env): Promise<Response> {
         avatarUrl: null,
         credits: await getCreditBalance(env, userId),
         role: "admin",
+        authProvider: "password",
+        hasPassword: true,
       },
     },
     201,
@@ -793,6 +1020,22 @@ async function handleAuthenticatedApi(
   if (url.pathname === "/api/auth/me") {
     return request.method === "GET" ? json({ ok: true, user }) : methodNotAllowed(["GET"]);
   }
+  if (url.pathname === "/api/auth/password") {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const input = await readJson(request, selfPasswordChangeSchema);
+    const credential = await getUserCredential(env, user.id);
+    if (!credential || credential.is_active !== 1) {
+      throw new ApiError(401, "账号不可用", "account_unavailable");
+    }
+    if (credential.password_hash) {
+      if (!input.currentPassword || !(await verifyPassword(input.currentPassword, credential))) {
+        throw new ApiError(422, "当前密码不正确", "current_password_invalid");
+      }
+    }
+    await replacePassword(env, user.id, input.password);
+    ctx.waitUntil(recordAudit(request, env, user.id, "auth.password_change", "user", user.id));
+    return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
+  }
   if (url.pathname === "/api/credits") {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
     return json({ ok: true, credits: { balance: await getCreditBalance(env, user.id), transactions: await listCreditTransactions(env, user.id) } });
@@ -818,6 +1061,27 @@ async function handleAuthenticatedApi(
     return request.method === "GET"
       ? json({ ok: true, summary: await dashboardSummary(env, user) })
       : methodNotAllowed(["GET"]);
+  }
+  if (["/api/collection-tasks/batch", "/api/search-tasks/batch"].includes(url.pathname)) {
+    return handleCollectionTaskBatch(request, env, ctx, user);
+  }
+  const collectionTaskResource = url.pathname.match(/^\/api\/(?:collection-tasks|search-tasks)\/([0-9a-f-]{36})$/iu);
+  if (collectionTaskResource) {
+    if (request.method === "PATCH") {
+      const input = await readJson(request, searchTaskLifecycleUpdateSchema);
+      const task = await updateSearchTaskLifecycle(env, user.id, collectionTaskResource[1], input);
+      if (!task) throw new ApiError(404, "任务不存在", "search_task_not_found");
+      ctx.waitUntil(recordAudit(request, env, user.id, input.deleted !== undefined ? "collection_task.delete.update" : "collection_task.archive", "collection_task", collectionTaskResource[1], input));
+      return json({ ok: true, task });
+    }
+    if (request.method === "DELETE") {
+      if (!(await deleteSearchTask(env, user.id, collectionTaskResource[1]))) {
+        throw new ApiError(404, "任务不存在", "search_task_not_found");
+      }
+      ctx.waitUntil(recordAudit(request, env, user.id, "collection_task.delete", "collection_task", collectionTaskResource[1]));
+      return json({ ok: true, deleted: true });
+    }
+    return methodNotAllowed(["PATCH", "DELETE"]);
   }
   if (["/api/collection-tasks", "/api/search-tasks"].includes(url.pathname)) {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);

@@ -735,6 +735,24 @@ async function ensureShopifySchema(env: Env): Promise<void> {
           WHERE owner_user_id IS NULL`,
       ).run();
       await env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS shopify_store_bindings (
+          store_id TEXT NOT NULL REFERENCES shopify_stores(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          client_id_ciphertext TEXT,
+          client_secret_ciphertext TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          PRIMARY KEY (store_id, user_id)
+        )`,
+      ).run();
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO shopify_store_bindings
+          (store_id, user_id, client_id_ciphertext, client_secret_ciphertext)
+         SELECT id, owner_user_id, client_id_ciphertext, client_secret_ciphertext
+           FROM shopify_stores
+          WHERE owner_user_id IS NOT NULL`,
+      ).run();
+      await env.DB.prepare(
         `CREATE TABLE IF NOT EXISTS shopify_product_publications (
           id TEXT PRIMARY KEY,
           store_id TEXT NOT NULL REFERENCES shopify_stores(id) ON DELETE CASCADE,
@@ -754,6 +772,9 @@ async function ensureShopifySchema(env: Env): Promise<void> {
       ).run();
       await env.DB.prepare(
         "CREATE INDEX IF NOT EXISTS idx_shopify_stores_owner ON shopify_stores(owner_user_id, updated_at DESC)",
+      ).run();
+      await env.DB.prepare(
+        "CREATE INDEX IF NOT EXISTS idx_shopify_store_bindings_user ON shopify_store_bindings(user_id, updated_at DESC)",
       ).run();
     })().catch((error) => {
       shopifySchemaReady = null;
@@ -795,10 +816,16 @@ function toSummary(store: ShopifyStoreRow, credentials: { clientId: string; clie
 async function getStoreRow(env: Env, storeId: string, userId: string): Promise<ShopifyStoreRow> {
   await ensureShopifySchema(env);
   const store = await env.DB.prepare(
-    `SELECT id, owner_user_id, shop_domain, display_name, status, api_version,
-            client_id_ciphertext, client_secret_ciphertext, last_verified_at, last_error, updated_at
-       FROM shopify_stores WHERE id = ? AND owner_user_id = ?`,
-  ).bind(storeId, userId).first<ShopifyStoreRow>();
+    `SELECT s.id, s.owner_user_id, s.shop_domain, s.display_name, s.status, s.api_version,
+            COALESCE(b.client_id_ciphertext, s.client_id_ciphertext) AS client_id_ciphertext,
+            COALESCE(b.client_secret_ciphertext, s.client_secret_ciphertext) AS client_secret_ciphertext,
+            s.last_verified_at, s.last_error, s.updated_at
+       FROM shopify_stores s
+       LEFT JOIN shopify_store_bindings b
+         ON b.store_id = s.id AND b.user_id = ?
+      WHERE s.id = ?
+        AND (s.owner_user_id = ? OR b.user_id IS NOT NULL)`,
+  ).bind(userId, storeId, userId).first<ShopifyStoreRow>();
   if (!store) throw new ApiError(404, "Shopify 店铺不存在或不属于当前用户", "shopify_store_not_found");
   return store;
 }
@@ -824,19 +851,22 @@ async function updateStoreHealth(env: Env, storeId: string, status: ShopifyStore
   ).bind(status, error, verified ? 1 : 0, storeId).run();
 }
 
-async function adoptCanonicalShopDomain(env: Env, userId: string, store: ShopifyStoreRow, canonicalDomain: string): Promise<void> {
+async function adoptCanonicalShopDomain(env: Env, store: ShopifyStoreRow, canonicalDomain: string): Promise<void> {
   if (canonicalDomain === store.shop_domain) return;
   const conflict = await env.DB.prepare("SELECT id FROM shopify_stores WHERE shop_domain = ? AND id <> ?")
     .bind(canonicalDomain, store.id)
     .first<{ id: string }>();
   if (conflict) {
-    throw new ApiError(409, `Shopify 返回的规范域名 ${canonicalDomain} 已被其他店铺配置使用`, "shopify_canonical_domain_conflict");
+    // Multiple bindings may point to the same Shopify shop. Keep this
+    // binding's working endpoint when another legacy record already owns the
+    // canonical domain instead of rejecting an otherwise successful test.
+    return;
   }
   const result = await env.DB.prepare(
     `UPDATE shopify_stores
         SET shop_domain = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ? AND owner_user_id = ?`,
-  ).bind(canonicalDomain, store.id, userId).run();
+      WHERE id = ?`,
+  ).bind(canonicalDomain, store.id).run();
   if (!result.meta.changes) {
     throw new ApiError(404, "Shopify 店铺不存在或不属于当前用户", "shopify_store_not_found");
   }
@@ -1173,10 +1203,16 @@ async function recordPublication(env: Env, productId: string, storeId: string, v
 export async function getShopifySettings(env: Env, userId: string): Promise<{ stores: ShopifyStoreSummary[] }> {
   await ensureShopifySchema(env);
   const stores = await env.DB.prepare(
-    `SELECT id, owner_user_id, shop_domain, display_name, status, api_version,
-            client_id_ciphertext, client_secret_ciphertext, last_verified_at, last_error, updated_at
-       FROM shopify_stores WHERE owner_user_id = ? ORDER BY updated_at DESC`,
-  ).bind(userId).all<ShopifyStoreRow>();
+    `SELECT s.id, s.owner_user_id, s.shop_domain, s.display_name, s.status, s.api_version,
+            COALESCE(b.client_id_ciphertext, s.client_id_ciphertext) AS client_id_ciphertext,
+            COALESCE(b.client_secret_ciphertext, s.client_secret_ciphertext) AS client_secret_ciphertext,
+            s.last_verified_at, s.last_error, s.updated_at
+       FROM shopify_stores s
+       LEFT JOIN shopify_store_bindings b
+         ON b.store_id = s.id AND b.user_id = ?
+      WHERE s.owner_user_id = ? OR b.user_id IS NOT NULL
+      ORDER BY s.updated_at DESC`,
+  ).bind(userId, userId).all<ShopifyStoreRow>();
   const results = await Promise.all(stores.results.map(async (store) => {
     const credentials = store.client_id_ciphertext && store.client_secret_ciphertext
       ? {
@@ -1193,35 +1229,48 @@ export async function saveShopifySettings(env: Env, userId: string, input: Shopi
   await ensureShopifySchema(env);
   const shopDomain = normalizeShopDomain(input.shopDomain);
   const [clientId, clientSecret] = await Promise.all([encryptSetting(env, input.clientId), encryptSetting(env, input.clientSecret)]);
-  const existing = await env.DB.prepare("SELECT id, owner_user_id FROM shopify_stores WHERE shop_domain = ?").bind(shopDomain).first<{ id: string; owner_user_id: string | null }>();
-  if (existing && existing.owner_user_id !== userId) {
-    throw new ApiError(409, "这个 Shopify 店铺已被其他用户配置", "shopify_store_owned_by_other_user");
-  }
-  const id = existing?.id || crypto.randomUUID();
-  if (existing) {
-    await env.DB.prepare(
+  const scopes = JSON.stringify(["read_products", "write_products", "read_locales", "read_translations", "write_translations", "read_markets"]);
+  await env.DB.prepare(
+    `INSERT INTO shopify_stores
+       (id, owner_user_id, shop_domain, display_name, status, api_version, scopes_json, client_id_ciphertext, client_secret_ciphertext, last_error, updated_at)
+     VALUES (?, ?, ?, ?, 'planned', ?, ?, ?, ?, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+     ON CONFLICT(shop_domain) DO NOTHING`,
+  ).bind(crypto.randomUUID(), userId, shopDomain, input.displayName || null, SHOPIFY_API_VERSION, scopes, clientId, clientSecret).run();
+  const existing = await env.DB.prepare("SELECT id FROM shopify_stores WHERE shop_domain = ?").bind(shopDomain).first<{ id: string }>();
+  if (!existing) throw new ApiError(500, "Shopify 店铺保存失败", "shopify_store_save_failed");
+  const id = existing.id;
+  await env.DB.batch([
+    env.DB.prepare(
       `UPDATE shopify_stores
-          SET display_name = ?, status = 'planned', api_version = ?, scopes_json = ?,
-              client_id_ciphertext = ?, client_secret_ciphertext = ?, last_error = NULL,
+          SET display_name = ?, status = 'planned', api_version = ?, scopes_json = ?, last_error = NULL,
               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        WHERE id = ? AND owner_user_id = ?`,
-    ).bind(input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["read_products", "write_products", "read_locales", "read_translations", "write_translations", "read_markets"]), clientId, clientSecret, id, userId).run();
-  } else {
-    await env.DB.prepare(
-      `INSERT INTO shopify_stores
-         (id, owner_user_id, shop_domain, display_name, status, api_version, scopes_json, client_id_ciphertext, client_secret_ciphertext, last_error, updated_at)
-       VALUES (?, ?, ?, ?, 'planned', ?, ?, ?, ?, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
-    ).bind(id, userId, shopDomain, input.displayName || null, SHOPIFY_API_VERSION, JSON.stringify(["read_products", "write_products", "read_locales", "read_translations", "write_translations", "read_markets"]), clientId, clientSecret).run();
-  }
+        WHERE id = ?`,
+    ).bind(input.displayName || null, SHOPIFY_API_VERSION, scopes, id),
+    env.DB.prepare(
+      `INSERT INTO shopify_store_bindings
+        (store_id, user_id, client_id_ciphertext, client_secret_ciphertext)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(store_id, user_id) DO UPDATE SET
+         client_id_ciphertext = excluded.client_id_ciphertext,
+         client_secret_ciphertext = excluded.client_secret_ciphertext,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+    ).bind(id, userId, clientId, clientSecret),
+  ]);
   return toSummary(await getStoreRow(env, id, userId), { clientId: input.clientId, clientSecret: input.clientSecret });
 }
 
 export async function deleteShopifyStore(env: Env, userId: string, storeId: string): Promise<void> {
   await ensureShopifySchema(env);
-  const result = await env.DB.prepare("DELETE FROM shopify_stores WHERE id = ? AND owner_user_id = ?")
+  await getStoreRow(env, storeId, userId);
+  const binding = await env.DB.prepare("DELETE FROM shopify_store_bindings WHERE store_id = ? AND user_id = ?")
     .bind(storeId, userId)
     .run();
-  if (!result.meta.changes) {
+  const deletedStore = await env.DB.prepare(
+    `DELETE FROM shopify_stores
+      WHERE id = ?
+        AND NOT EXISTS (SELECT 1 FROM shopify_store_bindings WHERE store_id = ?)`,
+  ).bind(storeId, storeId).run();
+  if (!binding.meta.changes && !deletedStore.meta.changes) {
     throw new ApiError(404, "Shopify 店铺不存在或不属于当前用户", "shopify_store_not_found");
   }
 }
@@ -1236,7 +1285,7 @@ export async function testShopifyStore(env: Env, userId: string, storeId: string
     }
     const data = await graphql<{ shop: { name: string; myshopifyDomain: string } }>(store, token.accessToken, "query ShopHealth { shop { name myshopifyDomain } }", {});
     const canonicalDomain = normalizeShopDomain(data.shop.myshopifyDomain);
-    await adoptCanonicalShopDomain(env, userId, store, canonicalDomain);
+    await adoptCanonicalShopDomain(env, store, canonicalDomain);
     await updateStoreHealth(env, store.id, "active", null, true);
     return toSummary(await getStoreRow(env, store.id, userId), credentials);
   } catch (error) {

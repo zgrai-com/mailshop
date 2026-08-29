@@ -21,7 +21,10 @@ import {
   productListQuerySchema,
   searchTaskSyncSchema,
   searchTaskListQuerySchema,
+  collectionTaskBatchItemSchema,
+  collectionTaskBatchSchema,
   collectionTaskImportSchema,
+  selfPasswordChangeSchema,
 } from "./validation";
 
 describe("productInputSchema", () => {
@@ -109,11 +112,11 @@ describe("productListQuerySchema", () => {
 describe("searchTaskListQuerySchema", () => {
   it("normalizes task filters and pagination", () => {
     expect(searchTaskListQuerySchema.parse({ search: "  dress  ", status: "queried", page: "3", pageSize: "10" }))
-      .toEqual({ search: "dress", status: "queried", page: 3, pageSize: 10 });
+      .toEqual({ search: "dress", status: "queried", lifecycle: "active", page: 3, pageSize: 10 });
   });
 
   it("uses compact task-page defaults", () => {
-    expect(searchTaskListQuerySchema.parse({})).toEqual({ search: "", status: "all", page: 1, pageSize: 5 });
+    expect(searchTaskListQuerySchema.parse({})).toEqual({ search: "", status: "all", lifecycle: "active", page: 1, pageSize: 5 });
   });
 });
 
@@ -128,10 +131,47 @@ describe("collectionTaskImportSchema", () => {
   });
 });
 
+describe("collectionTaskBatchSchema", () => {
+  it("accepts a product row with URL and image data", () => {
+    const row = collectionTaskBatchItemSchema.parse({
+      clientId: "fehaute-17080419",
+      productTitle: "Champagne gown",
+      productUrl: "https://fehaute.com/products/champagne-gown",
+      images: ["https://fehaute.com/image/gown.jpg"],
+    });
+    expect(row.productTitle).toBe("Champagne gown");
+    expect(row.images).toHaveLength(1);
+    expect(collectionTaskBatchSchema.parse({ items: [row] }).items).toHaveLength(1);
+  });
+
+  it("allows a source image fallback but rejects rows without a title or image", () => {
+    expect(collectionTaskBatchItemSchema.parse({
+      name: "Fallback title",
+      productUrl: "https://example.com/products/fallback",
+      sourceImageUrl: "https://example.com/fallback.jpg",
+    }).images).toEqual([]);
+    expect(() => collectionTaskBatchItemSchema.parse({
+      productUrl: "https://example.com/products/missing",
+      images: [],
+    })).toThrow();
+  });
+});
+
 describe("oneboundSettingsSchema", () => {
   it("requires both OneBound credentials", () => {
     expect(oneboundSettingsSchema.parse({ key: "key-1", secret: "secret-1" })).toEqual({ key: "key-1", secret: "secret-1" });
     expect(() => oneboundSettingsSchema.parse({ key: "key-1", secret: "" })).toThrow();
+  });
+});
+
+describe("selfPasswordChangeSchema", () => {
+  it("allows a first password for a Google account without an old password", () => {
+    expect(selfPasswordChangeSchema.parse({ password: "NewPassword123!" })).toEqual({ password: "NewPassword123!" });
+  });
+
+  it("accepts an old password when changing an existing password", () => {
+    expect(selfPasswordChangeSchema.parse({ currentPassword: "OldPassword123!", password: "NewPassword123!" }).currentPassword)
+      .toBe("OldPassword123!");
   });
 });
 

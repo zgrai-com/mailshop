@@ -6,6 +6,7 @@ export type User = {
   avatarUrl?: string | null;
   credits: number;
   authProvider?: "password" | "google";
+  hasPassword?: boolean;
   role: "admin" | "user";
   isActive?: boolean;
   createdAt?: string;
@@ -294,9 +295,54 @@ export type SearchTask = {
   importedCount: number;
   error?: string | null;
   chargedCredits: number;
+  archivedAt?: string | null;
+  deletedAt?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt?: string | null;
+};
+
+export type SearchTaskLifecycle = "active" | "archived" | "deleted" | "all";
+
+export type CollectionTaskBatchImage = {
+  id: string;
+  url: string;
+  width?: number;
+  height?: number;
+  alt?: string;
+  title?: string;
+  source?: string;
+};
+
+export type CollectionTaskBatchItem = {
+  clientId?: string;
+  name?: string;
+  productTitle?: string | null;
+  description?: string | null;
+  sku?: string | null;
+  sourceSite?: string | null;
+  productUrl: string;
+  sourceImageUrl?: string | null;
+  images: CollectionTaskBatchImage[];
+  options?: Partial<SearchTaskOptions>;
+};
+
+export type CollectionTaskBatchResultItem = {
+  index: number;
+  clientId?: string;
+  status: "created" | "updated" | "failed";
+  taskId?: string;
+  error?: { code: string; message: string; details?: unknown };
+};
+
+export type CollectionTaskBatchResponse = {
+  created: number;
+  updated: number;
+  failed: number;
+  createdCount: number;
+  updatedCount: number;
+  failedCount: number;
+  results: CollectionTaskBatchResultItem[];
 };
 
 export type OneBoundSearchResult = {

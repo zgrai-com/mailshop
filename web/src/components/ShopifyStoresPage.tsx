@@ -48,7 +48,10 @@ export function ShopifyStoresPage({ stores, loading, saving, onSave, onTest, onD
   const [displayName, setDisplayName] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  const [testing, setTesting] = useState(false);
   const editingStore = stores.find((store) => store.id === editingStoreId) ?? null;
+  const canTestConnection = editorMode === "edit"
+    && Boolean(editingStoreId && editingStore?.configured && editingStore.clientId === clientId && editingStore.clientSecret === clientSecret);
 
   useEffect(() => {
     if (editorMode !== "edit") return;
@@ -62,6 +65,24 @@ export function ShopifyStoresPage({ stores, loading, saving, onSave, onTest, onD
     setClientId(editingStore.clientId ?? "");
     setClientSecret(editingStore.clientSecret ?? "");
   }, [editorMode, editingStore]);
+
+  useEffect(() => {
+    if (!editorMode) return;
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !saving) closeEditor();
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [editorMode, saving]);
+
+  useEffect(() => {
+    if (!editorMode) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [editorMode]);
 
   function startNewStore() {
     setEditorMode("new");
@@ -86,6 +107,16 @@ export function ShopifyStoresPage({ stores, loading, saving, onSave, onTest, onD
     setEditingStoreId(null);
   }
 
+  async function testEditingStore() {
+    if (!editingStoreId || !canTestConnection || testing) return;
+    setTesting(true);
+    try {
+      await onTest(editingStoreId);
+    } finally {
+      setTesting(false);
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await onSave(shopDomain, displayName, clientId, clientSecret);
@@ -100,13 +131,16 @@ export function ShopifyStoresPage({ stores, loading, saving, onSave, onTest, onD
 
   return (
     <section className="settings-view shopify-stores-view">
-      <header className="page-heading">
-        <div><span>SHOPIFY CHANNELS</span><h1>Shopify 店铺</h1><p>管理自己的 Shopify 店铺，并选择商品发布目标。</p></div>
-        <button className="button primary" type="button" onClick={startNewStore}><Plus size={17} />新增店铺</button>
+      <header className="page-heading shopify-stores-heading">
+        <div><span>SHOPIFY CHANNELS</span><h1>Shopify 店铺</h1><p>管理已绑定的 Shopify 店铺，并选择商品发布目标。</p></div>
+        <div className="shopify-stores-heading-actions">
+          <span>{stores.length ? `${stores.length} 个店铺` : "尚未连接店铺"}</span>
+          <button className="button primary" type="button" onClick={startNewStore}><Plus size={17} />新增店铺</button>
+        </div>
       </header>
 
       {loading ? <div className="page-loading settings-loading"><LoaderCircle className="spin" size={21} />加载店铺</div> : (
-        <div className={`shopify-store-sections ${editorMode ? "with-editor" : ""}`}>
+        <div className="shopify-store-sections">
           <section className="shopify-store-list-section">
             <header>
               <div><span className="settings-icon"><Store size={19} /></span><div><h2>店铺列表</h2><p>{stores.length} 个店铺连接</p></div></div>
@@ -135,30 +169,42 @@ export function ShopifyStoresPage({ stores, loading, saving, onSave, onTest, onD
             ))}</div> : <div className="shopify-empty-state"><Store size={24} /><strong>还没有 Shopify 店铺</strong><p>添加店铺并完成连接测试后，即可发布商品草稿。</p><button className="button primary" type="button" onClick={startNewStore}><Plus size={16} />添加第一个店铺</button></div>}
           </section>
 
-          {editorMode && <section className="shopify-store-editor">
-            <header>
-              <div><span className="settings-icon"><KeyRound size={19} /></span><div><span>SHOPIFY ADMIN API</span><h2>{editorMode === "new" ? "添加店铺" : "编辑店铺"}</h2></div></div>
-              <button className="icon-button" type="button" onClick={closeEditor} aria-label="关闭表单" title="关闭"><X size={18} /></button>
-            </header>
-            <form className="settings-form" onSubmit={submit}>
-              <p className="settings-help">填写 Shopify Dev Dashboard 应用的 Client ID 和 Client Secret。凭据在页面直接显示，在数据库中仍使用加密方式保存。</p>
+        </div>
+      )}
+
+      {editorMode && <div className="modal-backdrop shopify-store-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !saving && closeEditor()}>
+        <section className="modal shopify-store-modal" role="dialog" aria-modal="true" aria-labelledby="shopify-store-modal-title" aria-describedby="shopify-store-modal-description">
+          <header className="modal-header shopify-store-modal-header">
+            <div className="shopify-store-modal-title"><span className="settings-icon"><KeyRound size={18} /></span><div><span>SHOPIFY ADMIN API</span><h2 id="shopify-store-modal-title">{editorMode === "new" ? "添加店铺" : "编辑店铺"}</h2></div></div>
+            <button className="icon-button" type="button" onClick={closeEditor} disabled={saving} aria-label="关闭表单" title="关闭"><X size={18} /></button>
+          </header>
+          <form className="settings-form shopify-store-form" onSubmit={submit}>
+            <div id="shopify-store-modal-description" className="shopify-store-modal-intro"><span className="shopify-store-modal-intro-icon"><KeyRound size={16} /></span><p>填写 Shopify Dev Dashboard 应用的 Client ID 和 Client Secret。凭据在页面直接显示，在数据库中仍使用加密方式保存。</p></div>
+            <section className="shopify-store-form-section">
+              <div className="shopify-store-form-section-heading"><div><span>STORE DETAILS</span><strong>店铺信息</strong></div><small>用于识别和连接目标店铺</small></div>
               <div className="form-grid two-columns">
-                <label><span>店铺域名</span><input value={shopDomain} onChange={(event) => setShopDomain(event.target.value)} placeholder="example.myshopify.com" autoComplete="off" readOnly={editorMode === "edit"} required /></label>
+                <label><span>店铺域名</span><input value={shopDomain} onChange={(event) => setShopDomain(event.target.value)} placeholder="example.myshopify.com" autoComplete="off" readOnly={editorMode === "edit"} autoFocus required /></label>
                 <label><span>店铺名称</span><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="选填" autoComplete="off" /></label>
+              </div>
+            </section>
+            <section className="shopify-store-form-section">
+              <div className="shopify-store-form-section-heading"><div><span>APP CREDENTIALS</span><strong>应用凭据</strong></div><small>来自 Shopify Dev Dashboard</small></div>
+              <div className="form-grid two-columns">
                 <label><span>Client ID</span><input value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder="Shopify App Client ID" autoComplete="off" spellCheck={false} required /></label>
                 <label><span>Client Secret</span><input value={clientSecret} onChange={(event) => setClientSecret(event.target.value)} placeholder="Shopify App Client Secret" autoComplete="off" spellCheck={false} required /></label>
               </div>
-              <div className="settings-footer">
-                <span className="settings-meta">{editorMode === "edit" ? "店铺域名不可修改；如需更换域名，请新建店铺。" : "保存后请测试连接。"}</span>
-                <div className="settings-actions">
-                  <button className="button quiet" type="button" onClick={closeEditor} disabled={saving}>取消</button>
-                  <button className="button primary" type="submit" disabled={saving || !shopDomain.trim() || !clientId.trim() || !clientSecret.trim()}>{saving ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}{saving ? "保存中" : "保存店铺"}</button>
-                </div>
+            </section>
+            <div className="settings-footer">
+              <span className="settings-meta">{editorMode === "edit" ? "店铺域名不可修改；如需更换域名，请新建店铺。" : "保存后请测试连接。"}</span>
+              <div className="settings-actions">
+                <button className="button quiet" type="button" onClick={() => void testEditingStore()} disabled={saving || testing || !canTestConnection} title={editorMode === "new" ? "保存店铺后才能测试连接" : canTestConnection ? "测试当前店铺连接" : "请先保存最新凭据"}><RefreshCw className={testing ? "spin" : ""} size={16} />{testing ? "测试中" : "测试连接"}</button>
+                <button className="button quiet" type="button" onClick={closeEditor} disabled={saving}>取消</button>
+                <button className="button primary" type="submit" disabled={saving || !shopDomain.trim() || !clientId.trim() || !clientSecret.trim()}>{saving ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}{saving ? "保存中" : "保存店铺"}</button>
               </div>
-            </form>
-          </section>}
-        </div>
-      )}
+            </div>
+          </form>
+        </section>
+      </div>}
     </section>
   );
 }

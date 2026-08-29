@@ -14,7 +14,7 @@ export const productStatuses = [
 ] as const;
 
 export const loginSchema = z.object({
-  username: z.string().trim().min(2).max(64),
+  username: z.string().trim().min(2).max(255),
   password: z.string().min(8).max(256),
 });
 
@@ -309,6 +309,50 @@ export const searchTaskSyncSchema = z.object({
 
 export type SearchTaskSyncInput = z.infer<typeof searchTaskSyncSchema>;
 
+const collectionTaskBatchImageSchema = z.union([
+  extensionTaskImageSchema,
+  extensionTaskImageUrlSchema,
+]);
+
+/**
+ * A row accepted by the ordinary-user CSV/JSON importer. The route validates
+ * rows independently so one malformed product does not discard the whole file.
+ */
+export const collectionTaskBatchItemSchema = z.object({
+  clientId: z.string().trim().min(1).max(160).optional(),
+  name: z.string().trim().min(1).max(120).optional(),
+  productTitle: nullableText(1_000),
+  description: nullableText(20_000),
+  sku: nullableText(500),
+  sourceSite: nullableText(255),
+  productUrl: z.string().trim().url().max(2_048),
+  sourceImageUrl: extensionTaskImageUrlSchema.nullable().optional(),
+  images: z.array(collectionTaskBatchImageSchema).max(200).default([]),
+  options: imageSearchSchema.default(() => ({
+    sort: "_sale" as const,
+    limit: 50,
+    page: 1,
+    version: "",
+    cache: "no" as const,
+    lang: "cn" as const,
+  })),
+}).superRefine((value, context) => {
+  if (!value.name && !value.productTitle) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["productTitle"], message: "商品标题不能为空" });
+  }
+  if (!value.images.length && !value.sourceImageUrl) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["images"], message: "至少需要一张商品图片" });
+  }
+});
+
+/** The outer envelope deliberately keeps rows unknown for per-row error reporting. */
+export const collectionTaskBatchSchema = z.object({
+  items: z.array(z.unknown()).min(1).max(100),
+});
+
+export type CollectionTaskBatchItemInput = z.infer<typeof collectionTaskBatchItemSchema>;
+export type CollectionTaskBatchInput = z.infer<typeof collectionTaskBatchSchema>;
+
 export const oneboundCandidateBatchSchema = oneboundRequestOptionsSchema.extend({
   offerIds: z.array(z.string().trim().min(1).max(160)).min(1).max(20)
     .transform((values) => [...new Set(values)]),
@@ -316,6 +360,10 @@ export const oneboundCandidateBatchSchema = oneboundRequestOptionsSchema.extend(
 
 export const passwordChangeSchema = z.object({
   password: z.string().min(12).max(256),
+});
+
+export const selfPasswordChangeSchema = passwordChangeSchema.extend({
+  currentPassword: z.string().min(8).max(256).optional(),
 });
 
 export const productVariantSchema = z.object({
@@ -494,8 +542,16 @@ export const productListQuerySchema = z.object({
 export const searchTaskListQuerySchema = z.object({
   search: z.string().trim().max(200).default(""),
   status: z.enum(["all", "unqueried", "queried", "imported"]).default("all"),
+  lifecycle: z.enum(["active", "archived", "deleted", "all"]).default("active"),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(5).max(50).default(5),
+});
+
+export const searchTaskLifecycleUpdateSchema = z.object({
+  archived: z.boolean().optional(),
+  deleted: z.boolean().optional(),
+}).refine((value) => value.archived !== undefined || value.deleted !== undefined, {
+  message: "至少需要提供 archived 或 deleted",
 });
 
 export const searchTaskImportSchema = oneboundRequestOptionsSchema.extend({
@@ -519,6 +575,7 @@ export type ProductPatch = z.infer<typeof productPatchSchema>;
 export type OfferLinkInput = z.infer<typeof offerLinkSchema>;
 export type ProductListQuery = z.infer<typeof productListQuerySchema>;
 export type SearchTaskListQuery = z.infer<typeof searchTaskListQuerySchema>;
+export type SearchTaskLifecycleUpdate = z.infer<typeof searchTaskLifecycleUpdateSchema>;
 export type SearchTaskImportInput = z.infer<typeof searchTaskImportSchema>;
 export type CollectionTaskImportInput = z.infer<typeof collectionTaskImportSchema>;
 export type SearchTaskRunInput = z.infer<typeof searchTaskRunSchema>;

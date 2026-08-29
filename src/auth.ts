@@ -11,6 +11,8 @@ export type SessionUser = {
   avatarUrl: string | null;
   credits: number;
   role: "admin" | "user";
+  authProvider?: "password" | "google";
+  hasPassword?: boolean;
 };
 
 export function assertAdmin(user: SessionUser): void {
@@ -21,11 +23,14 @@ type UserCredentialRow = {
   id: string;
   username: string;
   display_name: string;
+  email: string | null;
+  avatar_url: string | null;
   password_hash: string;
   password_salt: string;
   password_iterations: number;
   is_active: number;
   role: "admin" | "user";
+  auth_provider: "password" | "google";
 };
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -160,6 +165,8 @@ export async function authenticate(request: Request, env: Env): Promise<SessionU
       avatarUrl: row.avatar_url,
       credits: 10_000,
       role: "user",
+      authProvider: "google",
+      hasPassword: false,
     };
   }
   return {
@@ -170,6 +177,8 @@ export async function authenticate(request: Request, env: Env): Promise<SessionU
     avatarUrl: row.avatar_url,
     credits: row.balance,
     role: row.role,
+    authProvider: row.auth_provider,
+    hasPassword: Boolean(row.password_hash),
   };
 }
 
@@ -210,10 +219,23 @@ export async function assertIngestKey(request: Request, env: Env): Promise<void>
 
 export async function getLoginUser(env: Env, username: string): Promise<UserCredentialRow | null> {
   return env.DB.prepare(
-    `SELECT id, username, display_name, password_hash, password_salt, password_iterations, is_active, role
-       FROM users WHERE username = ? COLLATE NOCASE`,
+    `SELECT id, username, display_name, email, avatar_url, password_hash, password_salt,
+            password_iterations, is_active, role, auth_provider
+       FROM users
+      WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE
+      LIMIT 1`,
   )
-    .bind(username)
+    .bind(username, username)
+    .first<UserCredentialRow>();
+}
+
+export async function getUserCredential(env: Env, userId: string): Promise<UserCredentialRow | null> {
+  return env.DB.prepare(
+    `SELECT id, username, display_name, email, avatar_url, password_hash, password_salt,
+            password_iterations, is_active, role, auth_provider
+       FROM users WHERE id = ?`,
+  )
+    .bind(userId)
     .first<UserCredentialRow>();
 }
 

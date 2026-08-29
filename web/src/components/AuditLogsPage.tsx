@@ -20,6 +20,7 @@ const actionLabels: Record<string, string> = {
   "product.update": "更新商品",
   "product.delete": "删除商品",
   "product.shopify.publish": "发布 Shopify 商品",
+  "collection_task.batch_import": "批量导入采集任务",
   "collection_task.search": "执行采集任务搜图",
   "collection_task.shopify.import": "导入采集结果到 Shopify",
   "search_task.query": "执行采集任务搜图（旧事件）",
