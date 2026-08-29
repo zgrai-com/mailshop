@@ -22,6 +22,10 @@ test-results/
 .playwright-mcp/
 .hallmark/
 
+# Local product data exports
+/fehaute_*
+/mailshop-fehaute-*.csv
+
 # Logs and caches
 *.log
 npm-debug.log*
