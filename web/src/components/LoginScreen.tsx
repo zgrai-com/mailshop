@@ -9,6 +9,9 @@ type Props = {
 };
 
 export function LoginScreen({ onLogin }: Props) {
+  const searchParams = new URLSearchParams(window.location.search);
+  const extensionId = searchParams.get("extension_id") ?? "";
+  const extensionLogin = searchParams.get("client") === "extension" && Boolean(extensionId);
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -26,10 +29,17 @@ export function LoginScreen({ onLogin }: Props) {
     setLoading(true);
     setError("");
     try {
-      const result = await api<{ user: User }>("/api/auth/login", {
+      const loginPath = extensionLogin
+        ? `/api/auth/login?client=extension&extension_id=${encodeURIComponent(extensionId)}`
+        : "/api/auth/login";
+      const result = await api<{ user: User; extensionCallback?: string }>(loginPath, {
         method: "POST",
         body: JSON.stringify({ username, password }),
       });
+      if (result.extensionCallback) {
+        window.location.assign(result.extensionCallback);
+        return;
+      }
       onLogin(result.user);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "登录失败");
@@ -73,7 +83,7 @@ export function LoginScreen({ onLogin }: Props) {
               {loading ? "正在登录" : "进入工作台"}
             </button>
             {googleEnabled && <div className="login-divider"><span>或</span></div>}
-            {googleEnabled && <a className="button google-login-button" href="/api/auth/google"><LogIn size={18} />使用 Google 账号登录</a>}
+            {googleEnabled && <a className="button google-login-button" href={extensionLogin ? `/api/auth/google?client=extension&extension_id=${encodeURIComponent(extensionId)}` : "/api/auth/google"}><LogIn size={18} />使用 Google 账号登录</a>}
           </form>
         </div>
       </section>

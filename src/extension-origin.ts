@@ -27,3 +27,14 @@ export function extensionOriginForId(env: Env, extensionId: string): string {
   }
   return origin;
 }
+
+export function extensionCallbackUrl(
+  env: Env,
+  extensionId: string,
+  session: { token: string; expiresAt: string },
+): URL {
+  extensionOriginForId(env, extensionId);
+  const callback = new URL(`https://${extensionId}.chromiumapp.org/mailshop`);
+  callback.hash = new URLSearchParams({ session: session.token, expiresAt: session.expiresAt }).toString();
+  return callback;
+}

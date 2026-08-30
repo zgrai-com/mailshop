@@ -951,14 +951,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return await testAiUsage(message.config || {}, Array.isArray(message.candidates) ? message.candidates : [], message.pageSnapshot || null);
       case "OPEN_LOGIN":
         {
-          const loginUrl = new URL("/api/auth/google", apiOrigin(DEFAULT_API_URL));
+          const loginUrl = new URL("/", apiOrigin(DEFAULT_API_URL));
           loginUrl.searchParams.set("client", "extension");
           loginUrl.searchParams.set("extension_id", chrome.runtime.id);
           const finalUrl = await chrome.identity.launchWebAuthFlow({
             url: loginUrl.toString(),
             interactive: true,
           });
-          if (!finalUrl) throw new Error("Google 登录未完成");
+          if (!finalUrl) throw new Error("后台登录未完成");
           const params = new URLSearchParams(new URL(finalUrl).hash.slice(1));
           const session = params.get("session");
           const expiresAt = params.get("expiresAt");

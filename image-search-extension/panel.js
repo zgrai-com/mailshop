@@ -1588,7 +1588,7 @@ function openView(view) {
 
 elements.account_login.addEventListener("click", async () => {
   try {
-    showAccountNotice("正在打开 Google 登录窗口", "info");
+    showAccountNotice("正在打开后台登录页面", "info");
     await extensionMessage({ type: "OPEN_LOGIN" });
     await loadAccount({ quiet: true });
     showAccountNotice(state.account?.authenticated ? "登录成功，账号和积分已同步" : "登录未完成，请重试", state.account?.authenticated ? "success" : "error");

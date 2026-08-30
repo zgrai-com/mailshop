@@ -1,6 +1,6 @@
 import { createSession, type SessionUser } from "./auth";
 import { ApiError } from "./http";
-import { extensionOriginForId } from "./extension-origin";
+import { extensionCallbackUrl, extensionOriginForId } from "./extension-origin";
 import { decryptSetting, encryptSetting } from "./settings-crypto";
 
 const AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -248,9 +248,7 @@ export async function finishGoogleLogin(request: Request, env: Env): Promise<Res
   const session = await createSession(request, env, userId);
   if (state.startsWith("ext.")) {
     const extensionId = state.split(".", 3)[1] || "";
-    extensionOriginForId(env, extensionId);
-    const callback = new URL(`https://${extensionId}.chromiumapp.org/mailshop`);
-    callback.hash = new URLSearchParams({ session: session.token, expiresAt: session.expiresAt }).toString();
+    const callback = extensionCallbackUrl(env, extensionId, session);
     return new Response(null, {
       status: 302,
       headers: { location: callback.toString(), "set-cookie": session.cookie },

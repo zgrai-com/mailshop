@@ -84,7 +84,7 @@ import {
 } from "./http";
 import { handleImageProxy } from "./image-proxy";
 import { analyzeShopifyImageStyle, classifyImageCandidates, editShopifyImage, generateShopifySeo, getAiSettings, saveAiSettings, translateShopifyContent } from "./ai";
-import { allowedExtensionOrigins, extensionOriginFromRequest } from "./extension-origin";
+import { allowedExtensionOrigins, extensionCallbackUrl, extensionOriginForId, extensionOriginFromRequest } from "./extension-origin";
 import { createShopifyProductFromCollection, deleteShopifyProduct, deleteShopifyStore, getShopifyProduct, getShopifyProductTranslations, getShopifySettings, listShopifyProducts, publishProductToShopify, registerShopifyTranslations, saveShopifySettings, testShopifyStore, updateShopifyProduct } from "./shopify";
 import {
   bootstrapSchema,
@@ -827,6 +827,12 @@ function userRoute(pathname: string): { userId: string; passwordRoute: boolean }
 }
 
 async function handleLogin(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const url = new URL(request.url);
+  const extensionId = url.searchParams.get("client") === "extension"
+    ? url.searchParams.get("extension_id") ?? ""
+    : null;
+  if (extensionId !== null) extensionOriginForId(env, extensionId);
+
   const input = await readJson(request, loginSchema);
   await enforceLoginRateLimit(request, env, input.username);
   const user = await getLoginUser(env, input.username);
@@ -853,6 +859,8 @@ async function handleLogin(request: Request, env: Env, ctx: ExecutionContext): P
   );
   ctx.waitUntil(recordAudit(request, env, user.id, "auth.login", "user", user.id));
 
+  const extensionCallback = extensionId === null ? null : extensionCallbackUrl(env, extensionId, session).toString();
+
   return json(
     {
       ok: true,
@@ -868,10 +876,31 @@ async function handleLogin(request: Request, env: Env, ctx: ExecutionContext): P
         hasPassword: Boolean(user.password_hash),
       },
       expiresAt: session.expiresAt,
+      ...(extensionCallback ? { extensionCallback } : {}),
     },
     200,
     { "set-cookie": session.cookie },
   );
+}
+
+async function handleExtensionLoginStart(request: Request, env: Env): Promise<Response | null> {
+  const url = new URL(request.url);
+  const extensionId = url.searchParams.get("extension_id") ?? "";
+  extensionOriginForId(env, extensionId);
+  try {
+    const user = await authenticate(request, env);
+    const session = await createSession(request, env, user.id);
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: extensionCallbackUrl(env, extensionId, session).toString(),
+        "set-cookie": session.cookie,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) return null;
+    throw error;
+  }
 }
 
 async function handleBootstrap(request: Request, env: Env): Promise<Response> {
@@ -1520,6 +1549,10 @@ async function handleAuthenticatedApi(
 
 async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
+  if (request.method === "GET" && url.pathname === "/" && url.searchParams.get("client") === "extension") {
+    const extensionLogin = await handleExtensionLoginStart(request, env);
+    if (extensionLogin) return extensionLogin;
+  }
   if (url.pathname === PUBLIC_IMAGE_SEARCH_PATH) return handlePublicImageSearch(request, env);
   if (url.pathname === PUBLIC_EXTENSION_ACCOUNT_PATH) return handlePublicExtensionAccount(request, env);
   if ([PUBLIC_EXTENSION_COLLECTION_TASKS_PATH, PUBLIC_EXTENSION_TASKS_PATH].some((path) => url.pathname === path || url.pathname.startsWith(`${path}/`))) return handlePublicExtensionTasks(request, env, ctx);
