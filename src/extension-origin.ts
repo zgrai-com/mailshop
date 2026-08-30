@@ -29,12 +29,14 @@ export function extensionOriginForId(env: Env, extensionId: string): string {
 }
 
 export function extensionCallbackUrl(
+  request: Request,
   env: Env,
   extensionId: string,
   session: { token: string; expiresAt: string },
 ): URL {
   extensionOriginForId(env, extensionId);
-  const callback = new URL(`https://${extensionId}.chromiumapp.org/mailshop`);
+  const callback = new URL("/api/auth/extension/callback", request.url);
+  callback.searchParams.set("extension_id", extensionId);
   callback.hash = new URLSearchParams({ session: session.token, expiresAt: session.expiresAt }).toString();
   return callback;
 }

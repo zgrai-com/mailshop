@@ -248,7 +248,7 @@ export async function finishGoogleLogin(request: Request, env: Env): Promise<Res
   const session = await createSession(request, env, userId);
   if (state.startsWith("ext.")) {
     const extensionId = state.split(".", 3)[1] || "";
-    const callback = extensionCallbackUrl(env, extensionId, session);
+    const callback = extensionCallbackUrl(request, env, extensionId, session);
     return new Response(null, {
       status: 302,
       headers: { location: callback.toString(), "set-cookie": session.cookie },

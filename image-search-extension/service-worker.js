@@ -936,7 +936,9 @@ function readLoginCallback(urlValue) {
   } catch {
     return null;
   }
-  if (url.origin !== `https://${chrome.runtime.id}.chromiumapp.org` || url.pathname !== "/mailshop") return null;
+  if (url.origin !== apiOrigin(DEFAULT_API_URL)
+    || url.pathname !== "/api/auth/extension/callback"
+    || url.searchParams.get("extension_id") !== chrome.runtime.id) return null;
   const params = new URLSearchParams(url.hash.slice(1));
   const session = params.get("session");
   const expiresAt = params.get("expiresAt");
@@ -957,12 +959,15 @@ async function openLoginTab() {
       chrome.tabs.onRemoved.removeListener(onRemoved);
       clearTimeout(timeout);
     };
-    const closeTab = () => tabId === null ? Promise.resolve() : chrome.tabs.remove(tabId).catch(() => undefined);
+    const showBackend = () => tabId === null
+      ? Promise.resolve()
+      : chrome.tabs.update(tabId, { url: apiOrigin(DEFAULT_API_URL) }).catch(() => undefined);
     const finish = (error, result) => {
       if (settled) return;
       settled = true;
       cleanup();
-      void closeTab().finally(() => error ? reject(error) : resolve(result));
+      const tabAction = error ? Promise.resolve() : showBackend();
+      void tabAction.finally(() => error ? reject(error) : resolve(result));
     };
     const onUpdated = (updatedTabId, changeInfo) => {
       if (updatedTabId !== tabId || !changeInfo.url) return;

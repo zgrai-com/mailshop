@@ -859,7 +859,7 @@ async function handleLogin(request: Request, env: Env, ctx: ExecutionContext): P
   );
   ctx.waitUntil(recordAudit(request, env, user.id, "auth.login", "user", user.id));
 
-  const extensionCallback = extensionId === null ? null : extensionCallbackUrl(env, extensionId, session).toString();
+  const extensionCallback = extensionId === null ? null : extensionCallbackUrl(request, env, extensionId, session).toString();
 
   return json(
     {
@@ -893,7 +893,7 @@ async function handleExtensionLoginStart(request: Request, env: Env): Promise<Re
     return new Response(null, {
       status: 302,
       headers: {
-        location: extensionCallbackUrl(env, extensionId, session).toString(),
+        location: extensionCallbackUrl(request, env, extensionId, session).toString(),
         "set-cookie": session.cookie,
       },
     });
@@ -901,6 +901,16 @@ async function handleExtensionLoginStart(request: Request, env: Env): Promise<Re
     if (error instanceof ApiError && error.status === 401) return null;
     throw error;
   }
+}
+
+async function handleExtensionLoginCallback(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") return methodNotAllowed(["GET"]);
+  const url = new URL(request.url);
+  extensionOriginForId(env, url.searchParams.get("extension_id") ?? "");
+  return new Response(
+    "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"2;url=/\"><title>登录成功</title></head><body><p>登录成功，正在返回 Mailshop 后台…</p></body></html>",
+    { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+  );
 }
 
 async function handleBootstrap(request: Request, env: Env): Promise<Response> {
@@ -1561,6 +1571,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
   }
   if (url.pathname === PUBLIC_EXTENSION_AI_PATH) return handlePublicExtensionAi(request, env);
   if (url.pathname === "/api/public/extension/logout") return handlePublicExtensionLogout(request, env, ctx);
+  if (url.pathname === "/api/auth/extension/callback") return handleExtensionLoginCallback(request, env);
 
   if (url.pathname === "/api/health") {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);

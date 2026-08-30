@@ -447,6 +447,47 @@ async function getTranslationResources(store: ShopifyStoreRow, accessToken: stri
   return [root, ...nested];
 }
 
+async function getShopifyProductOptionResourceIds(store: ShopifyStoreRow, accessToken: string, productId: string): Promise<string[]> {
+  const data = await graphql<{ product: { options?: Array<{ id: string; optionValues?: Array<{ id: string }> }> } | null }>(
+    store,
+    accessToken,
+    "query ProductOptionResources($productId: ID!) { product(id: $productId) { options { id optionValues { id } } } }",
+    { productId },
+  );
+  return (data.product?.options ?? []).flatMap((option) => [option.id, ...(option.optionValues ?? []).map((value) => value.id)]);
+}
+
+async function getShopifyTranslationResourcesByIds(
+  store: ShopifyStoreRow,
+  accessToken: string,
+  resourceIds: string[],
+  locale: string,
+  sourceLocale: string,
+  marketId?: string,
+): Promise<ShopifyTranslationResourceResponse[]> {
+  if (!resourceIds.length) return [];
+  const resources: ShopifyTranslationResourceResponse[] = [];
+  for (let index = 0; index < resourceIds.length; index += 100) {
+    const data = await graphql<{ translatableResourcesByIds: { nodes?: ShopifyTranslationResourceResponse[] } }>(
+      store,
+      accessToken,
+      `query ProductOptionTranslations($resourceIds: [ID!]!, $locale: String!, $sourceLocale: String!, $marketId: ID) {
+        translatableResourcesByIds(first: 100, resourceIds: $resourceIds) {
+          nodes {
+            resourceId
+            translatableContent(marketId: $marketId) { key value digest locale }
+            translations(locale: $locale, marketId: $marketId) { key value locale outdated market { id name } }
+            sourceTranslations: translations(locale: $sourceLocale, marketId: $marketId) { key value locale outdated market { id name } }
+          }
+        }
+      }`,
+      { resourceIds: resourceIds.slice(index, index + 100), locale, sourceLocale, marketId: marketId || null },
+    );
+    resources.push(...(data.translatableResourcesByIds.nodes ?? []));
+  }
+  return resources;
+}
+
 function translationResourceMetadata(resource: ShopifyTranslationResourceResponse, productId: string): { resourceType: string; resourceLabel: string } {
   const parts = resource.resourceId.split("/");
   const resourceType = parts.at(-2) || "Resource";
@@ -478,6 +519,9 @@ export async function getShopifyProductTranslations(env: Env, userId: string, st
   const selectedSourceLocale = sourceLocale || primaryLocale || selectedLocale;
   if (!locales.some((item) => item.locale === selectedSourceLocale)) throw new ApiError(422, "源语言不在 Shopify 店铺语言列表中", "shopify_source_locale_invalid");
   const resources = await getTranslationResources(store, token.accessToken, productId, selectedLocale, selectedSourceLocale, marketId);
+  const optionResourceIds = await getShopifyProductOptionResourceIds(store, token.accessToken, productId);
+  const optionResources = await getShopifyTranslationResourcesByIds(store, token.accessToken, optionResourceIds, selectedLocale, selectedSourceLocale, marketId);
+  const allResources = [...resources, ...optionResources].filter((resource, index, items) => items.findIndex((item) => item.resourceId === resource.resourceId) === index);
   const markets = token.scopes.includes("read_markets") ? await getShopMarkets(store, token.accessToken) : [];
   return {
     locale: selectedLocale,
@@ -486,7 +530,7 @@ export async function getShopifyProductTranslations(env: Env, userId: string, st
     markets,
     marketId: marketId || null,
     missingScopes: token.scopes.includes("read_markets") || token.scopes.includes("write_markets") ? [] : ["read_markets"],
-    translatableContent: resources.flatMap((resource) => {
+    translatableContent: allResources.flatMap((resource) => {
       const metadata = translationResourceMetadata(resource, productId);
       const sourceByKey = new Map((resource.sourceTranslations ?? []).map((item) => [item.key, item] as const));
       return resource.translatableContent.map((item) => {
@@ -494,7 +538,7 @@ export async function getShopifyProductTranslations(env: Env, userId: string, st
         return { resourceId: resource.resourceId, ...metadata, ...item, value: source?.value ?? "", locale: selectedSourceLocale };
       });
     }),
-    translations: resources.flatMap((resource) => {
+    translations: allResources.flatMap((resource) => {
       const metadata = translationResourceMetadata(resource, productId);
       const target = selectedLocale === primaryLocale ? resource.translatableContent.map((item) => ({ key: item.key, value: item.value, locale: item.locale, outdated: false, market: null })) : resource.translations;
       return target.map((item) => ({ resourceId: resource.resourceId, ...metadata, key: item.key, value: item.value, locale: selectedLocale, outdated: Boolean(item.outdated), marketId: item.market?.id ?? null, marketName: item.market?.name ?? null }));
