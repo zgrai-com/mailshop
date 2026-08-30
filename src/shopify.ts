@@ -447,14 +447,18 @@ async function getTranslationResources(store: ShopifyStoreRow, accessToken: stri
   return [root, ...nested];
 }
 
-async function getShopifyProductOptionResourceIds(store: ShopifyStoreRow, accessToken: string, productId: string): Promise<string[]> {
-  const data = await graphql<{ product: { options?: Array<{ id: string; optionValues?: Array<{ id: string }> }> } | null }>(
+async function getShopifyProductOptionValueResourceIds(store: ShopifyStoreRow, accessToken: string, productId: string): Promise<string[]> {
+  const data = await graphql<{ product: { options?: Array<{ optionValues?: Array<{ id: string }> }> } | null }>(
     store,
     accessToken,
-    "query ProductOptionResources($productId: ID!) { product(id: $productId) { options { id optionValues { id } } } }",
+    "query ProductOptionValueResources($productId: ID!) { product(id: $productId) { options { optionValues { id } } } }",
     { productId },
   );
-  return (data.product?.options ?? []).flatMap((option) => [option.id, ...(option.optionValues ?? []).map((value) => value.id)]);
+  return (data.product?.options ?? []).flatMap((option) => (option.optionValues ?? []).map((value) => value.id));
+}
+
+function excludeProductOptionNameResources(resources: ShopifyTranslationResourceResponse[]): ShopifyTranslationResourceResponse[] {
+  return resources.filter((resource) => resource.resourceId.split("/").at(-2) !== "ProductOption");
 }
 
 async function getShopifyTranslationResourcesByIds(
@@ -519,9 +523,9 @@ export async function getShopifyProductTranslations(env: Env, userId: string, st
   const selectedSourceLocale = sourceLocale || primaryLocale || selectedLocale;
   if (!locales.some((item) => item.locale === selectedSourceLocale)) throw new ApiError(422, "源语言不在 Shopify 店铺语言列表中", "shopify_source_locale_invalid");
   const resources = await getTranslationResources(store, token.accessToken, productId, selectedLocale, selectedSourceLocale, marketId);
-  const optionResourceIds = await getShopifyProductOptionResourceIds(store, token.accessToken, productId);
+  const optionResourceIds = await getShopifyProductOptionValueResourceIds(store, token.accessToken, productId);
   const optionResources = await getShopifyTranslationResourcesByIds(store, token.accessToken, optionResourceIds, selectedLocale, selectedSourceLocale, marketId);
-  const allResources = [...resources, ...optionResources].filter((resource, index, items) => items.findIndex((item) => item.resourceId === resource.resourceId) === index);
+  const allResources = excludeProductOptionNameResources([...resources, ...optionResources]).filter((resource, index, items) => items.findIndex((item) => item.resourceId === resource.resourceId) === index);
   const markets = token.scopes.includes("read_markets") ? await getShopMarkets(store, token.accessToken) : [];
   return {
     locale: selectedLocale,
@@ -564,8 +568,11 @@ export async function registerShopifyTranslations(env: Env, userId: string, inpu
   if (locales.find((item) => item.locale === input.locale)?.primary) throw new ApiError(422, "主语言是商品源内容，不能作为翻译目标语言", "shopify_locale_primary");
   const marketIds = [...new Set(input.translations.flatMap((item) => item.marketId ? [item.marketId] : []))];
   if (marketIds.length > 1) throw new ApiError(422, "一次只能发布同一个 Shopify 市场的翻译", "shopify_translation_market_mixed");
-  const resources = await getTranslationResources(store, token.accessToken, input.productId, input.locale, locales.find((item) => item.primary)?.locale || input.locale, marketIds[0]);
-  const resourceById = new Map(resources.map((resource) => [resource.resourceId, resource] as const));
+  const sourceLocale = locales.find((item) => item.primary)?.locale || input.locale;
+  const resources = await getTranslationResources(store, token.accessToken, input.productId, input.locale, sourceLocale, marketIds[0]);
+  const optionResourceIds = await getShopifyProductOptionValueResourceIds(store, token.accessToken, input.productId);
+  const optionResources = await getShopifyTranslationResourcesByIds(store, token.accessToken, optionResourceIds, input.locale, sourceLocale, marketIds[0]);
+  const resourceById = new Map(excludeProductOptionNameResources([...resources, ...optionResources]).map((resource) => [resource.resourceId, resource] as const));
   const normalized = input.translations.map((item) => ({ ...item, resourceId: item.resourceId || input.productId }));
   for (const item of normalized) {
     const resource = resourceById.get(item.resourceId);

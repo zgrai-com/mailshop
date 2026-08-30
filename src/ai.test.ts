@@ -73,7 +73,7 @@ describe("Shopify translation prompt", () => {
       ],
     });
 
-    expect(SHOPIFY_TRANSLATION_PROMPT_VERSION).toBe("shopify-product-translation-v6");
+    expect(SHOPIFY_TRANSLATION_PROMPT_VERSION).toBe("shopify-product-translation-v7");
     expect(prompt).toContain('"resourceId":"gid://shopify/Product/1"');
     expect(prompt).toContain("body_html/descriptionHtml");
     expect(prompt).toContain("普通文本应翻译");
@@ -81,6 +81,21 @@ describe("Shopify translation prompt", () => {
     expect(prompt).toContain('"title":"翻译后的 title"');
     expect(prompt).toContain("AirFlex 保持英文");
     expect(prompt).toContain("优先使用简洁、自然的法语电商表达。");
+  });
+
+  it("translates option values without translating option names", () => {
+    const prompt = buildShopifyTranslationPrompt({
+      storeId: "5a8c0989-67a9-4a51-bf16-591a2d9d408d",
+      productId: "gid://shopify/Product/1",
+      locale: "fr",
+      fields: [{ resourceId: "gid://shopify/ProductOptionValue/2", resourceType: "ProductOptionValue", resourceLabel: "Color", key: "name", sourceValue: "Red" }],
+      prompt: "",
+      style: "自然、清晰、符合目标市场电商习惯",
+      glossary: "",
+    });
+
+    expect(prompt).toContain("ProductOptionValue 资源只翻译选项值");
+    expect(prompt).toContain("禁止翻译或返回 ProductOption 资源的选项名");
   });
 
   it("accepts direct field keys, numeric ids, and legacy key-based AI output", () => {

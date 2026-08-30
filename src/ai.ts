@@ -5,7 +5,7 @@ import type { AiCandidate, AiPageRegion, AiPageSnapshot, AiSettingsInput, Shopif
 const AI_REQUEST_TIMEOUT_MS = 300_000;
 const AI_IMAGE_RESULT_TIMEOUT_MS = 30_000;
 const MAX_AI_IMAGE_RESULT_BYTES = 14 * 1024 * 1024;
-export const SHOPIFY_TRANSLATION_PROMPT_VERSION = "shopify-product-translation-v6";
+export const SHOPIFY_TRANSLATION_PROMPT_VERSION = "shopify-product-translation-v7";
 
 type AiSettingsRow = {
   base_url_ciphertext: string | null;
@@ -476,7 +476,7 @@ export function buildShopifyTranslationPrompt(input: ShopifyProductTranslationAi
     input.glossary.trim() ? "术语表（优先遵守，品牌词不要擅自改写）：" + input.glossary.trim() : "没有额外术语表。",
     "系统固定处理规则（优先级高于用户要求）：",
     "1. 逐字段翻译 sourceValue，允许改变自然语言内容；不能因为已有翻译存在而跳过。品牌、系列名、型号、SKU、URL、Liquid 变量、占位符、数字、货币、尺寸和单位必须保持事实一致。",
-    "2. title、handle、product_type、vendor、option/name 等普通文本应翻译。handle 必须以目标语言原生文字返回，不得罗马化、拼音化或改成英文；日语必须使用日文汉字、平假名或片假名。handle 不得与 sourceValue 相同，必须使用未占用的目标语言 URL 标识，并保留数字、SKU、型号和品牌。",
+    "2. title、handle、product_type、vendor 等普通文本应翻译。ProductOptionValue 资源只翻译选项值；其 Shopify key 虽然是 name，但禁止翻译或返回 ProductOption 资源的选项名。handle 必须以目标语言原生文字返回，不得罗马化、拼音化或改成英文；日语必须使用日文汉字、平假名或片假名。handle 不得与 sourceValue 相同，必须使用未占用的目标语言 URL 标识，并保留数字、SKU、型号和品牌。",
     "3. body_html/descriptionHtml 必须返回完整 HTML。逐字保留所有标签、属性、层级、列表、链接和换行，只翻译标签之间的可见文本；不得新增、删除、重排或修改任何 HTML 标签或属性。",
     "4. 不得增加原文没有的功效、认证、折扣、承诺、规格或售后信息；无法安全判断时返回 sourceValue，而不是空字符串。",
     "5. 只返回严格 JSON，不要解释、Markdown 或代码围栏。必须返回 {\"translations\":[{\"resourceId\":\"输入 resourceId\",\"title\":\"翻译后的 title\",\"body_html\":\"翻译后的完整 HTML\"}]}。字段名必须直接使用输入 fields 中的 key，例如 title、handle、body_html；同一个 resourceId 的每个字段返回一次。resourceId 用于区分多个同名字段（例如多个 variant.title）。",
