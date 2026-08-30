@@ -3,7 +3,7 @@
   "name": "Mailshop 采集任务",
   "version": "0.8.0",
   "description": "创建采集任务，以图搜索 1688，并将结果直接导入 Shopify。",
-  "permissions": ["activeTab", "identity", "scripting", "sidePanel", "storage", "unlimitedStorage"],
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage", "unlimitedStorage"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "service-worker.js",

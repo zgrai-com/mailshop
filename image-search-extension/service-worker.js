@@ -929,6 +929,73 @@ async function openImageViewerInTab(originalImageUrl, resultImageUrl, title = ""
   }
 }
 
+function readLoginCallback(urlValue) {
+  let url;
+  try {
+    url = new URL(urlValue);
+  } catch {
+    return null;
+  }
+  if (url.origin !== `https://${chrome.runtime.id}.chromiumapp.org` || url.pathname !== "/mailshop") return null;
+  const params = new URLSearchParams(url.hash.slice(1));
+  const session = params.get("session");
+  const expiresAt = params.get("expiresAt");
+  if (!session || session.length < 32) throw new Error("服务器没有返回有效登录会话");
+  return { token: session, expiresAt };
+}
+
+async function openLoginTab() {
+  const loginUrl = new URL("/", apiOrigin(DEFAULT_API_URL));
+  loginUrl.searchParams.set("client", "extension");
+  loginUrl.searchParams.set("extension_id", chrome.runtime.id);
+  const callback = new Promise((resolve, reject) => {
+    let tabId = null;
+    let settled = false;
+    const timeout = setTimeout(() => finish(new Error("后台登录超时，请重试")), 300_000);
+    const cleanup = () => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+      clearTimeout(timeout);
+    };
+    const closeTab = () => tabId === null ? Promise.resolve() : chrome.tabs.remove(tabId).catch(() => undefined);
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      void closeTab().finally(() => error ? reject(error) : resolve(result));
+    };
+    const onUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId !== tabId || !changeInfo.url) return;
+      try {
+        const result = readLoginCallback(changeInfo.url);
+        if (result) finish(null, result);
+      } catch (error) {
+        finish(error);
+      }
+    };
+    const onRemoved = (removedTabId) => {
+      if (removedTabId === tabId) finish(new Error("后台登录页面已关闭"));
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    chrome.tabs.create({ url: loginUrl.toString(), active: true }).then((tab) => {
+      tabId = tab.id;
+      if (tab.url) onUpdated(tab.id, { url: tab.url });
+    }).catch((error) => finish(error));
+  });
+  const session = await callback;
+  await chrome.storage.local.set({
+    [SESSION_KEY]: { ...session, origin: apiOrigin(DEFAULT_API_URL) },
+  });
+  const account = await fetchExtensionAccount(DEFAULT_API_URL);
+  if (!account.authenticated) {
+    await chrome.storage.local.remove(SESSION_KEY);
+    throw new Error("服务器未接受登录会话");
+  }
+  await broadcastAccountChanged();
+  return { ok: true, account };
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const handle = async () => {
     switch (message?.type) {
@@ -950,30 +1017,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "TEST_AI_USAGE":
         return await testAiUsage(message.config || {}, Array.isArray(message.candidates) ? message.candidates : [], message.pageSnapshot || null);
       case "OPEN_LOGIN":
-        {
-          const loginUrl = new URL("/", apiOrigin(DEFAULT_API_URL));
-          loginUrl.searchParams.set("client", "extension");
-          loginUrl.searchParams.set("extension_id", chrome.runtime.id);
-          const finalUrl = await chrome.identity.launchWebAuthFlow({
-            url: loginUrl.toString(),
-            interactive: true,
-          });
-          if (!finalUrl) throw new Error("后台登录未完成");
-          const params = new URLSearchParams(new URL(finalUrl).hash.slice(1));
-          const session = params.get("session");
-          const expiresAt = params.get("expiresAt");
-          if (!session || session.length < 32) throw new Error("服务器没有返回有效登录会话");
-          await chrome.storage.local.set({
-            [SESSION_KEY]: { token: session, expiresAt, origin: apiOrigin(DEFAULT_API_URL) },
-          });
-          const account = await fetchExtensionAccount(DEFAULT_API_URL);
-          if (!account.authenticated) {
-            await chrome.storage.local.remove(SESSION_KEY);
-            throw new Error("服务器未接受登录会话");
-          }
-          await broadcastAccountChanged();
-          return { ok: true, account };
-        }
+        return await openLoginTab();
       case "LOGOUT":
         return await logoutExtension(DEFAULT_API_URL);
       case "CREATE_TASK":
