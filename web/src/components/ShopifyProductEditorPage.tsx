@@ -57,15 +57,34 @@ type Props = {
 const DEFAULT_TRANSLATION_PROMPT = "请把商品中的普通文案自然翻译成目标语言，重点翻译标题、描述、Handle、商品类型、供应商、颜色和尺码；保留品牌、型号、SKU、数字和商品事实。";
 const PRIMARY_PRODUCT_TRANSLATION_KEYS = new Set(["title", "body_html", "handle", "product_type", "meta_title", "meta_description"]);
 
+function projectDraftToLocale(draft: ShopifyProductDraft, productId: string, translation: ShopifyProductTranslations | null): ShopifyProductDraft {
+  if (!translation || translation.locale === translation.sourceLocale) return draft;
+  const translated = new Map(
+    translation.translations
+      .filter((item) => item.resourceId === productId)
+      .map((item) => [item.key, item.value] as const),
+  );
+  return {
+    ...draft,
+    title: translated.get("title") ?? draft.title,
+    descriptionHtml: translated.get("body_html") ?? draft.descriptionHtml,
+    handle: translated.get("handle") ?? draft.handle,
+    productType: translated.get("product_type") ?? draft.productType,
+    seoTitle: translated.get("meta_title") ?? draft.seoTitle,
+    seoDescription: translated.get("meta_description") ?? draft.seoDescription,
+  };
+}
+
 type ImageJobStatus = "queued" | "waiting" | "failed";
 type ImageJob = { id: string; imageId: string; operation: "translate" | "edit"; locale: string; status: ImageJobStatus; createdAt: number | string; updatedAt: number | string; prompt?: string | null; resultUrl?: string | null; message?: string | null };
 
 type DescriptionEditorProps = {
   value: string;
   onChange: (value: string) => void;
+  readOnly?: boolean;
 };
 
-function DescriptionEditor({ value, onChange }: DescriptionEditorProps) {
+function DescriptionEditor({ value, onChange, readOnly = false }: DescriptionEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [sourceMode, setSourceMode] = useState(false);
   const visualValue = DOMPurify.sanitize(value, { USE_PROFILES: { html: true }, ADD_ATTR: ["data-src", "data-lazyload-src", "data-original", "lazy-src"] });
@@ -77,22 +96,25 @@ function DescriptionEditor({ value, onChange }: DescriptionEditorProps) {
   }, [sourceMode, visualValue]);
 
   function runCommand(command: string, commandValue?: string) {
+    if (readOnly) return;
     editorRef.current?.focus();
     document.execCommand(command, false, commandValue);
     if (editorRef.current) onChange(editorRef.current.innerHTML);
   }
 
   function addLink() {
+    if (readOnly) return;
     const url = window.prompt("请输入链接地址", "https://");
     if (url?.trim()) runCommand("createLink", url.trim());
   }
 
   function toggleSource() {
+    if (readOnly) return;
     if (!sourceMode && editorRef.current) onChange(editorRef.current.innerHTML);
     setSourceMode((current) => !current);
   }
 
-  return <div className="html-editor">
+  return <div className={`html-editor ${readOnly ? "read-only" : ""}`}>
     <div className="html-editor-toolbar" role="toolbar" aria-label="HTML 编辑工具栏">
       <select aria-label="文本样式" defaultValue="p" onChange={(event) => runCommand("formatBlock", event.target.value)} disabled={sourceMode}>
         <option value="p">正文</option><option value="h2">标题 2</option><option value="h3">标题 3</option>
@@ -115,8 +137,11 @@ function DescriptionEditor({ value, onChange }: DescriptionEditorProps) {
   </div>;
 }
 
-export function ShopifyProductEditorPage({ stores, storeId, productId, returnPath, onBack, onError, onNotify }: Props) {
+export function ShopifyProductEditorPage({ stores, storeId, productId, returnPath, aiPrompts, onBack, onError, onNotify }: Props) {
   const store = stores.find((item) => item.id === storeId);
+  const defaultDescriptionPrompt = aiPrompts?.aiDescriptionPrompt || DEFAULT_DESCRIPTION_PROMPT;
+  const defaultTranslationPrompt = aiPrompts?.translationPrompt || DEFAULT_TRANSLATION_PROMPT;
+  const defaultImagePrompt = aiPrompts?.imagePrompt?.trim() ?? "";
   const [product, setProduct] = useState<ShopifyRemoteProduct | null>(null);
   const [draft, setDraft] = useState<ShopifyProductDraft | null>(null);
   const [loading, setLoading] = useState(true);
@@ -128,27 +153,31 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   const [descriptionSaving, setDescriptionSaving] = useState(false);
   const [descriptionGenerating, setDescriptionGenerating] = useState(false);
   const [descriptionSource, setDescriptionSource] = useState<ShopifyDescriptionSource | null>(null);
-  const [descriptionPrompt, setDescriptionPrompt] = useState(DEFAULT_DESCRIPTION_PROMPT);
+  const [descriptionPrompt, setDescriptionPrompt] = useState(defaultDescriptionPrompt);
   const [descriptionHtml, setDescriptionHtml] = useState("");
   const [descriptionSelectedImageIds, setDescriptionSelectedImageIds] = useState<string[]>([]);
   const [descriptionCredits, setDescriptionCredits] = useState<{ balance: number; charged: number } | null>(null);
   const [descriptionPromptVersion, setDescriptionPromptVersion] = useState<string | null>(null);
   const [translation, setTranslation] = useState<ShopifyProductTranslations | null>(null);
+  const [viewTranslation, setViewTranslation] = useState<ShopifyProductTranslations | null>(null);
   const [translationModalOpen, setTranslationModalOpen] = useState(false);
   const [locale, setLocale] = useState("");
   const [sourceLocale, setSourceLocale] = useState("");
   const [marketId, setMarketId] = useState("");
-  const [translationPrompt, setTranslationPrompt] = useState(DEFAULT_TRANSLATION_PROMPT);
+  const [viewLocale, setViewLocale] = useState("");
+  const [translationPrompt, setTranslationPrompt] = useState(defaultTranslationPrompt);
   const [translationStyle, setTranslationStyle] = useState("自然、清晰、符合目标市场电商习惯");
   const [translationGlossary, setTranslationGlossary] = useState("");
   const [translationDrafts, setTranslationDrafts] = useState<ShopifyTranslationDraft[]>([]);
   const [translationLoading, setTranslationLoading] = useState(false);
+  const [viewTranslationLoading, setViewTranslationLoading] = useState(false);
   const [translationConflict, setTranslationConflict] = useState(false);
   const [translationNotice, setTranslationNotice] = useState<{ type: "error" | "success"; message: string } | null>(null);
   const [translationBatchProgress, setTranslationBatchProgress] = useState<{ current: number; total: number } | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [publishLoading, setPublishLoading] = useState(false);
   const translationRequestIdRef = useRef(0);
+  const viewTranslationRequestIdRef = useRef(0);
   const [selectedImages, setSelectedImages] = useState<string[]>([]);
   const [focusedImageId, setFocusedImageId] = useState<string | null>(null);
   const [imageJobs, setImageJobs] = useState<ImageJob[]>([]);
@@ -180,6 +209,29 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   }, [onError, productId, storeId]);
 
   useEffect(() => { void loadProduct(); }, [loadProduct]);
+
+  const primaryLocale = translation?.locales.find((item) => item.primary)?.locale ?? "";
+
+  const loadViewTranslation = useCallback(async (nextLocale?: string) => {
+    const selectedLocale = nextLocale || primaryLocale;
+    if (!storeId || !productId || !selectedLocale || !primaryLocale) return;
+    const requestId = ++viewTranslationRequestIdRef.current;
+    setViewTranslationLoading(true);
+    try {
+      const params = new URLSearchParams({ locale: selectedLocale, sourceLocale: primaryLocale });
+      const result = await api<ShopifyProductTranslations & { locale: string }>(
+        `/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/translations?${params.toString()}`,
+      );
+      if (requestId !== viewTranslationRequestIdRef.current) return;
+      setViewTranslation(result);
+      setViewLocale(result.locale);
+    } catch (error) {
+      if (requestId !== viewTranslationRequestIdRef.current) return;
+      onError(error);
+    } finally {
+      if (requestId === viewTranslationRequestIdRef.current) setViewTranslationLoading(false);
+    }
+  }, [onError, primaryLocale, productId, storeId]);
 
   const loadTranslations = useCallback(async (nextLocale?: string, nextMarketId?: string, nextSourceLocale?: string) => {
     if (!storeId || !productId) return;
@@ -219,6 +271,16 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   }, [onError, productId, storeId]);
 
   useEffect(() => { void loadTranslations(); }, [loadTranslations]);
+  useEffect(() => {
+    if (!primaryLocale) return;
+    if (!viewLocale || !translation?.locales.some((item) => item.locale === viewLocale)) {
+      void loadViewTranslation(primaryLocale);
+    }
+  }, [loadViewTranslation, primaryLocale, translation?.locales, viewLocale]);
+  useEffect(() => {
+    setDescriptionPrompt((current) => current === DEFAULT_DESCRIPTION_PROMPT || !current.trim() ? defaultDescriptionPrompt : current);
+    setTranslationPrompt((current) => current === DEFAULT_TRANSLATION_PROMPT || !current.trim() ? defaultTranslationPrompt : current);
+  }, [defaultDescriptionPrompt, defaultTranslationPrompt]);
 
   useEffect(() => {
     if (!translationModalOpen) return;
@@ -312,7 +374,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     try {
       const result = await api<{ seoTitle: string; seoDescription: string }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}/ai/seo`, {
         method: "POST",
-        body: JSON.stringify({ storeId, productId: product.id, title: draft.title, descriptionHtml: draft.descriptionHtml, productType: draft.productType, vendor: draft.vendor, tags: draft.tags.split(",").map((tag) => tag.trim()).filter(Boolean), seoTitle: draft.seoTitle, seoDescription: draft.seoDescription }),
+        body: JSON.stringify({ storeId, productId: product.id, locale: viewLocale || undefined, targetLanguage: viewLocaleName || undefined, title: draft.title, descriptionHtml: draft.descriptionHtml, productType: draft.productType, vendor: draft.vendor, tags: draft.tags.split(",").map((tag) => tag.trim()).filter(Boolean), seoTitle: draft.seoTitle, seoDescription: draft.seoDescription }),
       });
       setDraft((current) => current ? { ...current, seoTitle: result.seoTitle, seoDescription: result.seoDescription } : current);
       onNotify("AI 已生成 SEO 信息，请检查后保存");
@@ -330,7 +392,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     setDescriptionLoading(true);
     setDescriptionCredits(null);
     if (!keepDrafts) {
-      setDescriptionPrompt(DEFAULT_DESCRIPTION_PROMPT);
+      setDescriptionPrompt(defaultDescriptionPrompt);
       setDescriptionHtml(draft.descriptionHtml ?? product.descriptionHtml ?? "");
       setDescriptionSelectedImageIds([]);
       setDescriptionSource(null);
@@ -383,12 +445,37 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     setDescriptionGenerating(true);
     setDescriptionCredits(null);
     try {
+      const selectedImageJson = descriptionSelectedImageIds
+        .map((imageId) => descriptionSource.images.find((image) => image.id === imageId))
+        .filter(Boolean);
+      const prompt = applyPromptTemplate(descriptionPrompt.trim() || defaultDescriptionPrompt, {
+        "Target Language": viewLocaleName || "English",
+        "Product Title": draft.title,
+        "Product Vendor": draft.vendor,
+        "Product Type": draft.productType,
+        "Product Tags": draft.tags,
+        "Product Description HTML": draft.descriptionHtml,
+        "Source Offer Id": descriptionSource.offerId,
+        "Source Title": descriptionSource.title,
+        "Source Supplier Name": descriptionSource.supplierName ?? "",
+        "Source Brand": descriptionSource.brand ?? "",
+        "Source Category": descriptionSource.category ?? "",
+        "Source Short Description": descriptionSource.shortDescription ?? "",
+        "1688json": descriptionSource.rawResponse ?? descriptionSource.raw,
+        "1688 Properties JSON": descriptionSource.properties,
+        "1688 Variants JSON": descriptionSource.variants,
+        "1688 Price Tiers JSON": descriptionSource.priceTiers,
+        "Selected Image Count": descriptionSelectedImageIds.length,
+        "Selected Images JSON": selectedImageJson,
+      });
       const result = await api<ShopifyDescriptionAiResult>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}/ai/description`, {
         method: "POST",
         body: JSON.stringify({
           storeId,
           productId: product.id,
-          prompt: descriptionPrompt,
+          locale: viewLocale || undefined,
+          targetLanguage: viewLocaleName || undefined,
+          prompt,
           imageIds: descriptionSelectedImageIds,
         }),
       });
@@ -405,7 +492,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   }
 
   async function saveDescription() {
-    if (!product || !draft) return;
+    if (!product || !draft || localizedEditingDisabled) return;
     const nextDraft = { ...draft, descriptionHtml };
     setDescriptionSaving(true);
     try {
@@ -429,7 +516,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   }
 
   async function saveProduct() {
-    if (!draft || !product) return;
+    if (!draft || !product || localizedEditingDisabled) return;
     setSaving(true);
     try {
       const result = await api<{ product: ShopifyRemoteProduct }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}`, {
@@ -483,9 +570,25 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       const generated: ShopifyTranslationDraft[] = [];
       for (let index = 0; index < translationDrafts.length; index += 32) {
         const batch = translationDrafts.slice(index, index + 32);
+        const prompt = applyPromptTemplate(translationPrompt.trim() || defaultTranslationPrompt, {
+          "Target Language": targetLocaleName || locale,
+          "Target Locale": locale,
+          "Source Locale": sourceLocale,
+          "Market Id": marketId,
+          "Market Name": targetMarketName,
+          "Product Title": draft?.title ?? product?.title ?? "",
+          "Product Vendor": draft?.vendor ?? product?.vendor ?? "",
+          "Product Type": draft?.productType ?? product?.productType ?? "",
+          "Product Tags": draft?.tags ?? product?.tags.join(", ") ?? "",
+          "Product Description HTML": draft?.descriptionHtml ?? product?.descriptionHtml ?? "",
+          "Field Count": batch.length,
+          "Fields JSON": batch,
+          "Translation Style": translationStyle,
+          "Glossary": translationGlossary,
+        });
         const result = await api<{ translations: ShopifyTranslationDraft[] }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/translations/ai`, {
           method: "POST",
-          body: JSON.stringify({ storeId, productId, locale, sourceLocale: sourceLocale || undefined, marketId: marketId || undefined, prompt: translationPrompt, style: translationStyle, glossary: translationGlossary, fields: batch.map((field) => ({ resourceId: field.resourceId, resourceType: field.resourceType, resourceLabel: field.resourceLabel, key: field.key, sourceLocale: sourceLocale || undefined, sourceValue: field.sourceValue, existingValue: field.value || undefined, digest: field.digest })) }),
+          body: JSON.stringify({ storeId, productId, locale, targetLanguage: targetLocaleName || locale, sourceLocale: sourceLocale || undefined, marketId: marketId || undefined, prompt, style: translationStyle, glossary: translationGlossary, fields: batch.map((field) => ({ resourceId: field.resourceId, resourceType: field.resourceType, resourceLabel: field.resourceLabel, key: field.key, sourceLocale: sourceLocale || undefined, sourceValue: field.sourceValue, existingValue: field.value || undefined, digest: field.digest })) }),
         });
         generated.push(...result.translations);
         setTranslationBatchProgress({ current: Math.min(Math.floor(index / 32) + 1, Math.ceil(translationDrafts.length / 32)), total: Math.ceil(translationDrafts.length / 32) });
@@ -533,6 +636,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       }
       onNotify("翻译已发布到 Shopify");
       await loadTranslations(locale, marketId, sourceLocale);
+      if (viewLocale === locale) await loadViewTranslation(viewLocale);
       setTranslationNotice({ type: "success", message: `已发布 ${changed.length} 个字段到 Shopify。` });
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 409) {
@@ -673,7 +777,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     setImageTaskMode("edit");
     setImageAiStep("select");
     setImageAnalysis("");
-    setImagePrompt("");
+      setImagePrompt(defaultImagePrompt);
     setAiImageModalOpen(true);
   }
 
@@ -791,6 +895,12 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       ]
     : media;
   const currentStatus = draft ? statusLabels[draft.status] : "";
+  const viewLanguage = translation?.locales.find((item) => item.locale === viewLocale);
+  const viewLocaleName = viewLanguage?.name ?? viewLocale;
+  const localizedEditingDisabled = Boolean(viewLocale && primaryLocale && viewLocale !== primaryLocale);
+  const displayDraft = draft && product
+    ? projectDraftToLocale(draft, product.id, localizedEditingDisabled ? viewTranslation : null)
+    : draft;
   const sourceLanguage = translation?.locales.find((item) => item.locale === sourceLocale);
   const sourceLocaleCode = sourceLanguage?.locale ?? translation?.translatableContent[0]?.locale ?? "";
   const sourceLocaleName = sourceLanguage?.name ?? sourceLocaleCode;
@@ -807,8 +917,14 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     <section className="shopify-editor-page">
       <header className="shopify-editor-page-header">
         <button className="button quiet" type="button" onClick={() => onBack(returnPath)}><ArrowLeft size={16} />返回商品列表</button>
-        <div className="shopify-editor-title"><span>SHOPIFY PRODUCT</span><h1>{loading ? "加载商品" : draft?.title || product?.title || "商品详情"}</h1><small>{store?.shopDomain || store?.displayName || storeId}</small></div>
-        <div className="shopify-editor-header-actions"><span className={`shopify-status ${(draft?.status || "draft").toLowerCase()}`}><i />{currentStatus}</span><button className="button primary" type="button" onClick={() => void saveProduct()} disabled={saving || loading || !draft}><Save size={15} />{saving ? "保存中" : "保存"}</button></div>
+        <div className="shopify-editor-title"><span>SHOPIFY PRODUCT</span><h1>{loading ? "加载商品" : displayDraft?.title || product?.title || "商品详情"}</h1><small>{store?.shopDomain || store?.displayName || storeId}</small></div>
+        <div className="shopify-editor-header-actions">
+          <label className="shopify-view-locale-field"><span>当前语言</span><select value={viewLocale} onChange={(event) => void loadViewTranslation(event.target.value)} disabled={viewTranslationLoading || !translation?.locales.length} aria-label="当前语言">
+            {translation?.locales.map((item) => <option key={item.locale} value={item.locale}>{item.name} ({item.locale}){item.primary ? " · 主语言" : ""}</option>)}
+          </select></label>
+          <span className={`shopify-status ${(draft?.status || "draft").toLowerCase()}`}><i />{currentStatus}</span>
+          <button className="button primary" type="button" onClick={() => void saveProduct()} disabled={saving || loading || !draft || localizedEditingDisabled}><Save size={15} />{saving ? "保存中" : "保存"}</button>
+        </div>
       </header>
 
       {loading || !draft || !product ? <div className="page-loading shopify-editor-loading"><LoaderCircle className="spin" size={22} />正在读取商品详情</div> : <div className="shopify-editor-page-grid">
@@ -816,17 +932,17 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
           <section className="shopify-editor-card">
             <div className="editor-section-heading">
               <div><span>GENERAL</span><h2>基本信息</h2></div>
-              <button className="button quiet compact" type="button" onClick={() => void openDescriptionModal()} disabled={!product || !draft}><Sparkles size={14} />AI 生成描述</button>
+              <button className="button quiet compact" type="button" onClick={() => void openDescriptionModal()} disabled={!product || !draft || localizedEditingDisabled}><Sparkles size={14} />AI 生成描述</button>
             </div>
-            <label><span>标题</span><input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} /></label>
-            <label><span>描述 HTML</span><DescriptionEditor value={draft.descriptionHtml} onChange={(value) => updateDraft("descriptionHtml", value)} /></label>
-            <div className="editor-two-columns"><label><span>Handle</span><input value={draft.handle} onChange={(event) => updateDraft("handle", event.target.value)} /></label><label><span>供应商</span><input value={draft.vendor} onChange={(event) => updateDraft("vendor", event.target.value)} /></label><label><span>商品类型</span><input value={draft.productType} onChange={(event) => updateDraft("productType", event.target.value)} /></label><label><span>模板后缀</span><input value={draft.templateSuffix} onChange={(event) => updateDraft("templateSuffix", event.target.value)} placeholder="默认模板" /></label></div>
-            <label><span>标签</span><input value={draft.tags} onChange={(event) => updateDraft("tags", event.target.value)} placeholder="用逗号分隔" /></label>
+            <label><span>标题</span><input value={displayDraft?.title ?? ""} onChange={(event) => updateDraft("title", event.target.value)} disabled={localizedEditingDisabled} /></label>
+            <label><span>描述 HTML</span><DescriptionEditor value={displayDraft?.descriptionHtml ?? ""} onChange={(value) => updateDraft("descriptionHtml", value)} readOnly={localizedEditingDisabled} /></label>
+            <div className="editor-two-columns"><label><span>Handle</span><input value={displayDraft?.handle ?? ""} onChange={(event) => updateDraft("handle", event.target.value)} disabled={localizedEditingDisabled} /></label><label><span>供应商</span><input value={displayDraft?.vendor ?? ""} onChange={(event) => updateDraft("vendor", event.target.value)} disabled={localizedEditingDisabled} /></label><label><span>商品类型</span><input value={displayDraft?.productType ?? ""} onChange={(event) => updateDraft("productType", event.target.value)} disabled={localizedEditingDisabled} /></label><label><span>模板后缀</span><input value={displayDraft?.templateSuffix ?? ""} onChange={(event) => updateDraft("templateSuffix", event.target.value)} placeholder="默认模板" disabled={localizedEditingDisabled} /></label></div>
+            <label><span>标签</span><input value={displayDraft?.tags ?? ""} onChange={(event) => updateDraft("tags", event.target.value)} placeholder="用逗号分隔" disabled={localizedEditingDisabled} /></label>
           </section>
 
-          <section className="shopify-editor-card"><div className="editor-section-heading"><div><span>VARIANTS</span><h2>变体与库存</h2></div><small>{draft.variants.length} 个变体</small></div><div className="shopify-variant-editor"><div className="shopify-variant-row header"><span>变体</span><span>价格</span><span>对比价</span><span>SKU</span><span>条码</span><span>库存</span></div>{draft.variants.map((variant, index) => <div className="shopify-variant-row" key={variant.id}><strong>{variant.title}</strong><input value={variant.price} onChange={(event) => setDraft({ ...draft, variants: draft.variants.map((item, itemIndex) => itemIndex === index ? { ...item, price: event.target.value } : item) })} /><input value={variant.compareAtPrice} onChange={(event) => setDraft({ ...draft, variants: draft.variants.map((item, itemIndex) => itemIndex === index ? { ...item, compareAtPrice: event.target.value } : item) })} /><input value={variant.sku} onChange={(event) => setDraft({ ...draft, variants: draft.variants.map((item, itemIndex) => itemIndex === index ? { ...item, sku: event.target.value } : item) })} /><input value={variant.barcode} onChange={(event) => setDraft({ ...draft, variants: draft.variants.map((item, itemIndex) => itemIndex === index ? { ...item, barcode: event.target.value } : item) })} /><span>{variant.inventoryQuantity ?? 0}</span></div>)}</div></section>
+          <section className="shopify-editor-card"><div className="editor-section-heading"><div><span>VARIANTS</span><h2>变体与库存</h2></div><small>{draft.variants.length} 个变体</small></div><div className="shopify-variant-editor"><div className="shopify-variant-row header"><span>变体</span><span>价格</span><span>对比价</span><span>SKU</span><span>条码</span><span>库存</span></div>{draft.variants.map((variant, index) => <div className="shopify-variant-row" key={variant.id}><strong>{variant.title}</strong><input value={variant.price} disabled={localizedEditingDisabled} onChange={(event) => setDraft({ ...draft, variants: draft.variants.map((item, itemIndex) => itemIndex === index ? { ...item, price: event.target.value } : item) })} /><input value={variant.compareAtPrice} disabled={localizedEditingDisabled} onChange={(event) => setDraft({ ...draft, variants: draft.variants.map((item, itemIndex) => itemIndex === index ? { ...item, compareAtPrice: event.target.value } : item) })} /><input value={variant.sku} disabled={localizedEditingDisabled} onChange={(event) => setDraft({ ...draft, variants: draft.variants.map((item, itemIndex) => itemIndex === index ? { ...item, sku: event.target.value } : item) })} /><input value={variant.barcode} disabled={localizedEditingDisabled} onChange={(event) => setDraft({ ...draft, variants: draft.variants.map((item, itemIndex) => itemIndex === index ? { ...item, barcode: event.target.value } : item) })} /><span>{variant.inventoryQuantity ?? 0}</span></div>)}</div></section>
 
-          <section className="shopify-editor-card"><div className="editor-section-heading"><div><span>SEO</span><h2>搜索引擎预览</h2></div><button className="button quiet compact" type="button" onClick={() => void generateSeo()} disabled={seoGenerating}><Sparkles size={14} />{seoGenerating ? "生成中" : "AI 生成 SEO"}</button></div><label><span>SEO 标题</span><input value={draft.seoTitle} onChange={(event) => updateDraft("seoTitle", event.target.value)} placeholder="不填写则使用商品标题" /></label><label><span>SEO 描述</span><textarea rows={4} value={draft.seoDescription} onChange={(event) => updateDraft("seoDescription", event.target.value)} /></label><div className="seo-preview"><strong>{draft.seoTitle || draft.title}</strong><span>{store?.shopDomain}/{draft.handle}</span><p>{draft.seoDescription || "Shopify 会使用商品描述生成搜索摘要。"}</p></div></section>
+          <section className="shopify-editor-card"><div className="editor-section-heading"><div><span>SEO</span><h2>搜索引擎预览</h2></div><button className="button quiet compact" type="button" onClick={() => void generateSeo()} disabled={seoGenerating || localizedEditingDisabled}><Sparkles size={14} />{seoGenerating ? "生成中" : "AI 生成 SEO"}</button></div><label><span>SEO 标题</span><input value={displayDraft?.seoTitle ?? ""} onChange={(event) => updateDraft("seoTitle", event.target.value)} placeholder="不填写则使用商品标题" disabled={localizedEditingDisabled} /></label><label><span>SEO 描述</span><textarea rows={4} value={displayDraft?.seoDescription ?? ""} onChange={(event) => updateDraft("seoDescription", event.target.value)} disabled={localizedEditingDisabled} /></label><div className="seo-preview"><strong>{displayDraft?.seoTitle || displayDraft?.title}</strong><span>{store?.shopDomain}/{displayDraft?.handle}</span><p>{displayDraft?.seoDescription || "Shopify 会使用商品描述生成搜索摘要。"}</p></div></section>
 
           <section className="shopify-editor-card">
             <div className="editor-section-heading"><div><span>MEDIA</span><h2>媒体与图片</h2></div><div className="media-selection-actions"><small>{displayMedia.length} 张图片</small><button className="button quiet compact" type="button" onClick={openMediaPicker}><ImageIcon size={14} />设置显示图片</button><button className="button quiet compact" type="button" onClick={openImageAiModal} disabled={!media.length}><Sparkles size={14} />使用 AI 处理图片</button></div></div>
@@ -879,7 +995,8 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
         onPromptChange={setDescriptionPrompt}
         onHtmlChange={setDescriptionHtml}
         onSelectImage={toggleDescriptionImage}
-        onResetPrompt={() => setDescriptionPrompt(DEFAULT_DESCRIPTION_PROMPT)}
+        defaultPrompt={defaultDescriptionPrompt}
+        onResetPrompt={() => setDescriptionPrompt(defaultDescriptionPrompt)}
         onGenerate={() => void generateDescription()}
         onSave={() => void saveDescription()}
         onRefreshSource={refreshDescriptionSource}
