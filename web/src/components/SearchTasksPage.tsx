@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   CheckCircle2,
   Archive,
   ArchiveRestore,
@@ -17,6 +18,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -190,6 +192,7 @@ export function SearchTasksPage({
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [importingKey, setImportingKey] = useState<string | null>(null);
   const [selectedStoreId, setSelectedStoreId] = useState("");
+  const [actionError, setActionError] = useState("");
   const [detailState, setDetailState] = useState<{ result: SearchTaskResult; task: SearchTask; run?: SearchTaskRun; detail: OneBoundItemPreview | null; loading: boolean; error: string | null } | null>(null);
   const [compareState, setCompareState] = useState<{ originalUrl: string; resultUrl: string; title: string } | null>(null);
   const [previewState, setPreviewState] = useState<{ url: string; title: string } | null>(null);
@@ -227,11 +230,17 @@ export function SearchTasksPage({
 
   async function runQuery(task: SearchTask, queryDraft = draft(task)) {
     if (task.archivedAt || task.deletedAt) return;
-    if (!queryDraft.imageId) return;
+    if (!queryDraft.imageId) {
+      setActionError("Please select a source image before searching.");
+      return;
+    }
+    setActionError("");
     setRunningTaskId(task.id);
     try {
       await onRun(task.id, queryInput(queryDraft));
       setDrafts((current) => ({ ...current, [task.id]: queryDraft }));
+    } catch (error) {
+      setActionError(error instanceof Error ? `Search failed: ${error.message}` : "Search failed. Please try again.");
     } finally {
       setRunningTaskId(null);
     }
@@ -239,10 +248,19 @@ export function SearchTasksPage({
 
   async function importResults(taskId: string, runId: string, offerIds?: string[]) {
     const key = `${runId}:${offerIds?.length === 1 ? offerIds[0] : "all"}`;
+    if (!selectedStoreId) {
+      setActionError("Select a connected Shopify store before importing.");
+      return;
+    }
+    const store = stores.find((item) => item.id === selectedStoreId);
+    const scope = offerIds?.length ? `${offerIds.length} candidate product(s)` : "the current search results";
+    if (!window.confirm(`Import ${scope} to "${store?.displayName || store?.shopDomain || "Shopify"}"? This creates or updates draft products.`)) return;
+    setActionError("");
     setImportingKey(key);
     try {
-      if (!selectedStoreId) return;
       await onImport(taskId, runId, selectedStoreId, offerIds);
+    } catch (error) {
+      setActionError(error instanceof Error ? `Import failed: ${error.message}` : "Import failed. Check the store connection and try again.");
     } finally {
       setImportingKey(null);
     }
@@ -267,6 +285,7 @@ export function SearchTasksPage({
   }
 
   return <section className="search-tasks-view">
+    {actionError && <div className="search-task-action-error" role="alert"><AlertCircle size={16} /><span>{actionError}</span><button className="icon-button" type="button" onClick={() => setActionError("")} aria-label="Dismiss message" title="Dismiss message"><X size={16} /></button></div>}
     <header className="page-heading"><div><span>PRODUCT SOURCING</span><h1>采集任务</h1><p>从插件或批量文件保存商品信息与图片，执行 1688 搜图，并将选中结果直接导入 Shopify。</p></div><div className="search-task-heading-actions"><a className="search-task-guide-link" href="/batch-import-guide">如何用 AI 进行批量采集 <ExternalLink size={14} /></a><div className="search-task-count">{hasFilters ? `${total} 个匹配任务` : `${total} 个任务`}</div><BatchCollectionTaskImport onSubmit={onBatchImport} /></div></header>
 
     <section className="search-task-controls" aria-label="采集任务筛选">

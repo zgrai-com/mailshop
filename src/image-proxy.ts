@@ -86,18 +86,20 @@ function normalizedImageType(value: string | null): string | null {
     : null;
 }
 
-export async function handleImageProxy(
-  request: Request,
+export async function fetchRemoteImageBytes(
+  value: string,
   env: ImageProxyEnv,
   fetcher: typeof fetch = fetch,
-): Promise<Response> {
-  let target = validateImageProxyUrl(new URL(request.url).searchParams.get("url"));
+  byteLimit = maxImageBytes(env),
+): Promise<{ bytes: Uint8Array; contentType: string }> {
+  let target = validateImageProxyUrl(value);
 
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
     const response = await fetcher(target, {
       headers: {
         accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8",
         referer: `${target.origin}/`,
+        "user-agent": "Mozilla/5.0 (compatible; Mailshop/1.0)",
       },
       redirect: "manual",
     });
@@ -131,18 +133,27 @@ export async function handleImageProxy(
         imageHost: target.hostname,
       });
     }
-
-    const bytes = await readImageBytes(response, maxImageBytes(env));
-    return new Response(bytes, {
-      headers: {
-        "cache-control": "private, max-age=86400",
-        "content-disposition": "inline",
-        "content-length": String(bytes.byteLength),
-        "content-type": contentType,
-        "vary": "Cookie",
-      },
-    });
+    return { bytes: await readImageBytes(response, byteLimit), contentType };
   }
 
   throw new ApiError(502, "远程图片加载失败", "image_proxy_upstream_failed");
+}
+
+export async function handleImageProxy(
+  request: Request,
+  env: ImageProxyEnv,
+  fetcher: typeof fetch = fetch,
+): Promise<Response> {
+  const url = new URL(request.url).searchParams.get("url");
+  if (!url) throw new ApiError(422, "图片地址无效", "image_proxy_url_invalid");
+  const { bytes, contentType } = await fetchRemoteImageBytes(url, env, fetcher);
+  return new Response(bytes, {
+    headers: {
+      "cache-control": "private, max-age=86400",
+      "content-disposition": "inline",
+      "content-length": String(bytes.byteLength),
+      "content-type": contentType,
+      "vary": "Cookie",
+    },
+  });
 }

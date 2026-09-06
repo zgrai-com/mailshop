@@ -1111,7 +1111,7 @@ export async function getStoredOfferDetail(env: Env, offerId: string): Promise<J
             description_html AS descriptionHtml, video_url AS videoUrl,
             sample_id AS sampleId, shipping_to AS shippingTo,
             has_discount AS hasDiscount, is_promotion AS isPromotion,
-            fetched_at AS fetchedAt, created_at AS createdAt, updated_at AS updatedAt
+            raw_json AS raw, fetched_at AS fetchedAt, created_at AS createdAt, updated_at AS updatedAt
        FROM offers_1688 WHERE offer_id = ?`,
   )
     .bind(offerId)
@@ -1156,13 +1156,13 @@ export async function getStoredOfferDetail(env: Env, offerId: string): Promise<J
       env.DB.prepare(
         `SELECT api_name AS apiName, request_num_iid AS requestNumIid,
                 error_code AS errorCode, reason, upstream_request_id AS upstreamRequestId,
-                fetched_at AS fetchedAt
+                response_json AS responseJson, fetched_at AS fetchedAt
            FROM offer_api_snapshots WHERE offer_id = ? ORDER BY fetched_at DESC LIMIT 1`,
       ).bind(internalId),
     ]);
 
   return {
-    ...offer,
+    ...hydrateJson(offer, [["raw", {}]]),
     variants: variants.results.map((row) => hydrateJson(row, [["attributes", {}]])),
     images: images.results,
     priceTiers: priceTiers.results,
@@ -1170,7 +1170,7 @@ export async function getStoredOfferDetail(env: Env, offerId: string): Promise<J
     propertyImages: propertyImages.results,
     descriptionImages: descriptionImages.results,
     videos: videos.results,
-    latestSnapshot: snapshots.results[0] ?? null,
+    latestSnapshot: snapshots.results[0] ? hydrateJson(snapshots.results[0], [["responseJson", {}]]) : null,
   };
 }
 
@@ -1724,6 +1724,31 @@ export async function recordCollectionTaskImports(
        shopify_product_id = excluded.shopify_product_id,
        imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
   ).bind(crypto.randomUUID(), taskId, runId, item.offerId, storeId, item.shopifyProductId)));
+}
+
+export async function findShopifyProduct1688Offer(
+  env: Env,
+  storeId: string,
+  shopifyProductId: string,
+): Promise<{ offerId: string; origin: "collection_task" | "catalog" } | null> {
+  const collectionImport = await env.DB.prepare(
+    `SELECT ci.offer_id AS offerId
+       FROM collection_task_imports ci
+      WHERE ci.shopify_store_id = ? AND ci.shopify_product_id = ?
+      ORDER BY ci.imported_at DESC LIMIT 1`,
+  ).bind(storeId, shopifyProductId).first<{ offerId: string }>();
+  if (collectionImport?.offerId) return { offerId: collectionImport.offerId, origin: "collection_task" };
+
+  const catalogPublication = await env.DB.prepare(
+    `SELECT o.offer_id AS offerId
+       FROM shopify_product_publications spp
+       JOIN product_offer_links pol ON pol.product_id = spp.product_id
+       JOIN offers_1688 o ON o.id = pol.offer_id
+      WHERE spp.store_id = ? AND spp.shopify_product_id = ? AND pol.match_status != 'rejected'
+      ORDER BY CASE pol.match_status WHEN 'selected' THEN 0 ELSE 1 END, pol.updated_at DESC
+      LIMIT 1`,
+  ).bind(storeId, shopifyProductId).first<{ offerId: string }>();
+  return catalogPublication?.offerId ? { offerId: catalogPublication.offerId, origin: "catalog" } : null;
 }
 
 export async function deleteSearchTask(env: Env, userId: string, taskId: string): Promise<boolean> {

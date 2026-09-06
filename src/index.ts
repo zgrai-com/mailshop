@@ -40,6 +40,7 @@ import {
   getProduct,
   getSearchTask,
   getStoredOfferDetail,
+  findShopifyProduct1688Offer,
   listProducts,
   listAuditLogs,
   listUsers,
@@ -72,6 +73,7 @@ import {
   searchImageUrl,
   searchProductImage,
 } from "./onebound";
+import { buildShopifyDescriptionSourceFromOneBoundPreview, buildShopifyDescriptionSourceFromStoredOfferDetail, toShopifyDescriptionSourceInput, type ShopifyDescriptionSourceContext } from "./shopify-description";
 import {
   ApiError,
   assertSameOrigin,
@@ -83,7 +85,7 @@ import {
   withSecurityHeaders,
 } from "./http";
 import { handleImageProxy } from "./image-proxy";
-import { analyzeShopifyImageStyle, classifyImageCandidates, editShopifyImage, generateShopifySeo, getAiSettings, saveAiSettings, translateShopifyContent } from "./ai";
+import { analyzeShopifyImageStyle, classifyImageCandidates, editShopifyImage, generateShopifyDescription, generateShopifySeo, getAiSettings, saveAiSettings, translateShopifyContent, SHOPIFY_DESCRIPTION_PROMPT_VERSION } from "./ai";
 import { allowedExtensionOrigins, extensionCallbackUrl, extensionOriginForId, extensionOriginFromRequest } from "./extension-origin";
 import { createShopifyProductFromCollection, deleteShopifyProduct, deleteShopifyStore, getShopifyProduct, getShopifyProductTranslations, getShopifySettings, listShopifyProducts, publishProductToShopify, registerShopifyTranslations, saveShopifySettings, testShopifyStore, updateShopifyProduct } from "./shopify";
 import {
@@ -118,6 +120,7 @@ import {
   shopifyProductTranslationsQuerySchema,
   shopifyProductTranslationAiSchema,
   shopifyProductSeoAiSchema,
+  shopifyProductDescriptionAiSchema,
   shopifyImageAnalyzeSchema,
   shopifyImageEditSchema,
   shopifyImageJobCreateSchema,
@@ -783,10 +786,19 @@ function shopifyProductTranslationRoute(pathname: string): { storeId: string; pr
   return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "ai" ? "ai" : "read" };
 }
 
-function shopifyProductAiRoute(pathname: string): { storeId: string; productId: string; action: "seo" | "image_analyze" | "image_edit" } | null {
-  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/ai\/(seo|image-analyze|image-edit)$/iu);
+function shopifyProductAiRoute(pathname: string): { storeId: string; productId: string; action: "seo" | "description" | "image_analyze" | "image_edit" } | null {
+  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/ai\/(seo|description|image-analyze|image-edit)$/iu);
   if (!match) return null;
-  return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "seo" ? "seo" : match[3] === "image-analyze" ? "image_analyze" : "image_edit" };
+  return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "seo" ? "seo" : match[3] === "description" ? "description" : match[3] === "image-analyze" ? "image_analyze" : "image_edit" };
+}
+
+async function loadShopifyDescriptionSource(env: Env, storeId: string, productId: string): Promise<ShopifyDescriptionSourceContext | null> {
+  const source = await findShopifyProduct1688Offer(env, storeId, productId);
+  if (!source) return null;
+  if (source.origin === "collection_task") {
+    return buildShopifyDescriptionSourceFromOneBoundPreview(await getOneBoundItem(env, source.offerId, { cache: "yes", lang: "cn" }, false));
+  }
+  return buildShopifyDescriptionSourceFromStoredOfferDetail(await getStoredOfferDetail(env, source.offerId));
 }
 
 function shopifyImageJobsRoute(pathname: string): { storeId: string; productId: string; jobId?: string } | null {
@@ -1223,8 +1235,62 @@ async function handleAuthenticatedApi(
   }
   const shopifyProductAi = shopifyProductAiRoute(url.pathname);
   if (shopifyProductAi) {
-    if (request.method !== "POST") return methodNotAllowed(["POST"]);
     const product = await getShopifyProduct(env, user.id, shopifyProductAi.storeId, shopifyProductAi.productId);
+    if (shopifyProductAi.action === "description") {
+      const source = await loadShopifyDescriptionSource(env, shopifyProductAi.storeId, shopifyProductAi.productId);
+      if (!source) throw new ApiError(404, "没有找到可用于生成描述的 1688 来源", "shopify_description_source_not_found");
+      const recommendedImageIds = source.images
+        .filter((image) => image.group === "main")
+        .concat(source.images.filter((image) => image.group !== "main"))
+        .slice(0, 4)
+        .map((image) => image.id);
+      if (request.method === "GET") {
+        return json({
+          ok: true,
+          product: product.product,
+          store: product.store,
+          source,
+          recommendedImageIds,
+          promptVersion: SHOPIFY_DESCRIPTION_PROMPT_VERSION,
+        });
+      }
+      if (request.method !== "POST") return methodNotAllowed(["GET", "POST"]);
+      const parsed = await readJson(request, shopifyProductDescriptionAiSchema);
+      if (parsed.storeId !== shopifyProductAi.storeId || parsed.productId !== shopifyProductAi.productId) {
+        throw new ApiError(422, "描述生成请求的店铺或商品不匹配当前路由", "shopify_description_resource_mismatch");
+      }
+      const imagesById = new Map(source.images.map((image) => [image.id, image]));
+      const selectedImages = parsed.imageIds.flatMap((imageId) => {
+        const image = imagesById.get(imageId);
+        return image ? [image] : [];
+      });
+      if (selectedImages.length !== parsed.imageIds.length) {
+        throw new ApiError(422, "描述生成请求包含不属于当前 1688 来源的图片", "shopify_description_image_invalid");
+      }
+      const charge = await chargeAiRequest(env, user.id, { feature: "shopify_description", storeId: parsed.storeId, productId: parsed.productId, offerId: source.offerId, imageCount: selectedImages.length });
+      const startedAt = Date.now();
+      try {
+        const result = await generateShopifyDescription(env, {
+          product: {
+            title: product.product.title,
+            vendor: product.product.vendor,
+            productType: product.product.productType,
+            tags: product.product.tags,
+            descriptionHtml: product.product.descriptionHtml,
+          },
+          source: toShopifyDescriptionSourceInput(source),
+          prompt: parsed.prompt,
+          images: selectedImages,
+        });
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.description", scope: "chat", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { offerId: source.offerId, sourceOrigin: source.origin, imageCount: selectedImages.length, promptLength: parsed.prompt.length }, responseSummary: { descriptionLength: result.descriptionHtml.length, imageCount: result.imageCount, promptVersion: result.promptVersion }, entityType: "shopify_product", entityId: parsed.productId });
+        return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
+      } catch (error) {
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.description", scope: "chat", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { offerId: source.offerId, sourceOrigin: source.origin, imageCount: selectedImages.length, promptLength: parsed.prompt.length }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
+        await refundAiRequest(env, user.id, charge).catch(() => undefined);
+        throw error;
+      }
+    }
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
     if (shopifyProductAi.action === "seo") {
       const parsed = await readJson(request, shopifyProductSeoAiSchema);
       if (parsed.storeId !== shopifyProductAi.storeId || parsed.productId !== shopifyProductAi.productId) {

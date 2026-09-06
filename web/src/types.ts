@@ -217,6 +217,51 @@ export type ShopifyTranslationAiResult = {
   credits: { balance: number; charged: number };
 };
 
+export type ShopifyDescriptionSourceImage = {
+  id: string;
+  url: string;
+  altText?: string | null;
+  position?: number;
+  r2Key?: string | null;
+  contentType?: string | null;
+  group?: "main" | "detail";
+};
+
+export type ShopifyDescriptionSource = {
+  origin: "collection_task" | "catalog";
+  offerId: string;
+  title: string;
+  raw: Record<string, unknown>;
+  rawResponse: Record<string, unknown>;
+  sourceUrl: string | null;
+  cachedAt: string | null;
+  fetchedAt: string | null;
+  descriptionHtml?: string | null;
+  shortDescription?: string | null;
+  properties: Array<{ name: string; value: string }>;
+  variants: Array<Record<string, unknown>>;
+  priceTiers: Array<Record<string, unknown>>;
+  supplierName?: string | null;
+  brand?: string | null;
+  category?: string | null;
+  images: ShopifyDescriptionSourceImage[];
+};
+
+export type ShopifyDescriptionAiContext = {
+  product: ShopifyRemoteProduct;
+  store: ShopifyStore;
+  source: ShopifyDescriptionSource;
+  recommendedImageIds: string[];
+  promptVersion: string;
+};
+
+export type ShopifyDescriptionAiResult = {
+  descriptionHtml: string;
+  promptVersion: string;
+  imageCount: number;
+  credits: { balance: number; charged: number };
+};
+
 export type CreditTransaction = {
   id: string;
   amount: number;

@@ -168,6 +168,14 @@ export const shopifyProductSeoAiSchema = z.object({
   seoDescription: z.string().max(320).default(""),
 });
 
+export const shopifyProductDescriptionAiSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  prompt: z.string().trim().max(12_000).default(""),
+  imageIds: z.array(z.string().trim().min(1).max(255)).min(1).max(4)
+    .transform((values) => [...new Set(values)]),
+});
+
 export const shopifyImageAnalyzeSchema = z.object({
   storeId: z.string().uuid(),
   productId: z.string().min(1).max(255),

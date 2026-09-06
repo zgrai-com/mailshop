@@ -293,6 +293,11 @@ export async function importOneBoundProductsToShopify(
     try {
       const parsed = await callItemGet(credentials, offerId, options);
       const variantData = importedVariantData(parsed.linkInput.offer.variants);
+      await putCachedOneBoundItem(env, parsed.preview.offerId, {
+        ...parsed.preview,
+        rawResponse: parsed.detail.snapshot.response,
+        cachedAt: new Date().toISOString(),
+      });
       const productId = await publish({
         offerId: parsed.preview.offerId,
         title: parsed.preview.title,
@@ -1128,8 +1133,13 @@ export async function getOneBoundItem(
   }
   const parsed = await callItemGet(await readCredentials(env), offerId, forceRefresh ? { ...options, cache: "no" } : options);
   const fetchedAt = new Date().toISOString();
-  const preview = { ...parsed.preview, cachedAt: fetchedAt, fromCache: false };
-  await putCachedOneBoundItem(env, offerId, preview);
+  const preview: OneBoundItemPreview = {
+    ...parsed.preview,
+    rawResponse: parsed.detail.snapshot.response as Record<string, unknown>,
+    cachedAt: fetchedAt,
+    fromCache: false,
+  };
+  await putCachedOneBoundItem(env, offerId, preview as unknown as Record<string, unknown>);
   return preview;
 }
 

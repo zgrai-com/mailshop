@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-04T00:00:00+08:00",
+  "title": "Design System: Mailshop",
+  "extensions": {
+    "colorMeta": {
+      "canvas": { "role": "neutral", "displayName": "Cool Green Canvas", "canonical": "#f2f3ef", "tonalRamp": ["#252b27", "#3d4741", "#58635c", "#747f77", "#929c94", "#b1b9b2", "#d1d6d1", "#f2f3ef"] },
+      "surface": { "role": "neutral", "displayName": "Work Surface White", "canonical": "#ffffff", "tonalRamp": ["#262b28", "#414743", "#5d625e", "#797d79", "#969997", "#b2b5b3", "#d0d2d1", "#ffffff"] },
+      "primary": { "role": "primary", "displayName": "Operations Forest", "canonical": "#245c43", "tonalRamp": ["#071b12", "#0e3322", "#154a31", "#1d6140", "#347453", "#63937a", "#a2c0ad", "#e4efe8"] },
+      "info": { "role": "secondary", "displayName": "Supply Chain Blue", "canonical": "#355f7c", "tonalRamp": ["#0b1a24", "#142d3e", "#1f4158", "#2c5670", "#4e7188", "#7893a5", "#b1c1cb", "#e6eef3"] },
+      "warning": { "role": "tertiary", "displayName": "Steady Amber", "canonical": "#845511", "tonalRamp": ["#241303", "#432504", "#623905", "#7f4e0b", "#986a2a", "#b58c58", "#d9c2a0", "#f6ead5"] },
+      "danger": { "role": "tertiary", "displayName": "Validation Coral", "canonical": "#9d4036", "tonalRamp": ["#2b0b08", "#50150f", "#721f18", "#942c22", "#aa5148", "#c27e77", "#dfb2ad", "#f5e2df"] }
+    },
+    "typographyMeta": {
+      "body": { "displayName": "Inter System Sans", "purpose": "Business copy, headings and tables." },
+      "mono": { "displayName": "Operations Mono", "purpose": "URLs, SKUs, IDs, logs and machine-readable fields." }
+    },
+    "shadows": [
+      { "name": "structural-overlay", "value": "0 20px 56px rgba(19, 29, 23, 0.16)", "purpose": "Dialogs, dropdowns, image previews and import overlays." },
+      { "name": "expanded-item", "value": "0 2px 8px rgba(29, 33, 31, 0.08)", "purpose": "Small expanded list items that need local separation." }
+    ],
+    "motion": [
+      { "name": "ease-out", "value": "cubic-bezier(.16, 1, .3, 1)", "purpose": "Short feedback transitions for controls and drag states." },
+      { "name": "dur-fast", "value": "120ms", "purpose": "Default hover, active and focus feedback." }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "720px" },
+      { "name": "compact", "value": "360px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary commands such as search, import and confirm.",
+      "html": "<button class=\"ds-btn-primary\">Import to Shopify</button>",
+      "css": ".ds-btn-primary { background: var(--color-accent); color: var(--color-accent-ink); padding: 0 12px; min-height: 36px; border: 1px solid transparent; border-radius: 5px; font: 700 13px/1.2 Inter, sans-serif; transition: background 120ms cubic-bezier(.16,1,.3,1), transform 120ms cubic-bezier(.16,1,.3,1); } .ds-btn-primary:hover { background: var(--color-accent-hover); } .ds-btn-primary:active { transform: translateY(1px); } .ds-btn-primary:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Secondary commands such as refresh and back.",
+      "html": "<button class=\"ds-btn-quiet\">Refresh</button>",
+      "css": ".ds-btn-quiet { background: transparent; color: var(--color-ink); padding: 0 12px; min-height: 36px; border: 1px solid var(--color-line); border-radius: 5px; font: 700 13px/1.2 Inter, sans-serif; transition: border-color 120ms ease, background 120ms ease; } .ds-btn-quiet:hover { border-color: var(--color-ink); background: var(--color-surface-soft); } .ds-btn-quiet:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Direct input for search, credentials and product fields.",
+      "html": "<label class=\"ds-field\"><span>Product URL</span><input class=\"ds-input\" placeholder=\"https://...\" /></label>",
+      "css": ".ds-field { display: grid; gap: 5px; color: var(--color-muted); font: 700 10px/1.2 Inter, sans-serif; } .ds-input { width: 100%; height: 38px; padding: 0 10px; border: 1px solid var(--color-line); border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font: 400 13px/1.45 Inter, sans-serif; } .ds-input:hover { border-color: var(--color-line-strong); } .ds-input:focus-visible { border-color: var(--color-focus); outline: 2px solid var(--color-accent-soft); }"
+    },
+    {
+      "name": "Sidebar Navigation",
+      "kind": "nav",
+      "refersTo": "navigation",
+      "description": "Fixed work-area navigation in the desktop shell.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-item active\" href=\"#\">Collection Tasks</a><a class=\"ds-nav-item\" href=\"#\">Shopify Products</a></nav>",
+      "css": ".ds-nav { display: grid; gap: 4px; width: 220px; padding: 12px; background: var(--color-sidebar); } .ds-nav-item { display: flex; align-items: center; min-height: 38px; padding: 0 10px; border-radius: 5px; color: var(--color-sidebar-muted); text-decoration: none; font: 700 12px/1.2 Inter, sans-serif; } .ds-nav-item:hover { background: var(--color-sidebar-hover); color: var(--color-sidebar-text); } .ds-nav-item.active { background: var(--color-accent); color: var(--color-sidebar-text); } .ds-nav-item:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }"
+    },
+    {
+      "name": "Task Card",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Compact container for a collection task and its state.",
+      "html": "<article class=\"ds-card\"><div class=\"ds-card-kicker\">COLLECTION TASK</div><strong class=\"ds-card-title\">Summer dress / source-102</strong><span class=\"ds-card-meta\">Unqueried - 3 source images</span></article>",
+      "css": ".ds-card { display: grid; gap: 5px; padding: 16px 18px; border: 1px solid var(--color-line); border-radius: 7px; background: var(--color-surface); color: var(--color-ink); } .ds-card:hover { border-color: var(--color-line-strong); } .ds-card-kicker { color: var(--color-accent); font: 700 9px/1.2 var(--font-mono); } .ds-card-title { font: 650 15px/1.4 Inter, sans-serif; } .ds-card-meta { color: var(--color-muted); font: 400 12px/1.45 Inter, sans-serif; }"
+    },
+    {
+      "name": "Status Chip",
+      "kind": "chip",
+      "refersTo": "status-chip",
+      "description": "Compact semantic status that does not carry the primary action.",
+      "html": "<span class=\"ds-chip ds-chip-success\">Imported</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; width: fit-content; min-height: 24px; padding: 0 7px; border: 1px solid var(--color-line); border-radius: 4px; background: var(--color-neutral-badge); color: var(--color-muted); font: 700 10px/1.2 Inter, sans-serif; } .ds-chip-success { border-color: var(--color-accent); background: var(--color-accent-soft); color: var(--color-accent); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Cross-border Operations Console",
+    "overview": "Mailshop's visual system behaves like a quiet, reliable operations console: information-dense but easy to scan, with color reserved for state and action. The interface supports repeated collection, sourcing, review and Shopify import work without marketing-style visual noise.\n\nA cool green canvas carries white work surfaces and a deep forest navigation rail. Cards, tables, image grids and workbenches use fine borders and restrained tonal layering. The browser extension shares the same information order with tighter dimensions and brighter selection signals.",
+    "keyCharacteristics": ["Dense, scannable operations layout", "Forest green as a scarce action signal", "Fine borders and tonal layering before decorative shadows", "Semantic colors for info, progress, success and error", "Restrained corners, short motion and explicit focus feedback"],
+    "rules": [
+      { "name": "The Signal Rarity Rule", "body": "Use primary and status colors only where action or judgment is required.", "section": "colors" },
+      { "name": "The Machine-Data Rule", "body": "Use a mono face and smaller sizing for machine-readable content; keep business copy in the normal sans stack.", "section": "typography" },
+      { "name": "The Flat-By-Default Rule", "body": "Keep static content flat; shadows mean that a surface is temporarily above the workflow.", "section": "elevation" }
+    ],
+    "dos": ["Do use the cool green canvas, white work surfaces and dark rail as the console skeleton.", "Do reserve the primary color for actionable, selected and successful states.", "Do pair semantic colors with text, icons or structural cues.", "Do keep 5-7px corners, 1px borders and a 4px spacing rhythm.", "Do provide a clear 3px keyboard focus outline and touchable mobile controls.", "Do use mono typography for URLs, SKUs, IDs, logs and batch data."],
+    "donts": ["Don't use landing-page gradients, decorative glows or large background images as the admin structure.", "Don't turn every card into a floating shadow container; use borders and tonal layers first.", "Don't replace lists, tables or workbenches with overly rounded capsules.", "Don't communicate success, failure or permissions with color alone.", "Don't hide source URLs, matching evidence, credit use or import state that affects an operator's decision."]
+  }
+}

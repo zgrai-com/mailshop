@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildShopifyDescriptionPrompt,
   buildShopifyTranslationPrompt,
   extractGeneratedImage,
   parseShopifyTranslationResults,
   resolveAiCredentials,
+  SHOPIFY_DESCRIPTION_PROMPT_VERSION,
   SHOPIFY_TRANSLATION_PROMPT_VERSION,
   type UnifiedAiSettings,
 } from "./ai";
@@ -121,4 +123,29 @@ describe("Shopify translation prompt", () => {
     expect(extractGeneratedImage({ output_text: "source https://img.example/source.jpg result ![image](<https://img.example/result.png>)" }, ["https://img.example/source.jpg"])).toBe("https://img.example/result.png");
   });
 
+});
+
+describe("Shopify description prompt", () => {
+  it("combines the source JSON, image-aware instructions, and user prompt", () => {
+    const prompt = buildShopifyDescriptionPrompt({
+      offerId: "123",
+      title: "Sample product",
+      supplierName: "Supplier",
+      brand: "Brand",
+      category: "Category",
+      shortDescription: "Short intro",
+      descriptionHtml: "<p>Detail</p>",
+      properties: [{ name: "Color", value: "Red" }],
+      variants: [{ sku: "SKU-1" }],
+      priceTiers: [{ minQuantity: 1, price: 12 }],
+      raw: { item: { title: "Sample product" } },
+      images: [{ id: "main-1", url: "https://img.example/main.jpg", group: "main" }],
+    }, "Please write a clean US-English Shopify description.");
+
+    expect(SHOPIFY_DESCRIPTION_PROMPT_VERSION).toBe("shopify-product-description-v1");
+    expect(prompt).toContain("Sample product");
+    expect(prompt).toContain("Please write a clean US-English Shopify description.");
+    expect(prompt).toContain("1688 结构化商品 JSON");
+    expect(prompt).toContain('"title":"Sample product"');
+  });
 });
