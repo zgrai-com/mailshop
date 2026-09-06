@@ -40,6 +40,7 @@ import {
   getProduct,
   getSearchTask,
   getStoredOfferDetail,
+  getUserAiPromptSettings,
   findShopifyProduct1688Offer,
   listProducts,
   listAuditLogs,
@@ -60,6 +61,7 @@ import {
   upsertSearchTask,
   upsertSearchTasksBatch,
   removeOfferLink,
+  saveUserAiPromptSettings,
   upsertOfferLink,
   upsertProduct,
 } from "./db";
@@ -112,6 +114,7 @@ import {
   collectionTaskImportSchema,
   searchTaskRunSchema,
   aiSettingsUpdateSchema,
+  userAiPromptSettingsSchema,
   aiCandidatesRequestSchema,
   shopifySettingsSchema,
   shopifyPublishSchema,
@@ -1087,6 +1090,20 @@ async function handleAuthenticatedApi(
     ctx.waitUntil(recordAudit(request, env, user.id, "auth.password_change", "user", user.id));
     return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
   }
+  if (url.pathname === "/api/user/ai-prompts") {
+    if (request.method === "GET") return json({ ok: true, settings: await getUserAiPromptSettings(env, user.id) });
+    if (request.method === "PUT") {
+      const input = await readJson(request, userAiPromptSettingsSchema);
+      await saveUserAiPromptSettings(env, user.id, input);
+      ctx.waitUntil(recordAudit(request, env, user.id, "user.ai_prompts.update", "user", user.id, {
+        aiDescriptionPromptLength: input.aiDescriptionPrompt.length,
+        translationPromptLength: input.translationPrompt.length,
+        imagePromptLength: input.imagePrompt.length,
+      }));
+      return json({ ok: true, settings: await getUserAiPromptSettings(env, user.id) });
+    }
+    return methodNotAllowed(["GET", "PUT"]);
+  }
   if (url.pathname === "/api/credits") {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
     return json({ ok: true, credits: { balance: await getCreditBalance(env, user.id), transactions: await listCreditTransactions(env, user.id) } });
@@ -1269,6 +1286,7 @@ async function handleAuthenticatedApi(
       }
       const charge = await chargeAiRequest(env, user.id, { feature: "shopify_description", storeId: parsed.storeId, productId: parsed.productId, offerId: source.offerId, imageCount: selectedImages.length });
       const startedAt = Date.now();
+      const prompt = parsed.prompt || (await getUserAiPromptSettings(env, user.id)).aiDescriptionPrompt;
       try {
         const result = await generateShopifyDescription(env, {
           product: {
@@ -1279,13 +1297,14 @@ async function handleAuthenticatedApi(
             descriptionHtml: product.product.descriptionHtml,
           },
           source: toShopifyDescriptionSourceInput(source),
-          prompt: parsed.prompt,
+          prompt,
           images: selectedImages,
+          targetLanguage: parsed.targetLanguage || parsed.locale || "English",
         });
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.description", scope: "chat", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { offerId: source.offerId, sourceOrigin: source.origin, imageCount: selectedImages.length, promptLength: parsed.prompt.length }, responseSummary: { descriptionLength: result.descriptionHtml.length, imageCount: result.imageCount, promptVersion: result.promptVersion }, entityType: "shopify_product", entityId: parsed.productId });
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.description", scope: "chat", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { offerId: source.offerId, sourceOrigin: source.origin, imageCount: selectedImages.length, promptLength: prompt.length }, responseSummary: { descriptionLength: result.descriptionHtml.length, imageCount: result.imageCount, promptVersion: result.promptVersion }, entityType: "shopify_product", entityId: parsed.productId });
         return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
       } catch (error) {
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.description", scope: "chat", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { offerId: source.offerId, sourceOrigin: source.origin, imageCount: selectedImages.length, promptLength: parsed.prompt.length }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.description", scope: "chat", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { offerId: source.offerId, sourceOrigin: source.origin, imageCount: selectedImages.length, promptLength: prompt.length }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
         await refundAiRequest(env, user.id, charge).catch(() => undefined);
         throw error;
       }
@@ -1371,8 +1390,9 @@ async function handleAuthenticatedApi(
       });
       const charge = await chargeAiRequest(env, user.id, { feature: "shopify_translation", storeId: parsed.storeId, productId: parsed.productId, locale: parsed.locale, fieldCount: fields.length });
       const startedAt = Date.now();
+      const prompt = parsed.prompt || (await getUserAiPromptSettings(env, user.id)).translationPrompt;
       try {
-        const result = await translateShopifyContent(env, { ...parsed, fields });
+        const result = await translateShopifyContent(env, { ...parsed, prompt, fields });
         await safeRecordAiLog(request, env, user.id, { operation: "shopify.translation", scope: "translation", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { locale: parsed.locale, marketId: parsed.marketId, fieldCount: fields.length, style: parsed.style }, responseSummary: { locale: result.locale, translations: result.translations, translationCount: result.translations.length, changedCount: result.translations.filter((item) => item.changed).length }, entityType: "shopify_product", entityId: parsed.productId });
         return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
       } catch (error) {

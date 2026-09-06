@@ -24,6 +24,8 @@ import type {
   AiSettings, AiSettingsInput, AuditLog, CollectionTaskBatchItem, CollectionTaskBatchResponse, DashboardSummary,
   GoogleSettings, OneBoundSettings, ShopifyStore, User,
   SearchTaskLifecycle,
+  UserAiPromptSettings,
+  UserAiPromptSettingsInput,
 } from "./types";
 
 type View = "dashboard" | "tasks" | "shopify-products" | "shopify" | "credits"
@@ -95,6 +97,8 @@ export default function App() {
   const [onebound, setOnebound] = useState<OneBoundSettings | null>(null);
   const [google, setGoogle] = useState<GoogleSettings | null>(null);
   const [ai, setAi] = useState<AiSettings | null>(null);
+  const [userAiPrompts, setUserAiPrompts] = useState<UserAiPromptSettings | null>(null);
+  const [loadingUserAiPrompts, setLoadingUserAiPrompts] = useState(false);
   const [tasks, setTasks] = useState<import("./types").SearchTask[]>([]);
   const [taskTotal, setTaskTotal] = useState(0);
   const [loadingTasks, setLoadingTasks] = useState(false);
@@ -198,10 +202,17 @@ export default function App() {
     } catch (error) { handleApiError(error); } finally { setLoadingSettings(false); }
   }, [handleApiError]);
 
+  const loadUserAiPrompts = useCallback(async () => {
+    setLoadingUserAiPrompts(true);
+    try {
+      setUserAiPrompts((await api<{ settings: UserAiPromptSettings }>("/api/user/ai-prompts")).settings);
+    } catch (error) { handleApiError(error); } finally { setLoadingUserAiPrompts(false); }
+  }, [handleApiError]);
+
   useEffect(() => {
     api<{ user: User }>("/api/auth/me").then((result) => setUser(result.user)).catch(() => setUser(null));
   }, []);
-  useEffect(() => { if (user) { void loadSummary(); void loadStores(); } }, [loadStores, loadSummary, user]);
+  useEffect(() => { if (user) { void loadSummary(); void loadStores(); void loadUserAiPrompts(); } }, [loadStores, loadSummary, loadUserAiPrompts, user]);
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedTaskSearch(taskSearch), 260);
     return () => window.clearTimeout(timer);
@@ -357,6 +368,22 @@ export default function App() {
     } catch (error) { handleApiError(error); throw error; } finally { setSaving(false); }
   }
 
+  async function saveUserAiPromptSettings(input: UserAiPromptSettingsInput) {
+    setSaving(true);
+    try {
+      setUserAiPrompts((await api<{ settings: UserAiPromptSettings }>("/api/user/ai-prompts", {
+        method: "PUT",
+        body: JSON.stringify(input),
+      })).settings);
+      notify("success", "个人 AI 提示词已保存");
+    } catch (error) {
+      handleApiError(error);
+      throw error;
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function changePassword(currentPassword: string, password: string) {
     setSaving(true);
     try {
@@ -462,7 +489,7 @@ export default function App() {
           <BatchImportGuidePage onOpenTasks={isAdmin ? undefined : () => navigate("tasks")} />
         ) : view === "shopify-products" ? (
           productId
-            ? <ShopifyProductEditorPage stores={stores} storeId={productStoreId} productId={productId} returnPath={productReturnPath} onBack={backFromProduct} onError={handleApiError} onNotify={(message) => notify("success", message)} />
+            ? <ShopifyProductEditorPage stores={stores} storeId={productStoreId} productId={productId} returnPath={productReturnPath} aiPrompts={userAiPrompts} onBack={backFromProduct} onError={handleApiError} onNotify={(message) => notify("success", message)} />
             : <ShopifyProductsPage stores={stores} onError={handleApiError} onNotify={(message) => notify("success", message)} onOpenProduct={openProduct} />
         ) : view === "shopify" ? (
           <ShopifyStoresPage stores={stores} loading={loadingSettings} saving={saving} onSave={saveStore} onTest={testStore} onDelete={deleteStore} />
@@ -480,7 +507,7 @@ export default function App() {
             onPassword={async (userId, password) => { await api(`/api/users/${userId}/password`, { method: "POST", body: JSON.stringify({ password }) }); if (userId === user.id) setUser(null); }}
           />
         ) : view === "profile" ? (
-          <ProfileSettingsPage user={user} saving={saving} onChangePassword={changePassword} />
+          <ProfileSettingsPage user={user} saving={saving} aiPrompts={userAiPrompts} loadingAiPrompts={loadingUserAiPrompts} onChangePassword={changePassword} onSaveAiPrompts={saveUserAiPromptSettings} />
         ) : (
           <SettingsPage onebound={onebound} google={google} ai={ai} loading={loadingSettings} saving={saving} onSaveOneBound={saveOneBound} onSaveGoogle={saveGoogle} onSaveAi={saveAi} />
         )}

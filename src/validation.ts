@@ -63,6 +63,12 @@ export const aiSettingsSchema = z.object({
 
 export const aiSettingsUpdateSchema = aiSettingsSchema;
 
+export const userAiPromptSettingsSchema = z.object({
+  aiDescriptionPrompt: z.string().trim().max(12_000).default(""),
+  translationPrompt: z.string().trim().max(8_000).default(""),
+  imagePrompt: z.string().trim().max(12_000).default(""),
+});
+
 export const shopifySettingsSchema = z.object({
   shopDomain: z.string().trim().min(1).max(255),
   displayName: z.string().trim().max(255).default(""),
@@ -148,8 +154,10 @@ export const shopifyProductTranslationAiSchema = z.object({
   storeId: z.string().uuid(),
   productId: z.string().min(1).max(255),
   locale: shopifyLocaleSchema,
+  targetLanguage: z.string().trim().max(100).optional(),
   sourceLocale: shopifyLocaleSchema.optional(),
   marketId: z.string().trim().max(255).optional(),
+  marketName: z.string().trim().max(255).optional(),
   fields: z.array(shopifyTranslationFieldSchema).min(1).max(32),
   prompt: z.string().trim().max(8_000).default(""),
   style: z.string().trim().max(500).default("自然、清晰、符合目标市场电商习惯"),
@@ -159,6 +167,8 @@ export const shopifyProductTranslationAiSchema = z.object({
 export const shopifyProductSeoAiSchema = z.object({
   storeId: z.string().uuid(),
   productId: z.string().min(1).max(255),
+  locale: shopifyLocaleSchema.optional(),
+  targetLanguage: z.string().trim().max(100).optional(),
   title: z.string().max(255).default(""),
   descriptionHtml: z.string().max(500_000).default(""),
   productType: z.string().max(255).default(""),
@@ -171,6 +181,8 @@ export const shopifyProductSeoAiSchema = z.object({
 export const shopifyProductDescriptionAiSchema = z.object({
   storeId: z.string().uuid(),
   productId: z.string().min(1).max(255),
+  locale: shopifyLocaleSchema.optional(),
+  targetLanguage: z.string().trim().max(100).optional(),
   prompt: z.string().trim().max(12_000).default(""),
   imageIds: z.array(z.string().trim().min(1).max(255)).min(1).max(4)
     .transform((values) => [...new Set(values)]),
@@ -181,6 +193,8 @@ export const shopifyImageAnalyzeSchema = z.object({
   productId: z.string().min(1).max(255),
   imageId: z.string().min(1).max(255),
   imageUrl: z.string().url().max(2_048),
+  targetLanguage: z.string().trim().max(100).optional(),
+  targetLocale: z.string().trim().max(35).optional(),
   jobId: z.string().trim().min(1).max(255).optional(),
 });
 
@@ -258,6 +272,7 @@ export const aiCandidatesRequestSchema = z.object({
 
 export type AiSettingsInput = z.infer<typeof aiSettingsSchema>;
 export type AiSettingsUpdateInput = z.infer<typeof aiSettingsUpdateSchema>;
+export type UserAiPromptSettingsInput = z.infer<typeof userAiPromptSettingsSchema>;
 export type ShopifySettingsInput = z.infer<typeof shopifySettingsSchema>;
 export type ShopifyProductTranslationAiInput = z.infer<typeof shopifyProductTranslationAiSchema>;
 export type ShopifyProductTranslationPublishInput = z.infer<typeof shopifyProductTranslationPublishSchema>;

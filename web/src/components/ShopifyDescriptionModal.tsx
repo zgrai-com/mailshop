@@ -16,6 +16,7 @@ type ShopifyDescriptionModalProps = {
   product: ShopifyRemoteProduct | null;
   source: ShopifyDescriptionSource | null;
   prompt: string;
+  defaultPrompt: string;
   html: string;
   selectedImageIds: string[];
   credits: { balance: number; charged: number } | null;
@@ -54,6 +55,7 @@ export function ShopifyDescriptionModal({
   product,
   source,
   prompt,
+  defaultPrompt,
   html,
   selectedImageIds,
   credits,
@@ -166,11 +168,11 @@ export function ShopifyDescriptionModal({
                 <span>CUSTOM INSTRUCTIONS</span>
                 <h3>提示词</h3>
               </div>
-              <button className="button quiet compact" type="button" onClick={onResetPrompt} disabled={prompt === DEFAULT_DESCRIPTION_PROMPT}>恢复默认</button>
+              <button className="button quiet compact" type="button" onClick={onResetPrompt} disabled={prompt === defaultPrompt}>恢复默认</button>
             </div>
             <label className="shopify-description-prompt-field">
               <span>本次描述要求</span>
-              <textarea rows={5} value={prompt} onChange={(event) => onPromptChange(event.target.value)} placeholder={DEFAULT_DESCRIPTION_PROMPT} />
+              <textarea rows={5} value={prompt} onChange={(event) => onPromptChange(event.target.value)} placeholder={defaultPrompt || DEFAULT_DESCRIPTION_PROMPT} />
               <small>可以补充目标市场、语气、品牌词和必须避免的内容。</small>
             </label>
           </section>

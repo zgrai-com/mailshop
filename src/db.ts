@@ -8,6 +8,7 @@ import type {
   SearchTaskLifecycleUpdate,
   SearchTaskRunInput,
   SearchTaskSyncInput,
+  UserAiPromptSettingsInput,
 } from "./validation";
 import { normalizeTaskUrl } from "./task-url";
 
@@ -397,6 +398,66 @@ export async function listAiLogs(env: Env, userId: string, isAdmin: boolean, lim
     requestSummary: parseJsonValue(row.requestSummaryJson, {}),
     responseSummary: parseJsonValue(row.responseSummaryJson, {}),
   }));
+}
+
+export type UserAiPromptSettings = {
+  aiDescriptionPrompt: string;
+  translationPrompt: string;
+  imagePrompt: string;
+  updatedAt: string | null;
+};
+
+let userAiPromptSettingsSchemaReady: Promise<void> | null = null;
+
+export async function ensureUserAiPromptSettingsSchema(env: Env): Promise<void> {
+  if (!userAiPromptSettingsSchemaReady) {
+    userAiPromptSettingsSchemaReady = (async () => {
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS user_ai_prompt_settings (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        ai_description_prompt TEXT NOT NULL DEFAULT '',
+        translation_prompt TEXT NOT NULL DEFAULT '',
+        image_prompt TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      )`).run();
+    })().catch((error) => {
+      userAiPromptSettingsSchemaReady = null;
+      throw error;
+    });
+  }
+  await userAiPromptSettingsSchemaReady;
+}
+
+export async function getUserAiPromptSettings(env: Env, userId: string): Promise<UserAiPromptSettings> {
+  await ensureUserAiPromptSettingsSchema(env);
+  const row = await env.DB.prepare(
+    `SELECT ai_description_prompt AS aiDescriptionPrompt,
+            translation_prompt AS translationPrompt,
+            image_prompt AS imagePrompt,
+            updated_at AS updatedAt
+       FROM user_ai_prompt_settings
+      WHERE user_id = ?`,
+  ).bind(userId).first<Record<string, unknown>>();
+  return {
+    aiDescriptionPrompt: typeof row?.aiDescriptionPrompt === "string" ? row.aiDescriptionPrompt : "",
+    translationPrompt: typeof row?.translationPrompt === "string" ? row.translationPrompt : "",
+    imagePrompt: typeof row?.imagePrompt === "string" ? row.imagePrompt : "",
+    updatedAt: typeof row?.updatedAt === "string" ? row.updatedAt : null,
+  };
+}
+
+export async function saveUserAiPromptSettings(env: Env, userId: string, input: UserAiPromptSettingsInput): Promise<void> {
+  await ensureUserAiPromptSettingsSchema(env);
+  await env.DB.prepare(
+    `INSERT INTO user_ai_prompt_settings
+       (user_id, ai_description_prompt, translation_prompt, image_prompt, updated_at)
+     VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+     ON CONFLICT(user_id) DO UPDATE SET
+       ai_description_prompt = excluded.ai_description_prompt,
+       translation_prompt = excluded.translation_prompt,
+       image_prompt = excluded.image_prompt,
+       updated_at = excluded.updated_at`,
+  ).bind(userId, input.aiDescriptionPrompt, input.translationPrompt, input.imagePrompt).run();
 }
 
 export type ShopifyImageJob = {

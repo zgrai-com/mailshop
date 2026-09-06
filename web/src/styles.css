@@ -4997,6 +4997,132 @@ textarea::placeholder {
   margin-top: 0;
 }
 
+.profile-ai-panel {
+  grid-column: 1 / -1;
+}
+
+.profile-ai-prompt-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.profile-ai-prompt-grid label {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.profile-ai-prompt-grid label > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.profile-ai-prompt-grid textarea {
+  min-height: 168px;
+  background: var(--color-surface-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.profile-ai-variables {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--color-line);
+}
+
+.profile-ai-variables-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.profile-ai-variables-heading > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-ai-variables-heading > div > span {
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.profile-ai-variables-heading h3 {
+  font-size: 14px;
+}
+
+.profile-ai-variables-heading small {
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.profile-ai-variable-groups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.profile-ai-variable-group {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-soft);
+  padding: 12px;
+}
+
+.profile-ai-variable-group-head {
+  display: grid;
+  gap: 4px;
+}
+
+.profile-ai-variable-group-head strong {
+  font-size: 12px;
+}
+
+.profile-ai-variable-group-head span {
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.profile-ai-variable-list {
+  display: grid;
+  gap: 8px;
+}
+
+.profile-ai-variable-item {
+  display: grid;
+  gap: 3px;
+}
+
+.profile-ai-variable-item code {
+  color: var(--color-accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  word-break: break-word;
+}
+
+.profile-ai-variable-item span {
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .profile-summary-body {
   display: grid;
   gap: 16px;
@@ -5057,6 +5183,14 @@ textarea::placeholder {
 
 @media (max-width: 900px) {
   .profile-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-ai-prompt-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-ai-variable-groups {
     grid-template-columns: 1fr;
   }
 }
@@ -5801,7 +5935,11 @@ textarea::placeholder {
 .translation-card { gap: 14px; }
 .translation-card h2 { display: inline-flex; align-items: center; gap: 7px; }
 .translation-card-state { border-radius: 99px; background: var(--color-surface-soft); color: var(--color-muted) !important; padding: 4px 7px; font-family: var(--font-sans) !important; font-size: 9px !important; white-space: nowrap; }
+.translation-card-state.loading { background: color-mix(in srgb, var(--color-blue) 10%, var(--color-surface)); color: var(--color-blue) !important; }
 .translation-card-state.changed { background: color-mix(in srgb, var(--color-amber) 10%, var(--color-surface)); color: var(--color-amber) !important; }
+.translation-card-locale-field { display: grid; gap: 5px; }
+.translation-card-locale-status { display: flex; align-items: center; gap: 6px; color: var(--color-muted); font-size: 10px; }
+.translation-card-locale-status svg { flex: 0 0 auto; color: var(--color-blue); }
 .translation-card-route { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-surface-soft); padding: 11px; }
 .translation-card-route > div { display: grid; min-width: 0; gap: 3px; }
 .translation-card-route small, .translation-card-route span { overflow: hidden; color: var(--color-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }

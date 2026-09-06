@@ -65,6 +65,7 @@ describe("Shopify translation prompt", () => {
       storeId: "5a8c0989-67a9-4a51-bf16-591a2d9d408d",
       productId: "gid://shopify/Product/1",
       locale: "fr",
+      targetLanguage: "French",
       marketId: "gid://shopify/Market/2",
       prompt: "优先使用简洁、自然的法语电商表达。",
       style: "简洁高端",
@@ -79,6 +80,7 @@ describe("Shopify translation prompt", () => {
     expect(prompt).toContain('"resourceId":"gid://shopify/Product/1"');
     expect(prompt).toContain("body_html/descriptionHtml");
     expect(prompt).toContain("普通文本应翻译");
+    expect(prompt).toContain("target language: French");
     expect(prompt).toContain('"translations"');
     expect(prompt).toContain('"title":"翻译后的 title"');
     expect(prompt).toContain("AirFlex 保持英文");
@@ -140,11 +142,12 @@ describe("Shopify description prompt", () => {
       priceTiers: [{ minQuantity: 1, price: 12 }],
       raw: { item: { title: "Sample product" } },
       images: [{ id: "main-1", url: "https://img.example/main.jpg", group: "main" }],
-    }, "Please write a clean US-English Shopify description.");
+    }, "Please write a clean US-English Shopify description.", "Japanese");
 
     expect(SHOPIFY_DESCRIPTION_PROMPT_VERSION).toBe("shopify-product-description-v1");
     expect(prompt).toContain("Sample product");
     expect(prompt).toContain("Please write a clean US-English Shopify description.");
+    expect(prompt).toContain("Write all visible product-description text in Japanese.");
     expect(prompt).toContain("1688 结构化商品 JSON");
     expect(prompt).toContain('"title":"Sample product"');
   });

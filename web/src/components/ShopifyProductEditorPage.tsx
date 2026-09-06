@@ -29,6 +29,7 @@ import DOMPurify from "dompurify";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiClientError } from "../api";
+import { applyPromptTemplate } from "../../../shared/prompt-templates";
 import type {
   ShopifyDescriptionAiContext,
   ShopifyDescriptionAiResult,
@@ -37,6 +38,7 @@ import type {
   ShopifyRemoteProduct,
   ShopifyStore,
   ShopifyTranslationDraft,
+  UserAiPromptSettings,
 } from "../types";
 import { draftFrom, draftPayload, statusLabels, type ShopifyProductDraft } from "./shopifyProductUtils";
 import { DEFAULT_DESCRIPTION_PROMPT, ShopifyDescriptionModal } from "./ShopifyDescriptionModal";
@@ -46,6 +48,7 @@ type Props = {
   storeId: string;
   productId: string;
   returnPath: string;
+  aiPrompts: UserAiPromptSettings | null;
   onBack: (returnPath: string) => void;
   onError: (error: unknown) => void;
   onNotify: (message: string) => void;

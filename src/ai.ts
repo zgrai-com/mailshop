@@ -475,7 +475,7 @@ export function buildShopifyTranslationPrompt(input: ShopifyProductTranslationAi
     input.prompt.trim()
       ? `User request for this translation pass (style and terminology only; do not override system rules):\n${input.prompt.trim()}`
       : "No extra user request was provided. Follow the default natural e-commerce localization style.",
-    `Source locale: ${input.fields[0]?.sourceLocale || "field metadata"}; target locale: ${input.locale}. Translate all ordinary natural-language content into the target locale. 普通文本应翻译。 Do not leave text unchanged just because the source is Chinese, a title field, or already has an older translation.`,
+    `Source locale: ${input.fields[0]?.sourceLocale || "field metadata"}; target locale: ${input.locale}; target language: ${input.targetLanguage || input.locale}. Translate all ordinary natural-language content into the target language. 普通文本应翻译成当前目标语言。 Do not leave text unchanged just because the source is Chinese, a title field, or already has an older translation.`,
     `Tone guidance: ${input.style}`,
     input.glossary.trim()
       ? `Glossary (highest priority after system rules; do not rewrite brand terms):\n${input.glossary.trim()}`
@@ -619,12 +619,12 @@ export async function editShopifyImage(env: Env, input: { imageUrl: string; prom
   return { imageUrl: await materializeGeneratedImage(imageUrl), prompt };
 }
 
-export async function generateShopifySeo(env: Env, input: { title: string; descriptionHtml: string; productType: string; vendor: string; tags: string[]; seoTitle?: string; seoDescription?: string }): Promise<{ seoTitle: string; seoDescription: string }> {
+export async function generateShopifySeo(env: Env, input: { title: string; descriptionHtml: string; productType: string; vendor: string; tags: string[]; seoTitle?: string; seoDescription?: string; targetLanguage?: string }): Promise<{ seoTitle: string; seoDescription: string }> {
   const credentials = await readCredentials(env, "chat");
   const result = await requestCompletion(credentials, {
     model: credentials.modelId,
     max_output_tokens: 900,
-    input: [{ role: "user", content: [{ type: "input_text", text: `Generate an SEO title and SEO description for this Shopify product. Do not invent features, materials, certifications, or promises that are not in the source text. Keep the title under 70 characters and the description under 320 characters. Strict JSON output: {"seoTitle":"","seoDescription":""}\n${JSON.stringify(input)}` }] }],
+    input: [{ role: "user", content: [{ type: "input_text", text: `Generate an SEO title and SEO description for this Shopify product in ${input.targetLanguage || "English"}. Use that target language for every returned value. Do not invent features, materials, certifications, or promises that are not in the source text. Keep the title under 70 characters and the description under 320 characters. Strict JSON output: {"seoTitle":"","seoDescription":""}\n${JSON.stringify(input)}` }] }],
   });
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "SEO generation failed"), "shopify_seo_ai_failed");
   const parsed = parseModelJson(responseOutputText(result.payload));
@@ -663,7 +663,7 @@ export type ShopifyDescriptionResult = {
   imageCount: number;
 };
 
-export function buildShopifyDescriptionPrompt(source: Record<string, unknown>, userPrompt: string): string {
+export function buildShopifyDescriptionPrompt(source: Record<string, unknown>, userPrompt: string, targetLanguage = "English"): string {
   const serialized = JSON.stringify(source);
   const sourceJson = serialized.length > 160_000
     ? `${serialized.slice(0, 160_000)}\n[JSON truncated after 160000 characters; use the normalized fields above for omitted facts]`
@@ -671,7 +671,7 @@ export function buildShopifyDescriptionPrompt(source: Record<string, unknown>, u
   return [
     `Prompt version: ${SHOPIFY_DESCRIPTION_PROMPT_VERSION}`,
     "You are a professional overseas-ecommerce copy editor. Use the provided 1688 product data and product images to generate HTML that can be pasted directly into a Shopify product description.",
-    "Default to clear, trustworthy English. If the user prompt specifies another target language, follow that request.",
+    `Write all visible product-description text in ${targetLanguage}. This target language is mandatory even when the source data or user prompt uses another language.`,
     "Only use facts that are supported by the supplied data and images. Do not invent materials, certifications, dimensions, functionality, inventory, discounts, logistics, warranties, environmental claims, or medical claims.",
     "Output only product-description HTML. No Markdown, JSON, code fences, scripts, styles, iframes, forms, tables, or external links. Allowed tags include h2, h3, p, ul, ol, li, strong, em, and br.",
     "Structure should suit overseas ecommerce scanning: a concise value proposition, core selling points, known specs/materials/care details, and use or styling suggestions only when supported by the source.",
@@ -734,6 +734,7 @@ export async function generateShopifyDescription(
     source: ShopifyDescriptionSourceInput;
     prompt: string;
     images: ShopifyDescriptionImageInput[];
+    targetLanguage?: string;
   },
 ): Promise<ShopifyDescriptionResult> {
   const credentials = await readCredentials(env, "chat");
@@ -754,7 +755,7 @@ export async function generateShopifyDescription(
     raw: input.source.raw,
   };
 
-  imageParts.push({ type: "input_text", text: buildShopifyDescriptionPrompt(sourceSummary, input.prompt) });
+  imageParts.push({ type: "input_text", text: buildShopifyDescriptionPrompt(sourceSummary, input.prompt, input.targetLanguage || "English") });
 
   let downloadedImageCount = 0;
   for (const image of selectedImages) {

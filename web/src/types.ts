@@ -65,6 +65,19 @@ export type AiSettingsInput = {
   imageGenerationModelId: string;
 };
 
+export type UserAiPromptSettings = {
+  aiDescriptionPrompt: string;
+  translationPrompt: string;
+  imagePrompt: string;
+  updatedAt: string | null;
+};
+
+export type UserAiPromptSettingsInput = {
+  aiDescriptionPrompt: string;
+  translationPrompt: string;
+  imagePrompt: string;
+};
+
 export type AiRequestLog = {
   id: string;
   userId: string | null;
