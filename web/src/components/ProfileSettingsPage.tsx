@@ -1,5 +1,5 @@
 import { FileText, ImagePlus, KeyRound, Languages, LoaderCircle, Save, ShieldCheck, Sparkles, UserRound } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, type ReactNode, useEffect, useState } from "react";
 
 import { PROMPT_VARIABLE_GROUPS } from "../../../shared/prompt-templates";
 import type { User, UserAiPromptSettings, UserAiPromptSettingsInput } from "../types";
@@ -15,6 +15,43 @@ type Props = {
 
 function updatedLabel(updatedAt: string | null | undefined): string {
   return updatedAt ? `更新于 ${new Date(updatedAt).toLocaleString("zh-CN")}` : "尚未保存";
+}
+
+type ProfileAiPromptSectionProps = {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  maxLength: number;
+  placeholder: string;
+  groupId: string;
+  onChange: (value: string) => void;
+};
+
+function ProfileAiPromptSection({ icon, label, value, maxLength, placeholder, groupId, onChange }: ProfileAiPromptSectionProps) {
+  const group = PROMPT_VARIABLE_GROUPS.find((item) => item.id === groupId);
+  if (!group) return null;
+  return (
+    <section className="profile-ai-prompt-section">
+      <label className="profile-ai-prompt-card">
+        <span>{icon}{label}</span>
+        <textarea rows={7} maxLength={maxLength} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+      </label>
+      <details className="profile-ai-variable-group">
+        <summary className="profile-ai-variable-group-head">
+          <strong>{group.title}属性</strong>
+          <span>{group.variables.length} 个可用占位符 · {group.description}</span>
+        </summary>
+        <div className="profile-ai-variable-list">
+          {group.variables.map((variable) => (
+            <div key={`${group.id}:${variable.token}`} className="profile-ai-variable-item">
+              <code>{`{${variable.token}}`}</code>
+              <span>{variable.description}</span>
+            </div>
+          ))}
+        </div>
+      </details>
+    </section>
+  );
 }
 
 export function ProfileSettingsPage({ user, saving, aiPrompts, loadingAiPrompts, onChangePassword, onSaveAiPrompts }: Props) {
@@ -131,50 +168,43 @@ export function ProfileSettingsPage({ user, saving, aiPrompts, loadingAiPrompts,
           <form className="settings-form profile-ai-prompt-form" onSubmit={submitAiPrompts}>
             <p className="settings-help">这些提示词会作为你在 Shopify 商品里生成标题、描述、多语言翻译和处理图片时的默认要求；每次执行前仍然可以临时修改。</p>
             <div className="profile-ai-prompt-grid">
-              <label>
-                <span><FileText size={15} />AI 生成描述提示词</span>
-                <textarea rows={7} maxLength={12_000} value={aiDescriptionPrompt} onChange={(event) => setAiDescriptionPrompt(event.target.value)} placeholder="留空时使用系统默认的 Shopify 商品描述生成规则。" />
-              </label>
-              <label>
-                <span><Sparkles size={15} />AI 生成标题提示词</span>
-                <textarea rows={7} maxLength={8_000} value={aiTitlePrompt} onChange={(event) => setAiTitlePrompt(event.target.value)} placeholder="留空时使用系统默认的 Shopify 商品标题生成规则。" />
-              </label>
-              <label>
-                <span><Languages size={15} />多语言翻译提示词</span>
-                <textarea rows={7} maxLength={8_000} value={translationPrompt} onChange={(event) => setTranslationPrompt(event.target.value)} placeholder="留空时使用系统默认的自然电商本地化规则。" />
-              </label>
-              <label>
-                <span><ImagePlus size={15} />AI 处理图片提示词</span>
-                <textarea rows={7} maxLength={12_000} value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} placeholder="留空时使用图片分析生成的提示词。" />
-              </label>
+              <ProfileAiPromptSection
+                icon={<FileText size={15} />}
+                label="AI 生成描述提示词"
+                value={aiDescriptionPrompt}
+                maxLength={12_000}
+                placeholder="留空时使用默认规则；需要 1688 原始 JSON 时手动加入 {1688json}。"
+                groupId="description"
+                onChange={setAiDescriptionPrompt}
+              />
+              <ProfileAiPromptSection
+                icon={<Sparkles size={15} />}
+                label="AI 生成标题提示词"
+                value={aiTitlePrompt}
+                maxLength={8_000}
+                placeholder="留空时使用系统默认的 Shopify 商品标题生成规则。"
+                groupId="title"
+                onChange={setAiTitlePrompt}
+              />
+              <ProfileAiPromptSection
+                icon={<Languages size={15} />}
+                label="多语言翻译提示词"
+                value={translationPrompt}
+                maxLength={8_000}
+                placeholder="留空时使用系统默认的自然电商本地化规则。"
+                groupId="translation"
+                onChange={setTranslationPrompt}
+              />
+              <ProfileAiPromptSection
+                icon={<ImagePlus size={15} />}
+                label="AI 处理图片提示词"
+                value={imagePrompt}
+                maxLength={12_000}
+                placeholder="留空时使用图片分析生成的提示词。"
+                groupId="image"
+                onChange={setImagePrompt}
+              />
             </div>
-            <section className="profile-ai-variables">
-              <div className="profile-ai-variables-heading">
-                <div>
-                  <span>SUPPORTED VARIABLES</span>
-                  <h3>可用占位符</h3>
-                </div>
-                <small>括号里的名字会按当前页面上下文自动替换，未提供的变量会保留原样。</small>
-              </div>
-              <div className="profile-ai-variable-groups">
-                {PROMPT_VARIABLE_GROUPS.map((group) => (
-                  <div key={group.id} className="profile-ai-variable-group">
-                    <div className="profile-ai-variable-group-head">
-                      <strong>{group.title}</strong>
-                      <span>{group.description}</span>
-                    </div>
-                    <div className="profile-ai-variable-list">
-                      {group.variables.map((variable) => (
-                        <div key={`${group.id}:${variable.token}`} className="profile-ai-variable-item">
-                          <code>{`{${variable.token}}`}</code>
-                          <span>{variable.description}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
             {aiPromptError && <div className="settings-error" role="alert">{aiPromptError}</div>}
             <footer className="settings-footer">
               <span className="settings-meta"><ShieldCheck size={15} />{loadingAiPrompts ? "正在读取提示词" : updatedLabel(aiPrompts?.updatedAt)}</span>

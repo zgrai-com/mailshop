@@ -1113,7 +1113,6 @@ async function handleAuthenticatedApi(
     return json({ ok: true, credits: { balance: await getCreditBalance(env, user.id), transactions: await listCreditTransactions(env, user.id) } });
   }
   if (url.pathname === "/api/ai-logs") {
-    assertAdmin(user);
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
     const limit = Number(url.searchParams.get("limit") ?? 100);
     return json({ ok: true, logs: await listAiLogs(env, user.id, user.role === "admin", limit) });

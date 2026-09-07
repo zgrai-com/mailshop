@@ -241,13 +241,13 @@ export default function App() {
   useEffect(() => {
     if (user?.id && view === "credits") void loadCredits();
     if (user?.role === "admin" && view === "audit-logs") void loadAuditLogs();
-    if (user?.role === "admin" && view === "ai-logs") void loadAiLogs();
+    if (user?.id && view === "ai-logs") void loadAiLogs();
     if (user?.role === "admin" && view === "accounts") void loadUsers();
     if (user?.role === "admin" && view === "settings") void loadSettings();
   }, [loadAiLogs, loadAuditLogs, loadCredits, loadSettings, loadUsers, user?.id, user?.role, view]);
   useEffect(() => {
     if (!user) return;
-    const adminOnlyViews: View[] = ["audit-logs", "ai-logs", "accounts", "settings"];
+    const adminOnlyViews: View[] = ["audit-logs", "accounts", "settings"];
     const userOnlyViews: View[] = ["tasks", "shopify-products", "shopify", "credits"];
     if ((user.role === "admin" && userOnlyViews.includes(view)) || (user.role !== "admin" && adminOnlyViews.includes(view))) {
       navigate("dashboard", true);
@@ -482,8 +482,8 @@ export default function App() {
             <a className={view === "accounts" ? "active" : ""} href={viewPaths.accounts} onClick={(event) => handleNavigation(event, "accounts")}><Users size={18} /><span>账号管理</span></a>
             <a className={view === "settings" ? "active" : ""} href={viewPaths.settings} onClick={(event) => handleNavigation(event, "settings")}><Settings size={18} /><span>系统设置</span></a>
             <a className={view === "audit-logs" ? "active" : ""} href={viewPaths["audit-logs"]} onClick={(event) => handleNavigation(event, "audit-logs")}><ClipboardList size={18} /><span>操作日志</span></a>
-            <a className={view === "ai-logs" ? "active" : ""} href={viewPaths["ai-logs"]} onClick={(event) => handleNavigation(event, "ai-logs")}><Cpu size={18} /><span>AI 日志</span></a>
           </>}
+          <a className={view === "ai-logs" ? "active" : ""} href={viewPaths["ai-logs"]} onClick={(event) => handleNavigation(event, "ai-logs")}><Cpu size={18} /><span>AI 日志</span></a>
           <a className={view === "profile" ? "active" : ""} href={viewPaths.profile} onClick={(event) => handleNavigation(event, "profile")}><UserRoundCog size={18} /><span>个人设置</span></a>
         </nav>
         <footer className="sidebar-footer"><div className="sidebar-user"><span>{user.displayName.slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName}</strong><small>{user.email || user.username}</small><small className="credit-balance">{isAdmin ? "系统管理员" : `${user.credits.toLocaleString()} 积分`}</small></div></div><button className="icon-button" type="button" onClick={logout} aria-label="退出登录" title="退出登录"><LogOut size={18} /></button></footer>
@@ -509,8 +509,8 @@ export default function App() {
           <CreditsPage balance={user.credits} transactions={creditTransactions} loading={loadingCredits} />
         ) : view === "audit-logs" && isAdmin ? (
           <AuditLogsPage logs={auditLogs} loading={loadingAuditLogs} onRefresh={() => void loadAuditLogs()} />
-        ) : view === "ai-logs" && isAdmin ? (
-          <AiLogsPage logs={aiLogs} loading={loadingAiLogs} onRefresh={() => void loadAiLogs()} />
+        ) : view === "ai-logs" ? (
+          <AiLogsPage logs={aiLogs} loading={loadingAiLogs} isAdmin={isAdmin} onRefresh={() => void loadAiLogs()} />
         ) : view === "accounts" && isAdmin ? (
           <UserManager
             currentUser={user}

@@ -3,9 +3,9 @@ import { Fragment, useState } from "react";
 
 import type { AiRequestLog } from "../types";
 
-type Props = { logs: AiRequestLog[]; loading: boolean; onRefresh: () => void };
+type Props = { logs: AiRequestLog[]; loading: boolean; isAdmin: boolean; onRefresh: () => void };
 
-export function AiLogsPage({ logs, loading, onRefresh }: Props) {
+export function AiLogsPage({ logs, loading, isAdmin, onRefresh }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   return (
@@ -13,8 +13,8 @@ export function AiLogsPage({ logs, loading, onRefresh }: Props) {
       <header className="page-heading">
         <div>
           <span>AI REQUEST LOGS</span>
-          <h1>AI 日志</h1>
-          <p>记录每次 AI 请求的模型、状态、耗时以及完整请求和响应内容。</p>
+          <h1>{isAdmin ? "AI 日志" : "我的 AI 日志"}</h1>
+          <p>{isAdmin ? "记录全部用户的 AI 请求，支持查看完整请求和响应内容。" : "仅显示当前账号发起的 AI 请求，支持查看完整请求和响应内容。"}</p>
         </div>
         <button className="button quiet" type="button" onClick={onRefresh} disabled={loading}>
           <RefreshCw className={loading ? "spin" : ""} size={16} />刷新日志
@@ -23,8 +23,8 @@ export function AiLogsPage({ logs, loading, onRefresh }: Props) {
 
       <section className="audit-log-panel">
         <header>
-          <div><span>AI ACTIVITY</span><h2>最近 {logs.length} 条 AI 请求</h2></div>
-          <small>按时间倒序记录，仅管理员可见</small>
+          <div><span>AI ACTIVITY</span><h2>{isAdmin ? "最近" : "我的"} {logs.length} 条 AI 请求</h2></div>
+          <small>{isAdmin ? "按时间倒序记录，管理员可查看全部用户" : "按时间倒序记录，仅当前账号可见"}</small>
         </header>
 
         {loading ? (

@@ -128,7 +128,7 @@ describe("Shopify translation prompt", () => {
 });
 
 describe("Shopify description prompt", () => {
-  it("combines the source JSON, image-aware instructions, and user prompt", () => {
+  it("does not append source JSON automatically", () => {
     const prompt = buildShopifyDescriptionPrompt({
       offerId: "123",
       title: "Sample product",
@@ -145,10 +145,9 @@ describe("Shopify description prompt", () => {
     }, "Please write a clean US-English Shopify description.", "Japanese");
 
     expect(SHOPIFY_DESCRIPTION_PROMPT_VERSION).toBe("shopify-product-description-v1");
-    expect(prompt).toContain("Sample product");
     expect(prompt).toContain("Please write a clean US-English Shopify description.");
     expect(prompt).toContain("Write all visible product-description text in Japanese.");
-    expect(prompt).toContain("1688 结构化商品 JSON");
-    expect(prompt).toContain('"title":"Sample product"');
+    expect(prompt).not.toContain("1688 结构化商品 JSON");
+    expect(prompt).not.toContain('"title":"Sample product"');
   });
 });

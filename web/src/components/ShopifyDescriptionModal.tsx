@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { proxiedImageUrl } from "../media";
 import type { ShopifyDescriptionSource, ShopifyRemoteProduct } from "../types";
 
-export const DEFAULT_DESCRIPTION_PROMPT = "请根据 1688 商品 JSON、属性、详情图和主图，生成适合海外电商 Shopify 的商品描述 HTML。内容要自然、可信、面向海外买家，重点写清核心卖点、材质、规格、适用场景和包装信息；不要编造不存在的参数，不要出现 1688、批发价、供应商内部信息或人民币价格。只输出可直接粘贴的完整 HTML，优先使用 h2/h3/p/ul/li/strong/br。";
+export const DEFAULT_DESCRIPTION_PROMPT = "生成适合海外电商 Shopify 的商品描述 HTML。内容要自然、可信、面向海外买家，重点写清核心卖点、材质、规格、适用场景和包装信息；不要编造不存在的参数，不要出现 1688、批发价、供应商内部信息或人民币价格。若需要使用 1688 原始数据，请在本次提示词中主动添加对应占位符。只输出可直接粘贴的完整 HTML，优先使用 h2/h3/p/ul/li/strong/br。";
 
 type ShopifyDescriptionModalProps = {
   open: boolean;
@@ -173,7 +173,7 @@ export function ShopifyDescriptionModal({
             <label className="shopify-description-prompt-field">
               <span>本次描述要求</span>
               <textarea rows={5} value={prompt} onChange={(event) => onPromptChange(event.target.value)} placeholder={defaultPrompt || DEFAULT_DESCRIPTION_PROMPT} />
-              <small>可以补充目标市场、语气、品牌词和必须避免的内容。</small>
+              <small>可以补充目标市场、语气、品牌词和必须避免的内容；需要 1688 原始 JSON 时请手动加入 {"{1688json}"}。</small>
             </label>
           </section>
 

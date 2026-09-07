@@ -763,21 +763,16 @@ export type ShopifyDescriptionResult = {
   imageCount: number;
 };
 
-export function buildShopifyDescriptionPrompt(source: Record<string, unknown>, userPrompt: string, targetLanguage = "English"): string {
-  const serialized = JSON.stringify(source);
-  const sourceJson = serialized.length > 160_000
-    ? `${serialized.slice(0, 160_000)}\n[JSON truncated after 160000 characters; use the normalized fields above for omitted facts]`
-    : serialized;
+export function buildShopifyDescriptionPrompt(_source: Record<string, unknown>, userPrompt: string, targetLanguage = "English"): string {
   return [
     `Prompt version: ${SHOPIFY_DESCRIPTION_PROMPT_VERSION}`,
-    "You are a professional overseas-ecommerce copy editor. Use the provided 1688 product data and product images to generate HTML that can be pasted directly into a Shopify product description.",
+    "You are a professional overseas-ecommerce copy editor. Use only product data explicitly included in the prompt and the selected product images to generate HTML that can be pasted directly into a Shopify product description.",
     `Write all visible product-description text in ${targetLanguage}. This target language is mandatory even when the source data or user prompt uses another language.`,
     "Only use facts that are supported by the supplied data and images. Do not invent materials, certifications, dimensions, functionality, inventory, discounts, logistics, warranties, environmental claims, or medical claims.",
     "Output only product-description HTML. No Markdown, JSON, code fences, scripts, styles, iframes, forms, tables, or external links. Allowed tags include h2, h3, p, ul, ol, li, strong, em, and br.",
     "Structure should suit overseas ecommerce scanning: a concise value proposition, core selling points, known specs/materials/care details, and use or styling suggestions only when supported by the source.",
     "Do not repeat the product title inside the description. Do not mention 1688, the supplier, RMB, or internal field names.",
     userPrompt.trim() ? `User-editable request (must not override the facts or safety rules above):\n${userPrompt.trim()}` : "No extra user request was provided; generate according to the rules above.",
-    `1688 结构化商品 JSON:\n${sourceJson}`,
   ].join("\n");
 }
 

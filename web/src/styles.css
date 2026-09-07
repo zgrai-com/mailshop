@@ -4989,14 +4989,14 @@ textarea::placeholder {
 
 .profile-view {
   min-height: 100%;
-  padding: 30px 34px 48px;
+  padding: 26px 34px 48px;
 }
 
 .profile-settings-grid {
   display: grid;
-  width: min(100%, 1080px);
-  grid-template-columns: minmax(260px, .72fr) minmax(420px, 1.28fr);
-  gap: 20px;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
 }
 
@@ -5006,34 +5006,48 @@ textarea::placeholder {
 }
 
 .profile-ai-panel {
-  grid-column: 1 / -1;
+  grid-column: auto;
+  grid-row: auto;
 }
 
 .profile-ai-prompt-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: 1fr;
+  gap: 0;
   margin-top: 20px;
 }
 
-.profile-ai-prompt-grid label {
+.profile-ai-prompt-section {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--color-line);
+  padding: 18px 0;
+}
+
+.profile-ai-prompt-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.profile-ai-prompt-card {
   display: grid;
   min-width: 0;
   gap: 8px;
 }
 
-.profile-ai-prompt-grid label > span {
+.profile-ai-prompt-card > span {
   display: inline-flex;
   min-width: 0;
   align-items: center;
   gap: 6px;
-  color: var(--color-muted);
+  color: var(--color-ink);
   font-size: 11px;
   font-weight: 700;
 }
 
-.profile-ai-prompt-grid textarea {
-  min-height: 168px;
+.profile-ai-prompt-card textarea {
+  min-height: 132px;
+  border-color: var(--color-line);
   background: var(--color-surface-soft);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -5053,15 +5067,7 @@ textarea::placeholder {
   gap: 4px;
 }
 
-.profile-ai-variables-heading > div {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.profile-ai-variables-heading > div > span {
+.profile-ai-variables-heading > span {
   color: var(--color-muted);
   font-family: var(--font-mono);
   font-size: 9px;
@@ -5080,22 +5086,46 @@ textarea::placeholder {
 
 .profile-ai-variable-groups {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
 .profile-ai-variable-group {
-  display: grid;
-  gap: 10px;
+  min-width: 0;
   border: 1px solid var(--color-line);
   border-radius: var(--radius-control);
   background: var(--color-surface-soft);
-  padding: 12px;
+}
+
+.profile-ai-variable-group[open] {
+  border-color: var(--color-line-strong);
 }
 
 .profile-ai-variable-group-head {
+  position: relative;
   display: grid;
   gap: 4px;
+  padding: 12px 34px 12px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.profile-ai-variable-group-head::-webkit-details-marker {
+  display: none;
+}
+
+.profile-ai-variable-group-head::after {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  color: var(--color-muted);
+  content: "+";
+  font-size: 16px;
+  line-height: 1;
+}
+
+.profile-ai-variable-group[open] .profile-ai-variable-group-head::after {
+  content: "−";
 }
 
 .profile-ai-variable-group-head strong {
@@ -5111,6 +5141,8 @@ textarea::placeholder {
 .profile-ai-variable-list {
   display: grid;
   gap: 8px;
+  border-top: 1px solid var(--color-line);
+  padding: 12px;
 }
 
 .profile-ai-variable-item {
@@ -5133,7 +5165,9 @@ textarea::placeholder {
 
 .profile-summary-body {
   display: grid;
-  gap: 16px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
   padding: 22px;
 }
 
@@ -5166,8 +5200,10 @@ textarea::placeholder {
 
 .profile-details {
   display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin: 4px 0 0;
+  margin: 8px 0 0;
   border-top: 1px solid var(--color-line);
   padding-top: 16px;
 }
@@ -5194,8 +5230,11 @@ textarea::placeholder {
     grid-template-columns: 1fr;
   }
 
-  .profile-ai-prompt-grid {
-    grid-template-columns: 1fr;
+  .profile-summary-panel,
+  .profile-password-panel,
+  .profile-ai-panel {
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .profile-ai-variable-groups {
@@ -5203,15 +5242,18 @@ textarea::placeholder {
   }
 }
 
-@media (max-width: 1200px) and (min-width: 901px) {
-  .profile-ai-prompt-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 768px) {
   .profile-view {
     padding: 18px 14px 24px;
+  }
+
+  .profile-ai-prompt-grid,
+  .profile-details {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-summary-body {
+    align-items: start;
   }
 }
 
