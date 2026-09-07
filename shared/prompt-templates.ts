@@ -1,6 +1,6 @@
 export type PromptTemplateValue = string | number | boolean | null | undefined | Record<string, unknown> | unknown[];
 
-export type PromptVariableContext = "description" | "translation" | "image";
+export type PromptVariableContext = "description" | "title" | "translation" | "image";
 
 export type PromptVariableDefinition = {
   token: string;
@@ -38,6 +38,24 @@ export const PROMPT_VARIABLE_GROUPS: Array<{
       { token: "1688 Price Tiers JSON", label: "1688 Price Tiers JSON", description: "1688 价格阶梯 JSON。", contexts: ["description"] },
       { token: "Selected Image Count", label: "Selected Image Count", description: "当前选中的商品图片数量。", contexts: ["description"] },
       { token: "Selected Images JSON", label: "Selected Images JSON", description: "当前选中的商品图片 JSON。", contexts: ["description"] },
+    ],
+  },
+  {
+    id: "title",
+    title: "商品标题",
+    description: "用于生成 Shopify 商品标题的提示词。",
+    variables: [
+      { token: "Target Language", label: "Target Language", description: "标题输出语言。", contexts: ["title"] },
+      { token: "Product Title", label: "Product Title", description: "当前 Shopify 商品标题。", contexts: ["title"] },
+      { token: "Product Handle", label: "Product Handle", description: "当前 Shopify 商品 Handle。", contexts: ["title"] },
+      { token: "Product Vendor", label: "Product Vendor", description: "当前 Shopify 商品供应商。", contexts: ["title"] },
+      { token: "Product Type", label: "Product Type", description: "当前 Shopify 商品类型。", contexts: ["title"] },
+      { token: "Product Tags", label: "Product Tags", description: "当前 Shopify 商品标签。", contexts: ["title"] },
+      { token: "Product Description HTML", label: "Product Description HTML", description: "当前 Shopify 商品描述 HTML。", contexts: ["title"] },
+      { token: "Product Options JSON", label: "Product Options JSON", description: "当前 Shopify 商品选项 JSON。", contexts: ["title"] },
+      { token: "Product Variants JSON", label: "Product Variants JSON", description: "当前 Shopify 商品变体 JSON。", contexts: ["title"] },
+      { token: "Selected Image Count", label: "Selected Image Count", description: "本次选中的商品图片数量。", contexts: ["title"] },
+      { token: "Selected Images JSON", label: "Selected Images JSON", description: "本次选中的商品图片 JSON。", contexts: ["title"] },
     ],
   },
   {

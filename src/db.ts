@@ -416,6 +416,7 @@ export async function listAiLogs(env: Env, userId: string, isAdmin: boolean, lim
 
 export type UserAiPromptSettings = {
   aiDescriptionPrompt: string;
+  aiTitlePrompt: string;
   translationPrompt: string;
   imagePrompt: string;
   updatedAt: string | null;
@@ -429,11 +430,17 @@ export async function ensureUserAiPromptSettingsSchema(env: Env): Promise<void> 
       await env.DB.prepare(`CREATE TABLE IF NOT EXISTS user_ai_prompt_settings (
         user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         ai_description_prompt TEXT NOT NULL DEFAULT '',
+        ai_title_prompt TEXT NOT NULL DEFAULT '',
         translation_prompt TEXT NOT NULL DEFAULT '',
         image_prompt TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       )`).run();
+      try {
+        await env.DB.prepare("ALTER TABLE user_ai_prompt_settings ADD COLUMN ai_title_prompt TEXT NOT NULL DEFAULT ''").run();
+      } catch (error) {
+        if (!String(error).toLowerCase().includes("duplicate column")) throw error;
+      }
     })().catch((error) => {
       userAiPromptSettingsSchemaReady = null;
       throw error;
@@ -446,6 +453,7 @@ export async function getUserAiPromptSettings(env: Env, userId: string): Promise
   await ensureUserAiPromptSettingsSchema(env);
   const row = await env.DB.prepare(
     `SELECT ai_description_prompt AS aiDescriptionPrompt,
+            ai_title_prompt AS aiTitlePrompt,
             translation_prompt AS translationPrompt,
             image_prompt AS imagePrompt,
             updated_at AS updatedAt
@@ -454,6 +462,7 @@ export async function getUserAiPromptSettings(env: Env, userId: string): Promise
   ).bind(userId).first<Record<string, unknown>>();
   return {
     aiDescriptionPrompt: typeof row?.aiDescriptionPrompt === "string" ? row.aiDescriptionPrompt : "",
+    aiTitlePrompt: typeof row?.aiTitlePrompt === "string" ? row.aiTitlePrompt : "",
     translationPrompt: typeof row?.translationPrompt === "string" ? row.translationPrompt : "",
     imagePrompt: typeof row?.imagePrompt === "string" ? row.imagePrompt : "",
     updatedAt: typeof row?.updatedAt === "string" ? row.updatedAt : null,
@@ -464,14 +473,15 @@ export async function saveUserAiPromptSettings(env: Env, userId: string, input: 
   await ensureUserAiPromptSettingsSchema(env);
   await env.DB.prepare(
     `INSERT INTO user_ai_prompt_settings
-       (user_id, ai_description_prompt, translation_prompt, image_prompt, updated_at)
-     VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+       (user_id, ai_description_prompt, ai_title_prompt, translation_prompt, image_prompt, updated_at)
+     VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
      ON CONFLICT(user_id) DO UPDATE SET
        ai_description_prompt = excluded.ai_description_prompt,
+       ai_title_prompt = excluded.ai_title_prompt,
        translation_prompt = excluded.translation_prompt,
        image_prompt = excluded.image_prompt,
        updated_at = excluded.updated_at`,
-  ).bind(userId, input.aiDescriptionPrompt, input.translationPrompt, input.imagePrompt).run();
+  ).bind(userId, input.aiDescriptionPrompt, input.aiTitlePrompt, input.translationPrompt, input.imagePrompt).run();
 }
 
 export type ShopifyImageJob = {

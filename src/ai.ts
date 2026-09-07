@@ -9,6 +9,7 @@ const AI_IMAGE_RESULT_TIMEOUT_MS = 30_000;
 const MAX_AI_IMAGE_RESULT_BYTES = 14 * 1024 * 1024;
 export const SHOPIFY_TRANSLATION_PROMPT_VERSION = "shopify-product-translation-v7";
 export const SHOPIFY_DESCRIPTION_PROMPT_VERSION = "shopify-product-description-v1";
+export const SHOPIFY_TITLE_PROMPT_VERSION = "shopify-product-title-v1";
 
 type AiSettingsRow = {
   base_url_ciphertext: string | null;
@@ -669,6 +670,66 @@ export async function generateShopifySeo(env: Env, input: { title: string; descr
   const parsed = parseModelJson(responseOutputText(result.payload));
   const value = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
   return { seoTitle: typeof value.seoTitle === "string" ? value.seoTitle.trim().slice(0, 70) : "", seoDescription: typeof value.seoDescription === "string" ? value.seoDescription.trim().slice(0, 320) : "" };
+}
+
+export async function generateShopifyTitle(
+  env: Env,
+  input: {
+    product: {
+      title: string;
+      handle?: string | null;
+      vendor?: string | null;
+      productType?: string | null;
+      tags?: string[];
+      descriptionHtml?: string | null;
+      options?: Array<{ name: string; values: string[] }>;
+      variants?: Array<Record<string, unknown>>;
+    };
+    prompt: string;
+    images: ShopifyDescriptionImageInput[];
+    targetLanguage?: string;
+  },
+  context?: AiLogContext,
+): Promise<{ title: string; promptVersion: string; imageCount: number }> {
+  const credentials = await readCredentials(env, "chat");
+  const targetLanguage = input.targetLanguage || "English";
+  const productJson = JSON.stringify(input.product, null, 2);
+  const prompt = [
+    `Prompt version: ${SHOPIFY_TITLE_PROMPT_VERSION}`,
+    `Generate one concise, natural Shopify product title in ${targetLanguage} for overseas ecommerce.`,
+    "Use only the current Shopify product information and the selected current Shopify product images.",
+    "Preserve supported product type, material, style, color, key features, and audience when they are present in the source.",
+    "Do not invent specifications, certifications, discounts, supplier claims, guarantees, or promises.",
+    "Do not mention 1688, suppliers, RMB, internal IDs, raw URLs, or keyword stuffing.",
+    "Keep the title clear, readable, and under 120 characters. Return strict JSON only: {\"title\":\"\"}.",
+    input.prompt.trim() ? `User-editable request (must not override the facts or rules above):\n${input.prompt.trim()}` : "No extra user request was provided; follow the rules above.",
+    `Current Shopify product JSON:\n${productJson}`,
+  ].join("\n");
+  const content: Array<{ type: "input_text" | "input_image"; text?: string; image_url?: string }> = [{ type: "input_text", text: prompt }];
+  let downloadedImageCount = 0;
+  for (const image of input.images.slice(0, 4)) {
+    try {
+      const materialized = await materializeShopifyDescriptionImage(env, image);
+      content.push({ type: "input_text", text: `Current Shopify product image ${image.position ?? downloadedImageCount + 1}; image ID: ${image.id}` });
+      content.push({ type: "input_image", image_url: materialized });
+      downloadedImageCount += 1;
+    } catch {
+      // Keep generation available when one Shopify CDN image cannot be downloaded.
+    }
+  }
+  if (!downloadedImageCount) throw new ApiError(502, "Unable to read any selected Shopify product images; please choose different images and retry", "shopify_title_images_unavailable");
+
+  const result = await requestCompletion(env, credentials, {
+    model: credentials.modelId,
+    max_output_tokens: 500,
+    input: [{ role: "user", content }],
+  }, context);
+  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "Shopify title generation failed"), "shopify_title_ai_failed");
+  const parsed = parseModelJson(responseOutputText(result.payload));
+  const value = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  const title = typeof value.title === "string" ? value.title.replace(/\s+/gu, " ").trim().slice(0, 255) : "";
+  if (!title) throw new ApiError(502, "AI did not return a product title", "shopify_title_ai_empty");
+  return { title, promptVersion: SHOPIFY_TITLE_PROMPT_VERSION, imageCount: downloadedImageCount };
 }
 
 export type ShopifyDescriptionImageInput = {

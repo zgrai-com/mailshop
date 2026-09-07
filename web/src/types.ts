@@ -67,6 +67,7 @@ export type AiSettingsInput = {
 
 export type UserAiPromptSettings = {
   aiDescriptionPrompt: string;
+  aiTitlePrompt: string;
   translationPrompt: string;
   imagePrompt: string;
   updatedAt: string | null;
@@ -74,6 +75,7 @@ export type UserAiPromptSettings = {
 
 export type UserAiPromptSettingsInput = {
   aiDescriptionPrompt: string;
+  aiTitlePrompt: string;
   translationPrompt: string;
   imagePrompt: string;
 };
@@ -272,6 +274,13 @@ export type ShopifyDescriptionAiContext = {
 
 export type ShopifyDescriptionAiResult = {
   descriptionHtml: string;
+  promptVersion: string;
+  imageCount: number;
+  credits: { balance: number; charged: number };
+};
+
+export type ShopifyTitleAiResult = {
+  title: string;
   promptVersion: string;
   imageCount: number;
   credits: { balance: number; charged: number };

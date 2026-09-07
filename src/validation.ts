@@ -65,6 +65,7 @@ export const aiSettingsUpdateSchema = aiSettingsSchema;
 
 export const userAiPromptSettingsSchema = z.object({
   aiDescriptionPrompt: z.string().trim().max(12_000).default(""),
+  aiTitlePrompt: z.string().trim().max(8_000).default(""),
   translationPrompt: z.string().trim().max(8_000).default(""),
   imagePrompt: z.string().trim().max(12_000).default(""),
 });
@@ -184,6 +185,16 @@ export const shopifyProductDescriptionAiSchema = z.object({
   locale: shopifyLocaleSchema.optional(),
   targetLanguage: z.string().trim().max(100).optional(),
   prompt: z.string().trim().max(12_000).default(""),
+  imageIds: z.array(z.string().trim().min(1).max(255)).min(1).max(4)
+    .transform((values) => [...new Set(values)]),
+});
+
+export const shopifyProductTitleAiSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  locale: shopifyLocaleSchema.optional(),
+  targetLanguage: z.string().trim().max(100).optional(),
+  prompt: z.string().trim().max(8_000).default(""),
   imageIds: z.array(z.string().trim().min(1).max(255)).min(1).max(4)
     .transform((values) => [...new Set(values)]),
 });

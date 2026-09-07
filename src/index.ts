@@ -87,7 +87,7 @@ import {
   withSecurityHeaders,
 } from "./http";
 import { handleImageProxy } from "./image-proxy";
-import { analyzeShopifyImageStyle, classifyImageCandidates, editShopifyImage, generateShopifyDescription, generateShopifySeo, getAiSettings, saveAiSettings, translateShopifyContent, SHOPIFY_DESCRIPTION_PROMPT_VERSION } from "./ai";
+import { analyzeShopifyImageStyle, classifyImageCandidates, editShopifyImage, generateShopifyDescription, generateShopifySeo, generateShopifyTitle, getAiSettings, saveAiSettings, translateShopifyContent, SHOPIFY_DESCRIPTION_PROMPT_VERSION } from "./ai";
 import { allowedExtensionOrigins, extensionCallbackUrl, extensionOriginForId, extensionOriginFromRequest } from "./extension-origin";
 import { createShopifyProductFromCollection, deleteShopifyProduct, deleteShopifyStore, getShopifyProduct, getShopifyProductTranslations, getShopifySettings, listShopifyProducts, publishProductToShopify, registerShopifyTranslations, saveShopifySettings, testShopifyStore, updateShopifyProduct } from "./shopify";
 import {
@@ -124,6 +124,7 @@ import {
   shopifyProductTranslationAiSchema,
   shopifyProductSeoAiSchema,
   shopifyProductDescriptionAiSchema,
+  shopifyProductTitleAiSchema,
   shopifyImageAnalyzeSchema,
   shopifyImageEditSchema,
   shopifyImageJobCreateSchema,
@@ -791,10 +792,10 @@ function shopifyProductTranslationRoute(pathname: string): { storeId: string; pr
   return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "ai" ? "ai" : "read" };
 }
 
-function shopifyProductAiRoute(pathname: string): { storeId: string; productId: string; action: "seo" | "description" | "image_analyze" | "image_edit" } | null {
-  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/ai\/(seo|description|image-analyze|image-edit)$/iu);
+function shopifyProductAiRoute(pathname: string): { storeId: string; productId: string; action: "seo" | "description" | "title" | "image_analyze" | "image_edit" } | null {
+  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/ai\/(seo|description|title|image-analyze|image-edit)$/iu);
   if (!match) return null;
-  return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "seo" ? "seo" : match[3] === "description" ? "description" : match[3] === "image-analyze" ? "image_analyze" : "image_edit" };
+  return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "seo" ? "seo" : match[3] === "description" ? "description" : match[3] === "title" ? "title" : match[3] === "image-analyze" ? "image_analyze" : "image_edit" };
 }
 
 async function loadShopifyDescriptionSource(env: Env, storeId: string, productId: string): Promise<ShopifyDescriptionSourceContext | null> {
@@ -1099,6 +1100,7 @@ async function handleAuthenticatedApi(
       await saveUserAiPromptSettings(env, user.id, input);
       ctx.waitUntil(recordAudit(request, env, user.id, "user.ai_prompts.update", "user", user.id, {
         aiDescriptionPromptLength: input.aiDescriptionPrompt.length,
+        aiTitlePromptLength: input.aiTitlePrompt.length,
         translationPromptLength: input.translationPrompt.length,
         imagePromptLength: input.imagePrompt.length,
       }));
@@ -1316,6 +1318,49 @@ async function handleAuthenticatedApi(
       }
     }
     if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    if (shopifyProductAi.action === "title") {
+      const parsed = await readJson(request, shopifyProductTitleAiSchema);
+      if (parsed.storeId !== shopifyProductAi.storeId || parsed.productId !== shopifyProductAi.productId) {
+        throw new ApiError(422, "标题生成请求的店铺或商品不匹配当前路由", "shopify_title_resource_mismatch");
+      }
+      const imagesById = new Map((product.product.images ?? []).map((image) => [image.id, image] as const));
+      const selectedImages = parsed.imageIds.flatMap((imageId) => {
+        const image = imagesById.get(imageId);
+        return image ? [{ id: image.id, url: image.url, altText: image.altText, position: image.position }] : [];
+      });
+      if (selectedImages.length !== parsed.imageIds.length) {
+        throw new ApiError(422, "标题生成请求包含不属于当前 Shopify 商品的图片", "shopify_title_image_invalid");
+      }
+      const charge = await chargeAiRequest(env, user.id, { feature: "shopify_title", storeId: parsed.storeId, productId: parsed.productId, imageCount: selectedImages.length });
+      const startedAt = Date.now();
+      const prompt = parsed.prompt || (await getUserAiPromptSettings(env, user.id)).aiTitlePrompt;
+      try {
+        const result = await generateShopifyTitle(env, {
+          product: {
+            title: product.product.title,
+            handle: product.product.handle,
+            vendor: product.product.vendor,
+            productType: product.product.productType,
+            tags: product.product.tags,
+            descriptionHtml: product.product.descriptionHtml,
+            options: product.product.options,
+            variants: product.product.variants,
+          },
+          prompt,
+          images: selectedImages,
+          targetLanguage: parsed.targetLanguage || parsed.locale || "English",
+        }, {
+          env, request, userId: user.id, operation: "shopify.title", scope: "chat",
+          entityType: "shopify_product", entityId: parsed.productId,
+        });
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.title", scope: "chat", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { imageCount: selectedImages.length, promptLength: prompt.length, targetLanguage: parsed.targetLanguage || parsed.locale || "English" }, responseSummary: { title: result.title, imageCount: result.imageCount, promptVersion: result.promptVersion }, entityType: "shopify_product", entityId: parsed.productId });
+        return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
+      } catch (error) {
+        await safeRecordAiLog(request, env, user.id, { operation: "shopify.title", scope: "chat", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { imageCount: selectedImages.length, promptLength: prompt.length }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
+        await refundAiRequest(env, user.id, charge).catch(() => undefined);
+        throw error;
+      }
+    }
     if (shopifyProductAi.action === "seo") {
       const parsed = await readJson(request, shopifyProductSeoAiSchema);
       if (parsed.storeId !== shopifyProductAi.storeId || parsed.productId !== shopifyProductAi.productId) {

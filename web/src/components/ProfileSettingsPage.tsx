@@ -1,4 +1,4 @@
-import { FileText, ImagePlus, KeyRound, Languages, LoaderCircle, Save, ShieldCheck, UserRound } from "lucide-react";
+import { FileText, ImagePlus, KeyRound, Languages, LoaderCircle, Save, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 
 import { PROMPT_VARIABLE_GROUPS } from "../../../shared/prompt-templates";
@@ -24,12 +24,14 @@ export function ProfileSettingsPage({ user, saving, aiPrompts, loadingAiPrompts,
   const [confirmation, setConfirmation] = useState("");
   const [error, setError] = useState("");
   const [aiDescriptionPrompt, setAiDescriptionPrompt] = useState("");
+  const [aiTitlePrompt, setAiTitlePrompt] = useState("");
   const [translationPrompt, setTranslationPrompt] = useState("");
   const [imagePrompt, setImagePrompt] = useState("");
   const [aiPromptError, setAiPromptError] = useState("");
 
   useEffect(() => {
     setAiDescriptionPrompt(aiPrompts?.aiDescriptionPrompt ?? "");
+    setAiTitlePrompt(aiPrompts?.aiTitlePrompt ?? "");
     setTranslationPrompt(aiPrompts?.translationPrompt ?? "");
     setImagePrompt(aiPrompts?.imagePrompt ?? "");
   }, [aiPrompts]);
@@ -52,7 +54,7 @@ export function ProfileSettingsPage({ user, saving, aiPrompts, loadingAiPrompts,
     event.preventDefault();
     setAiPromptError("");
     try {
-      await onSaveAiPrompts({ aiDescriptionPrompt, translationPrompt, imagePrompt });
+      await onSaveAiPrompts({ aiDescriptionPrompt, aiTitlePrompt, translationPrompt, imagePrompt });
     } catch (caught) {
       setAiPromptError(caught instanceof Error ? caught.message : "AI 提示词保存失败");
     }
@@ -127,11 +129,15 @@ export function ProfileSettingsPage({ user, saving, aiPrompts, loadingAiPrompts,
             <span className={`integration-status ${aiPrompts?.updatedAt ? "configured" : "not-configured"}`}><i />{loadingAiPrompts ? "读取中" : aiPrompts?.updatedAt ? "已设置" : "使用默认"}</span>
           </header>
           <form className="settings-form profile-ai-prompt-form" onSubmit={submitAiPrompts}>
-            <p className="settings-help">这些提示词会作为你在 Shopify 商品里生成描述、多语言翻译和处理图片时的默认要求；每次执行前仍然可以临时修改。</p>
+            <p className="settings-help">这些提示词会作为你在 Shopify 商品里生成标题、描述、多语言翻译和处理图片时的默认要求；每次执行前仍然可以临时修改。</p>
             <div className="profile-ai-prompt-grid">
               <label>
                 <span><FileText size={15} />AI 生成描述提示词</span>
                 <textarea rows={7} maxLength={12_000} value={aiDescriptionPrompt} onChange={(event) => setAiDescriptionPrompt(event.target.value)} placeholder="留空时使用系统默认的 Shopify 商品描述生成规则。" />
+              </label>
+              <label>
+                <span><Sparkles size={15} />AI 生成标题提示词</span>
+                <textarea rows={7} maxLength={8_000} value={aiTitlePrompt} onChange={(event) => setAiTitlePrompt(event.target.value)} placeholder="留空时使用系统默认的 Shopify 商品标题生成规则。" />
               </label>
               <label>
                 <span><Languages size={15} />多语言翻译提示词</span>

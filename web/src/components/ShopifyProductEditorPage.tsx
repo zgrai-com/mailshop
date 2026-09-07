@@ -33,6 +33,7 @@ import type {
   ShopifyDescriptionAiContext,
   ShopifyDescriptionAiResult,
   ShopifyDescriptionSource,
+  ShopifyTitleAiResult,
   ShopifyProductTranslations,
   ShopifyRemoteProduct,
   ShopifyStore,
@@ -41,6 +42,7 @@ import type {
 } from "../types";
 import { draftFrom, draftPayload, statusLabels, type ShopifyProductDraft } from "./shopifyProductUtils";
 import { DEFAULT_DESCRIPTION_PROMPT, ShopifyDescriptionModal } from "./ShopifyDescriptionModal";
+import { DEFAULT_TITLE_PROMPT, ShopifyTitleModal } from "./ShopifyTitleModal";
 
 type Props = {
   stores: ShopifyStore[];
@@ -141,6 +143,7 @@ function DescriptionEditor({ value, onChange, readOnly = false }: DescriptionEdi
 export function ShopifyProductEditorPage({ stores, storeId, productId, returnPath, aiPrompts, onBack, onError, onNotify }: Props) {
   const store = stores.find((item) => item.id === storeId);
   const defaultDescriptionPrompt = aiPrompts?.aiDescriptionPrompt || DEFAULT_DESCRIPTION_PROMPT;
+  const defaultTitlePrompt = aiPrompts?.aiTitlePrompt || DEFAULT_TITLE_PROMPT;
   const defaultTranslationPrompt = aiPrompts?.translationPrompt || DEFAULT_TRANSLATION_PROMPT;
   const defaultImagePrompt = aiPrompts?.imagePrompt?.trim() ?? "";
   const [product, setProduct] = useState<ShopifyRemoteProduct | null>(null);
@@ -159,6 +162,14 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   const [descriptionSelectedImageIds, setDescriptionSelectedImageIds] = useState<string[]>([]);
   const [descriptionCredits, setDescriptionCredits] = useState<{ balance: number; charged: number } | null>(null);
   const [descriptionPromptVersion, setDescriptionPromptVersion] = useState<string | null>(null);
+  const [titleModalOpen, setTitleModalOpen] = useState(false);
+  const [titleGenerating, setTitleGenerating] = useState(false);
+  const [titleSaving, setTitleSaving] = useState(false);
+  const [titlePrompt, setTitlePrompt] = useState(defaultTitlePrompt);
+  const [titleValue, setTitleValue] = useState("");
+  const [titleSelectedImageIds, setTitleSelectedImageIds] = useState<string[]>([]);
+  const [titleCredits, setTitleCredits] = useState<{ balance: number; charged: number } | null>(null);
+  const [titlePromptVersion, setTitlePromptVersion] = useState<string | null>(null);
   const [translation, setTranslation] = useState<ShopifyProductTranslations | null>(null);
   const [viewTranslation, setViewTranslation] = useState<ShopifyProductTranslations | null>(null);
   const [translationModalOpen, setTranslationModalOpen] = useState(false);
@@ -196,6 +207,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   const translationModalRef = useRef<HTMLElement>(null);
   const descriptionRequestIdRef = useRef(0);
   const descriptionModalRef = useRef<HTMLElement>(null);
+  const titleModalRef = useRef<HTMLElement>(null);
 
   const loadProduct = useCallback(async () => {
     setLoading(true);
@@ -283,8 +295,9 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   }, [loadViewTranslation, primaryLocale, translation?.locales, viewLocale]);
   useEffect(() => {
     setDescriptionPrompt((current) => current === DEFAULT_DESCRIPTION_PROMPT || !current.trim() ? defaultDescriptionPrompt : current);
+    setTitlePrompt((current) => current === DEFAULT_TITLE_PROMPT || !current.trim() ? defaultTitlePrompt : current);
     setTranslationPrompt((current) => current === DEFAULT_TRANSLATION_PROMPT || !current.trim() ? defaultTranslationPrompt : current);
-  }, [defaultDescriptionPrompt, defaultTranslationPrompt]);
+  }, [defaultDescriptionPrompt, defaultTitlePrompt, defaultTranslationPrompt]);
 
   useEffect(() => {
     if (!translationModalOpen) return;
@@ -368,6 +381,44 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     };
   }, [descriptionModalOpen]);
 
+  useEffect(() => {
+    if (!titleModalOpen) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    const focusableSelector = "button:not([disabled]), select:not([disabled]), textarea:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
+    const focusDialog = window.requestAnimationFrame(() => {
+      const firstControl = titleModalRef.current?.querySelector<HTMLElement>(focusableSelector);
+      (firstControl ?? titleModalRef.current)?.focus();
+    });
+    function handleDialogKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setTitleModalOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || !titleModalRef.current) return;
+      const controls = Array.from(titleModalRef.current.querySelectorAll<HTMLElement>(focusableSelector)).filter((element) => element.offsetParent !== null);
+      if (!controls.length) return;
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", handleDialogKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusDialog);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleDialogKeyDown);
+      previousFocus?.focus();
+    };
+  }, [titleModalOpen]);
+
   const updateDraft = <K extends keyof ShopifyProductDraft>(key: K, value: ShopifyProductDraft[K]) => {
     setDraft((current) => current ? { ...current, [key]: value } : current);
   };
@@ -434,6 +485,84 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
 
   function refreshDescriptionSource() {
     void loadDescriptionModalData(true);
+  }
+
+  function openTitleModal() {
+    if (!product || !draft) {
+      onError(new Error("该商品缺少店铺信息，无法生成标题"));
+      return;
+    }
+    setTitlePrompt(defaultTitlePrompt);
+    setTitleValue(draft.title);
+    setTitleSelectedImageIds((product.images ?? []).slice(0, 4).map((image) => image.id));
+    setTitleCredits(null);
+    setTitlePromptVersion(null);
+    setTitleModalOpen(true);
+  }
+
+  function toggleTitleImage(imageId: string) {
+    setTitleSelectedImageIds((current) => {
+      if (current.includes(imageId)) return current.filter((id) => id !== imageId);
+      if (current.length >= 4) return current;
+      return [...current, imageId];
+    });
+  }
+
+  async function generateTitle() {
+    if (!product || !draft || !titleSelectedImageIds.length) return;
+    setTitleGenerating(true);
+    setTitleCredits(null);
+    try {
+      const selectedImageJson = titleSelectedImageIds
+        .map((imageId) => product.images?.find((image) => image.id === imageId))
+        .filter(Boolean);
+      const prompt = applyPromptTemplate(titlePrompt.trim() || defaultTitlePrompt, {
+        "Target Language": viewLocaleName || "English",
+        "Product Title": draft.title,
+        "Product Handle": draft.handle,
+        "Product Vendor": draft.vendor,
+        "Product Type": draft.productType,
+        "Product Tags": draft.tags,
+        "Product Description HTML": draft.descriptionHtml,
+        "Product Options JSON": product.options ?? [],
+        "Product Variants JSON": product.variants ?? [],
+        "Selected Image Count": titleSelectedImageIds.length,
+        "Selected Images JSON": selectedImageJson,
+      });
+      const result = await api<ShopifyTitleAiResult>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}/ai/title`, {
+        method: "POST",
+        body: JSON.stringify({ storeId, productId: product.id, locale: viewLocale || undefined, targetLanguage: viewLocaleName || undefined, prompt, imageIds: titleSelectedImageIds }),
+      });
+      setTitleValue(result.title);
+      updateDraft("title", result.title);
+      setTitleCredits(result.credits);
+      setTitlePromptVersion(result.promptVersion);
+      onNotify(`AI 已生成商品标题，使用 ${result.imageCount} 张图片`);
+    } catch (error) {
+      onError(error);
+    } finally {
+      setTitleGenerating(false);
+    }
+  }
+
+  async function saveTitle() {
+    if (!product || !draft || localizedEditingDisabled || !titleValue.trim()) return;
+    const nextDraft = { ...draft, title: titleValue.trim() };
+    setTitleSaving(true);
+    try {
+      const result = await api<{ product: ShopifyRemoteProduct }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ storeId, productId: product.id, ...draftPayload(nextDraft) }),
+      });
+      setProduct(result.product);
+      setDraft(draftFrom(result.product));
+      setTitleValue(result.product.title);
+      onNotify("商品标题已保存到 Shopify");
+    } catch (error) {
+      onError(error);
+    } finally {
+      setTitleSaving(false);
+    }
   }
 
   function toggleDescriptionImage(imageId: string) {
@@ -1035,7 +1164,10 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
           <section className="shopify-editor-card">
             <div className="editor-section-heading">
               <div><span>GENERAL</span><h2>基本信息</h2></div>
-              <button className="button quiet compact" type="button" onClick={() => void openDescriptionModal()} disabled={!product || !draft || localizedEditingDisabled}><Sparkles size={14} />AI 生成描述</button>
+              <div className="editor-section-actions">
+                <button className="button quiet compact" type="button" onClick={() => void openDescriptionModal()} disabled={!product || !draft || localizedEditingDisabled}><Sparkles size={14} />AI 生成描述</button>
+                <button className="button quiet compact" type="button" onClick={openTitleModal} disabled={!product || !draft || localizedEditingDisabled}><Sparkles size={14} />AI 生成标题</button>
+              </div>
             </div>
             <label><span>标题</span><input value={displayDraft?.title ?? ""} onChange={(event) => updateDraft("title", event.target.value)} disabled={localizedEditingDisabled} /></label>
             <label><span>描述 HTML</span><DescriptionEditor value={displayDraft?.descriptionHtml ?? ""} onChange={(value) => updateDraft("descriptionHtml", value)} readOnly={localizedEditingDisabled} /></label>
@@ -1117,6 +1249,26 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
         onGenerate={() => void generateDescription()}
         onSave={() => void saveDescription()}
         onRefreshSource={refreshDescriptionSource}
+      />
+      <ShopifyTitleModal
+        open={titleModalOpen}
+        generating={titleGenerating}
+        saving={titleSaving}
+        modalRef={titleModalRef}
+        product={product}
+        prompt={titlePrompt}
+        defaultPrompt={defaultTitlePrompt}
+        title={titleValue}
+        selectedImageIds={titleSelectedImageIds}
+        credits={titleCredits}
+        promptVersion={titlePromptVersion}
+        onClose={() => setTitleModalOpen(false)}
+        onPromptChange={setTitlePrompt}
+        onTitleChange={(value) => { setTitleValue(value); updateDraft("title", value); }}
+        onSelectImage={toggleTitleImage}
+        onResetPrompt={() => setTitlePrompt(defaultTitlePrompt)}
+        onGenerate={() => void generateTitle()}
+        onSave={() => void saveTitle()}
       />
       {translationModalOpen && product ? <div className="modal-backdrop translation-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setTranslationModalOpen(false)}>
         <section ref={translationModalRef} className="translation-modal" role="dialog" aria-modal="true" aria-labelledby="translation-modal-title" aria-describedby="translation-modal-description" tabIndex={-1}>
