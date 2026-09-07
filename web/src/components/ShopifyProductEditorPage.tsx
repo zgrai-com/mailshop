@@ -55,6 +55,7 @@ type Props = {
 };
 
 const DEFAULT_TRANSLATION_PROMPT = "请把商品中的普通文案自然翻译成目标语言，重点翻译标题、描述、Handle、商品类型、供应商、颜色和尺码；保留品牌、型号、SKU、数字和商品事实。";
+const DEFAULT_IMAGE_TRANSLATION_PROMPT = "Translate every visible piece of text in this image into {Target Language}. Preserve the original meaning, brand names, product model numbers, prices, dimensions, logos, layout, typography style, image composition, clothing, product details, person identity, pose, and facial features. Replace only the text that needs translation. Do not add, remove, crop, or redesign any visual element.";
 const PRIMARY_PRODUCT_TRANSLATION_KEYS = new Set(["title", "body_html", "handle", "product_type", "meta_title", "meta_description"]);
 
 function projectDraftToLocale(draft: ShopifyProductDraft, productId: string, translation: ShopifyProductTranslations | null): ShopifyProductDraft {
@@ -77,6 +78,7 @@ function projectDraftToLocale(draft: ShopifyProductDraft, productId: string, tra
 
 type ImageJobStatus = "queued" | "waiting" | "failed";
 type ImageJob = { id: string; imageId: string; operation: "translate" | "edit"; locale: string; status: ImageJobStatus; createdAt: number | string; updatedAt: number | string; prompt?: string | null; resultUrl?: string | null; message?: string | null };
+type ImageResultDraft = ImageJob & { sourceUrl: string; discarded?: boolean; replacing?: boolean };
 
 type DescriptionEditorProps = {
   value: string;
@@ -189,6 +191,9 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   const [imageAiStep, setImageAiStep] = useState<"select" | "analyzing" | "edit" | "generating">("select");
   const [imageAnalysis, setImageAnalysis] = useState("");
   const [imagePrompt, setImagePrompt] = useState("");
+  const [imageResultDrafts, setImageResultDrafts] = useState<ImageResultDraft[]>([]);
+  const [imageModalSaving, setImageModalSaving] = useState(false);
+  const imageModalInitialMediaSelectionRef = useRef<{ active: boolean; ids: string[] } | null>(null);
   const translationModalRef = useRef<HTMLElement>(null);
   const descriptionRequestIdRef = useRef(0);
   const descriptionModalRef = useRef<HTMLElement>(null);
@@ -515,8 +520,8 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     }
   }
 
-  async function saveProduct() {
-    if (!draft || !product || localizedEditingDisabled) return;
+  async function saveProduct(): Promise<boolean> {
+    if (!draft || !product || localizedEditingDisabled) return false;
     setSaving(true);
     try {
       const result = await api<{ product: ShopifyRemoteProduct }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}`, {
@@ -537,8 +542,10 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       setMediaSelectionActive(false);
       setMediaSelectionDraft([]);
       onNotify("商品已保存到 Shopify");
+      return true;
     } catch (error) {
       onError(error);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -730,7 +737,15 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       return image ? [image] : [];
     });
     if (!targetLocale || !images.length) return;
-    const prompt = `Translate every visible piece of text in this image into ${targetLocale}. Preserve the original meaning, brand names, product model numbers, prices, dimensions, logos, layout, typography style, image composition, clothing, product details, person identity, pose, and facial features. Replace only the text that needs translation. Do not add, remove, crop, or redesign any visual element.`;
+    const prompt = applyPromptTemplate(imagePrompt.trim() || DEFAULT_IMAGE_TRANSLATION_PROMPT, {
+      "Product Title": product?.title ?? "",
+      "Product Vendor": product?.vendor ?? "",
+      "Product Type": product?.productType ?? "",
+      "Selected Image Count": String(images.length),
+      "Selected Image IDs": images.map((image) => image.id).join(", "),
+      "Target Language": targetLocaleName || targetLocale,
+      "Target Locale": targetLocale,
+    });
     const now = Date.now();
     const jobs: ImageJob[] = images.map((image, index) => ({
       id: `${now}-${index}-${image.id}`,
@@ -764,21 +779,95 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       }
       return { ...item, status: "failed" as const, updatedAt: Date.now(), message: result.reason instanceof Error ? result.reason.message : "图片翻译失败" };
     });
+    setImageResultDrafts((current) => [
+      ...current.filter((item) => !jobs.some((job) => job.id === item.id)),
+      ...jobs.map((job, index) => ({ ...job, ...(nextJobs.find((item) => item.id === job.id) ?? {}), sourceUrl: images[index].url })),
+    ]);
     await Promise.all(nextJobs.filter((item) => jobs.some((job) => job.id === item.id)).map((item) => api(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-jobs/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify({ storeId, productId, status: item.status, resultUrl: item.resultUrl ?? null, message: item.message ?? null, prompt: item.prompt ?? null }) })));
     setImageJobs(nextJobs);
     setSelectedImages([]);
-    setAiImageModalOpen(false);
-    setImageAiStep("select");
+    setImageAiStep("edit");
     onNotify(failedCount ? `${successCount} 张图片翻译成功，${failedCount} 张失败` : `${successCount} 张图片翻译完成`);
   }
 
   function openImageAiModal() {
+    imageModalInitialMediaSelectionRef.current = { active: mediaSelectionActive, ids: [...mediaSelectionDraft] };
     setSelectedImages([]);
     setImageTaskMode("edit");
     setImageAiStep("select");
     setImageAnalysis("");
-      setImagePrompt(defaultImagePrompt);
+    setImagePrompt(defaultImagePrompt);
+    setImageResultDrafts([]);
+    setImageModalSaving(false);
     setAiImageModalOpen(true);
+  }
+
+  function closeImageAiModal() {
+    if (imageModalSaving || imageAiStep === "generating") return;
+    const initialSelection = imageModalInitialMediaSelectionRef.current;
+    if (initialSelection) {
+      setMediaSelectionActive(initialSelection.active);
+      setMediaSelectionDraft(initialSelection.ids);
+    }
+    imageModalInitialMediaSelectionRef.current = null;
+    setAiImageModalOpen(false);
+    setImageResultDrafts([]);
+  }
+
+  function replaceImageWithResult(result: ImageResultDraft) {
+    if (!result.resultUrl) return;
+    const currentIds = media.map((image) => image.id);
+    setMediaSelectionActive(true);
+    setMediaSelectionDraft((current) => {
+      const base = current.length ? current : currentIds;
+      const siblingJobIds = imageResultDrafts.filter((item) => item.imageId === result.imageId && item.id !== result.id).map((item) => item.id);
+      return [...base.filter((id) => id !== result.imageId && id !== result.id && !siblingJobIds.includes(id)), result.id];
+    });
+    setImageResultDrafts((current) => current.map((item) => item.imageId === result.imageId ? { ...item, replacing: item.id === result.id } : item));
+  }
+
+  function discardImageResult(jobId: string) {
+    setImageResultDrafts((current) => current.map((item) => item.id === jobId ? { ...item, discarded: true, replacing: false } : item));
+    setMediaSelectionDraft((current) => {
+      if (!current.includes(jobId)) return current;
+      const discardedResult = imageResultDrafts.find((item) => item.id === jobId);
+      return [...current.filter((id) => id !== jobId), ...(discardedResult && !current.includes(discardedResult.imageId) ? [discardedResult.imageId] : [])];
+    });
+  }
+
+  async function retryImageResult(result: ImageResultDraft) {
+    const image = media.find((item) => item.id === result.imageId);
+    if (!image || !result.prompt) return;
+    setImageResultDrafts((current) => current.map((item) => item.id === result.id ? { ...item, status: "waiting", message: null, replacing: false } : item));
+    try {
+      const updated = await api<{ imageUrl: string | null; prompt: string }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-edit`, {
+        method: "POST",
+        body: JSON.stringify({ storeId, productId, imageId: image.id, imageUrl: image.url, prompt: result.prompt, jobId: result.id }),
+      });
+      await api(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-jobs/${encodeURIComponent(result.id)}`, { method: "PATCH", body: JSON.stringify({ storeId, productId, status: "queued", resultUrl: updated.imageUrl, message: null, prompt: updated.prompt || result.prompt }) });
+      setImageJobs((current) => current.map((item) => item.id === result.id ? { ...item, status: "queued", resultUrl: updated.imageUrl, message: null, prompt: updated.prompt || result.prompt } : item));
+      setImageResultDrafts((current) => current.map((item) => item.id === result.id ? { ...item, status: "queued", resultUrl: updated.imageUrl, message: null, prompt: updated.prompt || result.prompt, discarded: false } : item));
+    } catch (error) {
+      setImageResultDrafts((current) => current.map((item) => item.id === result.id ? { ...item, status: "failed", message: error instanceof Error ? error.message : "生成失败", replacing: false } : item));
+      onError(error);
+    }
+  }
+
+  async function saveImageModalDraft() {
+    if (!mediaSelectionActive) {
+      closeImageAiModal();
+      return;
+    }
+    setImageModalSaving(true);
+    try {
+      if (await saveProduct()) {
+        imageModalInitialMediaSelectionRef.current = null;
+        setAiImageModalOpen(false);
+        setImageResultDrafts([]);
+      }
+    } finally {
+      setImageModalSaving(false);
+    }
   }
 
   function openMediaPicker() {
@@ -826,7 +915,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     try {
       const result = await api<{ prompt: string; analysis: string }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-analyze`, { method: "POST", body: JSON.stringify({ storeId, productId, imageId: image.id, imageUrl: image.url }) });
       setImageAnalysis(result.analysis);
-      setImagePrompt(result.prompt);
+      if (!imagePrompt.trim() || imagePrompt.trim() === defaultImagePrompt.trim()) setImagePrompt(result.prompt);
       setImageAiStep("edit");
     } catch (error) {
       setImageAiStep("select");
@@ -839,7 +928,15 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       const image = media.find((item) => item.id === imageId);
       return image ? [image] : [];
     });
-    const prompt = imagePrompt.trim();
+    const prompt = applyPromptTemplate(imagePrompt.trim(), {
+      "Product Title": product?.title ?? "",
+      "Product Vendor": product?.vendor ?? "",
+      "Product Type": product?.productType ?? "",
+      "Selected Image Count": String(images.length),
+      "Selected Image IDs": images.map((image) => image.id).join(", "),
+      "Target Language": targetLocaleName || locale,
+      "Target Locale": locale,
+    });
     if (!images.length || !prompt) return;
     const now = Date.now();
     const jobs: ImageJob[] = images.map((image, index) => ({
@@ -874,11 +971,14 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       }
       return { ...item, status: "failed" as const, updatedAt: Date.now(), message: result.reason instanceof Error ? result.reason.message : "生成失败" };
     });
+    setImageResultDrafts((current) => [
+      ...current.filter((item) => !jobs.some((job) => job.id === item.id)),
+      ...jobs.map((job, index) => ({ ...job, ...(nextJobs.find((item) => item.id === job.id) ?? {}), sourceUrl: images[index].url })),
+    ]);
     await Promise.all(nextJobs.filter((item) => jobs.some((job) => job.id === item.id)).map((item) => api(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-jobs/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify({ storeId, productId, status: item.status, resultUrl: item.resultUrl ?? null, message: item.message ?? null, prompt: item.prompt ?? null }) })));
     setImageJobs(nextJobs);
-    setAiImageModalOpen(false);
     setSelectedImages([]);
-    setImageAiStep("select");
+    setImageAiStep("edit");
     onNotify(failedCount ? `${successCount} 张图片生成成功，${failedCount} 张失败` : `${successCount} 张图片 AI 修改任务已生成`);
   }
 
@@ -1071,16 +1171,19 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
           <footer className="modal-actions"><span className="media-picker-count">已选择 {selectedMediaCount} 张</span><button className="button quiet" type="button" onClick={() => setMediaPickerOpen(false)}>完成</button></footer>
         </section>
       </div> : null}
-      {aiImageModalOpen && product ? <div className="modal-backdrop ai-image-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setAiImageModalOpen(false)}>
-        <section className="ai-image-modal" role="dialog" aria-modal="true" aria-labelledby="ai-image-modal-title">
-          <header className="modal-header"><div><span>AI IMAGE TASK</span><h2 id="ai-image-modal-title">使用 AI 处理图片</h2></div><button className="icon-button" type="button" onClick={() => setAiImageModalOpen(false)} aria-label="关闭" title="关闭"><X size={19} /></button></header>
+      {aiImageModalOpen && product ? <div className="modal-backdrop ai-image-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeImageAiModal()}>
+        <section className="ai-image-modal ai-image-workspace" role="dialog" aria-modal="true" aria-labelledby="ai-image-modal-title">
+          <header className="modal-header"><div><span>AI IMAGE WORKSPACE</span><h2 id="ai-image-modal-title">使用 AI 处理图片</h2></div><button className="icon-button" type="button" onClick={closeImageAiModal} aria-label="关闭" title="关闭"><X size={19} /></button></header>
           <div className="ai-image-modal-body">
-            <div className="ai-image-mode-switch" role="group" aria-label="图片任务类型"><button className={`button quiet compact ${imageTaskMode === "edit" ? "active" : ""}`} type="button" onClick={() => { setImageTaskMode("edit"); setImageAiStep("select"); }} aria-pressed={imageTaskMode === "edit"}><Sparkles size={14} />AI 风格修改</button><button className={`button quiet compact ${imageTaskMode === "translate" ? "active" : ""}`} type="button" onClick={() => { setImageTaskMode("translate"); setImageAiStep("select"); }} aria-pressed={imageTaskMode === "translate"}><Languages size={14} />翻译图片</button></div>
-            {imageTaskMode === "translate" ? <><div className="ai-image-modal-toolbar"><div><strong>选择要翻译的商品图片</strong><small>根据当前页面选择的语言翻译图片文字：{targetLocaleName || "尚未选择语言"}</small></div><button className="button quiet compact" type="button" onClick={() => setSelectedImages(selectedCount === media.length ? [] : media.map((image) => image.id))} disabled={!media.length}><ListChecks size={14} />全选</button></div><div className="ai-image-modal-grid">{media.map((image) => <button key={image.id} className={`ai-image-modal-image ${selectedImages.includes(image.id) ? "selected" : ""}`} type="button" onClick={() => { setFocusedImageId(image.id); setSelectedImages((current) => current.includes(image.id) ? current.filter((item) => item !== image.id) : [...current, image.id]); }}><img src={image.url} alt={image.altText || product.title} /><span>{selectedImages.includes(image.id) ? <Check size={15} /> : image.position + 1}</span></button>)}</div><div className="ai-image-modal-preview"><Languages size={16} /><span>{selectedCount ? `将翻译 ${selectedCount} 张图片中的文字为 ${targetLocaleName || locale}` : "选择图片后开始翻译"}</span></div><p className="ai-image-modal-note">翻译仅替换图片中的文字，保留商品、人物、构图和版式；失败后可在任务列表中手动重试。</p></> : null}
-            {imageTaskMode === "edit" && (imageAiStep === "select" || imageAiStep === "analyzing") ? <><div className="ai-image-modal-toolbar"><div><strong>选择要处理的商品图片</strong><small>第一步：可多选图片，AI 将分析第一张并生成可编辑的统一提示词</small></div><button className="button quiet compact" type="button" onClick={() => setSelectedImages(selectedCount === media.length ? [] : media.map((image) => image.id))} disabled={!media.length}><ListChecks size={14} />全选</button></div><div className="ai-image-modal-grid">{media.map((image) => <button key={image.id} className={`ai-image-modal-image ${selectedImages.includes(image.id) ? "selected" : ""}`} type="button" onClick={() => { setFocusedImageId(image.id); setSelectedImages((current) => current.includes(image.id) ? current.filter((item) => item !== image.id) : [...current, image.id]); }}><img src={image.url} alt={image.altText || product.title} /><span>{selectedImages.includes(image.id) ? <Check size={15} /> : image.position + 1}</span></button>)}</div><div className="ai-image-modal-preview"><ImageIcon size={16} /><span>{selectedCount ? `已选择 ${selectedCount} 张图片，分析第一张生成统一提示词` : "选择图片后开始分析"}</span></div><p className="ai-image-modal-note">AI 会识别背景、光线、构图与摄影质感，并自动加入“保留衣服和模特”的约束。</p></> : null}
-            {imageAiStep === "edit" || imageAiStep === "generating" ? <><div className="ai-image-modal-toolbar"><div><strong>编辑图片提示词</strong><small>第二步：提示词会应用到已选的 {selectedCount} 张图片，衣服和模特会被保留</small></div><button className="button quiet compact" type="button" onClick={() => setImageAiStep("select")}><ArrowLeft size={14} />重新选择</button></div>{imageAnalysis ? <div className="ai-image-analysis">{imageAnalysis}</div> : null}<label className="ai-image-prompt-field"><span>图片修改提示词</span><textarea rows={8} value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} disabled={imageAiStep === "generating"} /></label><div className="ai-image-modal-preview"><ImageIcon size={16} /><span>{selectedCount ? `将修改 ${selectedCount} 张图片` : ""}</span></div></> : null}
+            <div className="ai-image-mode-switch" role="tablist" aria-label="图片处理模式"><button className={`button quiet compact ${imageTaskMode === "edit" ? "active" : ""}`} type="button" role="tab" aria-selected={imageTaskMode === "edit"} onClick={() => { setImageTaskMode("edit"); setImagePrompt(defaultImagePrompt); setImageAiStep("select"); }}><Sparkles size={14} />反推改图</button><button className={`button quiet compact ${imageTaskMode === "translate" ? "active" : ""}`} type="button" role="tab" aria-selected={imageTaskMode === "translate"} onClick={() => { setImageTaskMode("translate"); setImagePrompt(defaultImagePrompt || DEFAULT_IMAGE_TRANSLATION_PROMPT); setImageAiStep("select"); }}><Languages size={14} />图片翻译</button></div>
+            <div className="ai-image-workspace-toolbar"><div><strong>选择商品图片</strong><small>{imageTaskMode === "translate" ? `翻译目标：${targetLocaleName || "请先选择目标语言"}` : "可多选图片，统一应用下方提示词"}</small></div><button className="button quiet compact" type="button" onClick={() => setSelectedImages(selectedCount === media.length ? [] : media.map((image) => image.id))} disabled={!media.length}><ListChecks size={14} />全选</button></div>
+            <div className="ai-image-workspace-source-grid">{media.map((image) => <button key={image.id} className={`ai-image-modal-image ${selectedImages.includes(image.id) ? "selected" : ""}`} type="button" onClick={() => { setFocusedImageId(image.id); setSelectedImages((current) => current.includes(image.id) ? current.filter((item) => item !== image.id) : [...current, image.id]); }}><img src={image.url} alt={image.altText || product.title} /><span>{selectedImages.includes(image.id) ? <Check size={15} /> : image.position + 1}</span></button>)}</div>
+            <label className="ai-image-prompt-field"><span>统一提示词</span><textarea rows={5} value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} disabled={imageAiStep === "generating"} placeholder={imageTaskMode === "translate" ? "输入图片翻译要求" : "输入想要生成的画面变化"} /></label>
+            {imageAnalysis && imageTaskMode === "edit" ? <div className="ai-image-analysis">{imageAnalysis}</div> : null}
+            <div className="ai-image-workspace-summary"><ImageIcon size={16} /><span>{selectedCount ? `已选择 ${selectedCount} 张图片` : "请先选择需要处理的图片"}{imageTaskMode === "translate" && !locale ? " · 翻译需要目标语言" : ""}</span></div>
+            <div className="ai-image-workspace-result-list"><div className="ai-image-workspace-result-heading"><strong>处理结果</strong><small>{imageResultDrafts.filter((item) => !item.discarded).length ? "替换原图后，点击保存才会提交 Shopify" : "生成结果会显示在这里"}</small></div>{imageResultDrafts.filter((item) => !item.discarded).map((result) => <article className="ai-image-result-row" key={result.id}><div className="ai-image-result-source"><img src={result.sourceUrl} alt="原图" /><span>原图</span></div><div className="ai-image-result-arrow" aria-hidden="true">→</div><div className="ai-image-result-output">{result.resultUrl ? <img src={result.resultUrl} alt="AI 生成结果" /> : <div className="ai-image-result-placeholder">{result.status === "failed" ? "生成失败" : "处理中"}</div>}<span className={`ai-image-result-status ${result.status}`}>{result.status === "queued" ? "已生成" : result.status === "failed" ? "失败" : "处理中"}</span></div><div className="ai-image-result-actions"><button className="button quiet compact" type="button" onClick={() => void retryImageResult(result)} disabled={result.status === "waiting"}>{result.status === "waiting" ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}重试</button><button className="button quiet compact" type="button" onClick={() => discardImageResult(result.id)}><Trash2 size={13} />弃用</button><button className={`button compact ${result.replacing ? "primary" : "quiet"}`} type="button" onClick={() => replaceImageWithResult(result)} disabled={!result.resultUrl || result.status !== "queued"}><Check size={13} />{result.replacing ? "已选替换" : "替换原图"}</button></div></article>)}</div>
           </div>
-          <footer className="modal-actions"><button className="button quiet" type="button" onClick={() => setAiImageModalOpen(false)}>取消</button>{imageTaskMode === "translate" ? <button className="button primary" type="button" onClick={() => void queueImageTranslation()} disabled={selectedCount < 1 || !locale || imageAiStep === "generating"}>{imageAiStep === "generating" ? <LoaderCircle className="spin" size={15} /> : <Languages size={15} />}{imageAiStep === "generating" ? "翻译中" : "创建翻译任务"}</button> : imageAiStep === "select" || imageAiStep === "analyzing" ? <button className="button primary" type="button" onClick={() => void analyzeImageStyle()} disabled={selectedCount < 1 || imageAiStep === "analyzing"}>{imageAiStep === "analyzing" ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}{imageAiStep === "analyzing" ? "分析中" : "分析图片并生成提示词"}</button> : <button className="button primary" type="button" onClick={() => void generateImageTask()} disabled={!imagePrompt.trim() || imageAiStep === "generating"}>{imageAiStep === "generating" ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}{imageAiStep === "generating" ? "生成中" : "生成修改后的图片"}</button>}</footer>
+          <footer className="modal-actions ai-image-workspace-footer"><span className="ai-image-workspace-status">{mediaSelectionActive ? "已有媒体替换草稿" : `${selectedCount} 张图片待处理`}</span><button className="button quiet" type="button" onClick={closeImageAiModal} disabled={imageModalSaving || imageAiStep === "generating"}>不保存</button>{imageTaskMode === "edit" && selectedCount > 0 && imageAiStep !== "generating" ? <button className="button quiet" type="button" onClick={() => void analyzeImageStyle()} disabled={imageAiStep === "analyzing"}>{imageAiStep === "analyzing" ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}{imageAiStep === "analyzing" ? "分析中" : "分析首张图片"}</button> : null}<button className="button primary" type="button" onClick={() => imageTaskMode === "translate" ? void queueImageTranslation() : void generateImageTask()} disabled={!selectedCount || !imagePrompt.trim() || imageAiStep === "generating" || (imageTaskMode === "translate" && !locale)}>{imageAiStep === "generating" ? <LoaderCircle className="spin" size={15} /> : imageTaskMode === "translate" ? <Languages size={15} /> : <Sparkles size={15} />}{imageAiStep === "generating" ? "处理中" : imageTaskMode === "translate" ? "生成翻译结果" : "生成改图结果"}</button><button className="button primary" type="button" onClick={() => void saveImageModalDraft()} disabled={imageModalSaving || imageAiStep === "generating"}>{imageModalSaving ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{imageModalSaving ? "保存中" : "保存"}</button></footer>
         </section>
       </div> : null}
     </section>
