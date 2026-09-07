@@ -1,6 +1,7 @@
-﻿import { ApiError } from "./http";
+import { ApiError } from "./http";
 import { fetchRemoteImageBytes } from "./image-proxy";
 import { decryptSetting, encryptSetting } from "./settings-crypto";
+import { recordAiLog } from "./db";
 import type { AiCandidate, AiPageRegion, AiPageSnapshot, AiSettingsInput, ShopifyProductTranslationAiInput } from "./validation";
 
 const AI_REQUEST_TIMEOUT_MS = 300_000;
@@ -31,6 +32,7 @@ type AiSettingsRow = {
 
 export type AiTask = "image_filter" | "image_analysis" | "chat" | "translation" | "image_generation";
 export type AiCredentials = { baseUrl: string; apiKey: string; modelId: string };
+export type AiLogContext = { env: Env; request: Request; userId: string | null; operation: string; scope: string; entityType?: string | null; entityId?: string | null };
 
 function environmentValue(env: Env, names: Array<keyof Env>): string | null {
   for (const name of names) {
@@ -347,6 +349,21 @@ function isAbortError(error: unknown): boolean {
 function responseErrorMessage(payload: ResponsePayload | null, fallback: string): string {
   return payload?.error?.message || payload?.message || fallback;
 }
+async function safeRecordAiRequestLog(
+  context: AiLogContext,
+  input: Parameters<typeof recordAiLog>[3],
+): Promise<void> {
+  try {
+    await recordAiLog(context.request, context.env, context.userId, input);
+  } catch (error) {
+    console.error(JSON.stringify({
+      level: "error",
+      event: "ai_log_write_failed",
+      operation: context.operation,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  }
+}
 
 function extractHtmlNode(pageHtml: string, nodeId: string, maxLength = 16_000): string {
   const marker = `data-node-id="${nodeId}"`;
@@ -442,12 +459,13 @@ function regionSummaries(selections: AiRegionSelection[], extracted: unknown = [
   }).slice(0, 24);
 }
 
-async function requestCompletion(credentials: AiCredentials, body: Record<string, unknown>): Promise<{
+async function requestCompletion(env: Env, credentials: AiCredentials, body: Record<string, unknown>, context?: AiLogContext): Promise<{
   response: Response;
   payload: ResponsePayload | null;
 }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => abortAiRequest(controller, AI_REQUEST_TIMEOUT_MS), AI_REQUEST_TIMEOUT_MS);
+  const startedAt = Date.now();
   try {
     const response = await fetch(responsesUrl(credentials.baseUrl), {
       method: "POST",
@@ -455,7 +473,28 @@ async function requestCompletion(credentials: AiCredentials, body: Record<string
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    return { response, payload: await response.json().catch(() => null) as ResponsePayload | null };
+    const responseText = await response.text();
+    let payload: ResponsePayload | null = null;
+    try {
+      payload = JSON.parse(responseText) as ResponsePayload;
+    } catch {
+      // Keep the raw body in the log below while preserving the existing null payload behavior.
+    }
+    const loggedResponsePayload = payload ?? (responseText ? { rawText: responseText } : {});
+    if (context) await safeRecordAiRequestLog(context, {
+      operation: context.operation, scope: context.scope, status: response.ok ? "success" : "failed",
+      httpStatus: response.status, durationMs: Date.now() - startedAt, modelId: credentials.modelId,
+      requestPayload: body, responsePayload: loggedResponsePayload, errorMessage: response.ok ? null : responseErrorMessage(payload, `AI request failed (HTTP ${response.status})`),
+      entityType: context.entityType, entityId: context.entityId,
+    });
+    return { response, payload };
+  } catch (error) {
+    if (context) await safeRecordAiRequestLog(context, {
+      operation: context.operation, scope: context.scope, status: "failed", durationMs: Date.now() - startedAt,
+      modelId: credentials.modelId, requestPayload: body, responsePayload: {}, errorMessage: error instanceof Error ? error.message : String(error),
+      entityType: context.entityType, entityId: context.entityId,
+    });
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -519,16 +558,16 @@ export function parseShopifyTranslationResults(raw: unknown): ShopifyTranslation
   return results;
 }
 
-export async function analyzeShopifyImageStyle(env: Env, input: { imageUrl: string }): Promise<{ prompt: string; analysis: string }> {
+export async function analyzeShopifyImageStyle(env: Env, input: { imageUrl: string }, context?: AiLogContext): Promise<{ prompt: string; analysis: string }> {
   const credentials = await readCredentials(env, "image_analysis");
-  const result = await requestCompletion(credentials, {
+  const result = await requestCompletion(env, credentials, {
     model: credentials.modelId,
     max_output_tokens: 2_500,
     input: [{ role: "user", content: [
       { type: "input_text", text: "Analyze the visual style of this product image and generate an editable image-editing prompt. Preserve the clothing, garment details, model identity, pose, and facial features in the original image. Only describe changes to the background, lighting, composition, color, and commercial-photography feel. Strict JSON output: {\"analysis\":\"short style analysis\",\"prompt\":\"prompt that can be used directly for image editing\"}" },
       { type: "input_image", image_url: input.imageUrl },
     ] }],
-  });
+  }, context);
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "Image style analysis failed"), "shopify_image_analysis_failed");
   const parsed = parseModelJson(responseOutputText(result.payload));
   const value = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
@@ -604,28 +643,28 @@ async function materializeGeneratedImage(imageUrl: string): Promise<string> {
   return `data:${contentType};base64,${base64Image(bytes)}`;
 }
 
-export async function editShopifyImage(env: Env, input: { imageUrl: string; prompt: string }): Promise<{ imageUrl: string | null; prompt: string }> {
+export async function editShopifyImage(env: Env, input: { imageUrl: string; prompt: string }, context?: AiLogContext): Promise<{ imageUrl: string | null; prompt: string }> {
   const credentials = await readCredentials(env, "image_generation");
   const prompt = `${input.prompt.trim()}\nHard requirement: preserve the original clothing, garment details, model identity, pose, and facial features. Do not generate a new model or change the garment style.`;
-  const result = await requestCompletion(credentials, {
+  const result = await requestCompletion(env, credentials, {
     model: credentials.modelId,
     max_output_tokens: 1_000,
     input: [{ role: "user", content: [{ type: "input_text", text: prompt }, { type: "input_image", image_url: input.imageUrl }] }],
     tools: [{ type: "image_generation", size: "1024x1024", quality: "high" }],
-  });
+  }, context);
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "Image generation failed"), "shopify_image_generation_failed");
   const imageUrl = extractGeneratedImage(result.payload, [input.imageUrl]);
   if (!imageUrl) throw new ApiError(502, "The image generation API succeeded but did not return an image URL", "shopify_image_generation_empty");
   return { imageUrl: await materializeGeneratedImage(imageUrl), prompt };
 }
 
-export async function generateShopifySeo(env: Env, input: { title: string; descriptionHtml: string; productType: string; vendor: string; tags: string[]; seoTitle?: string; seoDescription?: string; targetLanguage?: string }): Promise<{ seoTitle: string; seoDescription: string }> {
+export async function generateShopifySeo(env: Env, input: { title: string; descriptionHtml: string; productType: string; vendor: string; tags: string[]; seoTitle?: string; seoDescription?: string; targetLanguage?: string }, context?: AiLogContext): Promise<{ seoTitle: string; seoDescription: string }> {
   const credentials = await readCredentials(env, "chat");
-  const result = await requestCompletion(credentials, {
+  const result = await requestCompletion(env, credentials, {
     model: credentials.modelId,
     max_output_tokens: 900,
     input: [{ role: "user", content: [{ type: "input_text", text: `Generate an SEO title and SEO description for this Shopify product in ${input.targetLanguage || "English"}. Use that target language for every returned value. Do not invent features, materials, certifications, or promises that are not in the source text. Keep the title under 70 characters and the description under 320 characters. Strict JSON output: {"seoTitle":"","seoDescription":""}\n${JSON.stringify(input)}` }] }],
-  });
+  }, context);
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "SEO generation failed"), "shopify_seo_ai_failed");
   const parsed = parseModelJson(responseOutputText(result.payload));
   const value = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
@@ -736,6 +775,7 @@ export async function generateShopifyDescription(
     images: ShopifyDescriptionImageInput[];
     targetLanguage?: string;
   },
+  context?: AiLogContext,
 ): Promise<ShopifyDescriptionResult> {
   const credentials = await readCredentials(env, "chat");
   const selectedImages = input.images.slice(0, 4);
@@ -773,11 +813,11 @@ export async function generateShopifyDescription(
     throw new ApiError(502, "Unable to read any of the selected 1688 images; please choose different images and retry", "shopify_description_images_unavailable");
   }
 
-  const result = await requestCompletion(credentials, {
+  const result = await requestCompletion(env, credentials, {
     model: credentials.modelId,
     max_output_tokens: 3_500,
     input: [{ role: "user", content: imageParts }],
-  });
+  }, context);
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "AI product description generation failed"), "shopify_description_ai_failed");
   const parsed = parseModelJson(responseOutputText(result.payload));
   const html = parsed && typeof parsed === "object" && !Array.isArray(parsed)
@@ -786,18 +826,18 @@ export async function generateShopifyDescription(
   return { descriptionHtml: html, promptVersion: SHOPIFY_DESCRIPTION_PROMPT_VERSION, imageCount: downloadedImageCount };
 }
 
-export async function translateShopifyContent(env: Env, input: ShopifyProductTranslationAiInput): Promise<{
+export async function translateShopifyContent(env: Env, input: ShopifyProductTranslationAiInput, context?: AiLogContext): Promise<{
   locale: string;
   translations: Array<{ resourceId: string; resourceType: string; resourceLabel: string; key: string; value: string; sourceValue: string; originalValue: string; digest: string; changed: boolean }>;
   promptVersion: string;
 }> {
   const credentials = await readCredentials(env, "translation");
   const requestPrompt = buildShopifyTranslationPrompt(input);
-  const result = await requestCompletion(credentials, {
+  const result = await requestCompletion(env, credentials, {
     model: credentials.modelId,
     max_output_tokens: Math.min(12_000, Math.max(1_500, input.fields.reduce((total, field) => total + Math.min(field.sourceValue.length, 1_500), 0))),
     input: [{ role: "user", content: [{ type: "input_text", text: requestPrompt }] }],
-  });
+  }, context);
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, `AI translation failed (HTTP ${result.response.status})`), "shopify_translation_ai_failed");
   if (!result.payload) throw new ApiError(502, "AI translation returned no content", "shopify_translation_ai_empty");
   const rawResponse = responseOutputText(result.payload);
@@ -840,7 +880,7 @@ export async function translateShopifyContent(env: Env, input: ShopifyProductTra
   };
 }
 
-async function extractRegionFields(credentials: AiCredentials, region: AiPageRegion): Promise<Record<string, unknown>> {
+async function extractRegionFields(env: Env, credentials: AiCredentials, region: AiPageRegion, context?: AiLogContext): Promise<Record<string, unknown>> {
   const rootId = String(region.rootId || "");
   if (!rootId || !region.html.trim()) throw new ApiError(422, `AI region HTML is empty: ${rootId || "unknown"}`, "ai_region_html_empty");
   const prompt = [
@@ -849,11 +889,11 @@ async function extractRegionFields(credentials: AiCredentials, region: AiPageReg
     'Return only a strict JSON object: {"rootId":"original value","productTitle":"original text or null","description":"original text or null","sku":"original text or null","brand":"original text or null","price":"original text or null","currency":"original text or null"}',
     JSON.stringify({ rootId, html: region.html, titleIds: region.titleIds || [], skuIds: region.skuIds || [] }),
   ].join("\n");
-  const result = await requestCompletion(credentials, {
+  const result = await requestCompletion(env, credentials, {
     model: credentials.modelId,
     max_output_tokens: 2_000,
     input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
-  });
+  }, context);
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, `AI region field extraction failed (HTTP ${result.response.status}): ${rootId}`), "ai_region_extraction_failed");
   if (!result.payload) throw new ApiError(502, `AI region field extraction returned no content: ${rootId}`, "ai_region_extraction_empty");
   const parsed = parseModelJson(responseOutputText(result.payload));
@@ -864,7 +904,7 @@ async function extractRegionFields(credentials: AiCredentials, region: AiPageReg
   return { ...value, rootId, sku: typeof value.sku === "string" && value.sku.trim() ? value.sku.trim() : explicitSku };
 }
 
-export async function classifyImageCandidates(env: Env, candidates: AiCandidate[], pageSnapshot: AiPageSnapshot | null = null, stage: "regions" | "fields" = "regions", regionSnapshots: AiPageRegion[] = []): Promise<{
+export async function classifyImageCandidates(env: Env, candidates: AiCandidate[], pageSnapshot: AiPageSnapshot | null = null, stage: "regions" | "fields" = "regions", regionSnapshots: AiPageRegion[] = [], context?: AiLogContext): Promise<{
   configured: boolean;
   degraded: boolean;
   pipeline?: "html_two_stage";
@@ -885,7 +925,7 @@ export async function classifyImageCandidates(env: Env, candidates: AiCandidate[
     })).filter((region) => region.rootId && region.html.trim());
     if (!selections.length) throw new ApiError(422, "Product-region HTML is empty", "ai_region_html_empty");
     try {
-      const extracted = await Promise.all(selections.map((selection) => extractRegionFields(credentials, { ...regionSnapshots.find((item) => item.rootId === selection.rootId)!, rootId: selection.rootId, html: selection.html })));
+      const extracted = await Promise.all(selections.map((selection) => extractRegionFields(env, credentials, { ...regionSnapshots.find((item) => item.rootId === selection.rootId)!, rootId: selection.rootId, html: selection.html }, context)));
       return { configured: true, degraded: false, pipeline: "html_two_stage", regions: regionSummaries(selections, extracted), results: [] };
     } catch (error) {
       if (isAbortError(error)) throw createAiTimeoutError(AI_REQUEST_TIMEOUT_MS);
@@ -918,11 +958,11 @@ export async function classifyImageCandidates(env: Env, candidates: AiCandidate[
   ].join("\n");
 
   try {
-    const firstStage = await requestCompletion(credentials, {
+    const firstStage = await requestCompletion(env, credentials, {
       model: credentials.modelId,
       max_output_tokens: 2_000,
       input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
-    });
+    }, context);
     if (!firstStage.response.ok) throw new ApiError(502, responseErrorMessage(firstStage.payload, `AI page region detection failed (HTTP ${firstStage.response.status})`), "ai_region_detection_failed");
     if (!firstStage.payload) throw new ApiError(502, "AI page region detection returned no JSON", "ai_region_detection_empty");
     const parsed = parseModelJson(responseOutputText(firstStage.payload));

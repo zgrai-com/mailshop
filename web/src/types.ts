@@ -90,6 +90,8 @@ export type AiRequestLog = {
   modelId: string | null;
   requestSummary: Record<string, unknown>;
   responseSummary: Record<string, unknown>;
+  requestPayload: unknown;
+  responsePayload: unknown;
   errorMessage: string | null;
   entityType: string | null;
   entityId: string | null;

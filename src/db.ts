@@ -334,6 +334,8 @@ export type AiLogInput = {
   modelId?: string | null;
   requestSummary?: unknown;
   responseSummary?: unknown;
+  requestPayload?: unknown;
+  responsePayload?: unknown;
   errorMessage?: string | null;
   entityType?: string | null;
   entityId?: string | null;
@@ -360,12 +362,22 @@ export async function ensureAiLogsSchema(env: Env): Promise<void> {
         model_id TEXT,
         request_summary_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(request_summary_json)),
         response_summary_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(response_summary_json)),
+        request_payload_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(request_payload_json)),
+        response_payload_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(response_payload_json)),
         error_message TEXT,
         entity_type TEXT,
         entity_id TEXT,
         ip_address TEXT,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       )`).run();
+      const columns = await env.DB.prepare("PRAGMA table_info(ai_request_logs)").all<{ name: string }>();
+      const existing = new Set(columns.results.map((column) => column.name));
+      for (const [name, sql] of [
+        ["request_payload_json", "ALTER TABLE ai_request_logs ADD COLUMN request_payload_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(request_payload_json))"],
+        ["response_payload_json", "ALTER TABLE ai_request_logs ADD COLUMN response_payload_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(response_payload_json))"],
+      ] as const) {
+        if (!existing.has(name)) await env.DB.prepare(sql).run();
+      }
       await env.DB.batch([
         env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ai_request_logs_user_created ON ai_request_logs(user_id, created_at DESC)"),
         env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ai_request_logs_created ON ai_request_logs(created_at DESC)"),
@@ -378,11 +390,11 @@ export async function ensureAiLogsSchema(env: Env): Promise<void> {
 export async function recordAiLog(request: Request, env: Env, userId: string | null, input: AiLogInput): Promise<void> {
   await ensureAiLogsSchema(env);
   await env.DB.prepare(`INSERT INTO ai_request_logs
-    (id, user_id, operation, scope, status, http_status, duration_ms, model_id, request_summary_json, response_summary_json, error_message, entity_type, entity_id, ip_address)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+    (id, user_id, operation, scope, status, http_status, duration_ms, model_id, request_summary_json, response_summary_json, request_payload_json, response_payload_json, error_message, entity_type, entity_id, ip_address)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
     crypto.randomUUID(), userId, input.operation, input.scope, input.status, input.httpStatus ?? null,
     Math.max(0, Math.round(input.durationMs)), input.modelId ?? null, boundedJson(input.requestSummary),
-    boundedJson(input.responseSummary), input.errorMessage?.slice(0, 2_000) ?? null,
+    boundedJson(input.responseSummary), boundedJson(input.requestPayload, 20_000_000), boundedJson(input.responsePayload, 20_000_000), input.errorMessage?.slice(0, 2_000) ?? null,
     input.entityType ?? null, input.entityId ?? null, clientIp(request),
   ).run();
 }
@@ -391,12 +403,14 @@ export async function listAiLogs(env: Env, userId: string, isAdmin: boolean, lim
   await ensureAiLogsSchema(env);
   const safeLimit = Math.min(200, Math.max(1, Math.floor(limit)));
   const result = isAdmin
-    ? await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id ORDER BY l.created_at DESC LIMIT ?`).bind(safeLimit).all()
-    : await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id WHERE l.user_id = ? ORDER BY l.created_at DESC LIMIT ?`).bind(userId, safeLimit).all();
+    ? await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.request_payload_json AS requestPayloadJson, l.response_payload_json AS responsePayloadJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id ORDER BY l.created_at DESC LIMIT ?`).bind(safeLimit).all()
+    : await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.request_payload_json AS requestPayloadJson, l.response_payload_json AS responsePayloadJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id WHERE l.user_id = ? ORDER BY l.created_at DESC LIMIT ?`).bind(userId, safeLimit).all();
   return result.results.map((row) => ({
     ...row,
     requestSummary: parseJsonValue(row.requestSummaryJson, {}),
     responseSummary: parseJsonValue(row.responseSummaryJson, {}),
+    requestPayload: parseJsonValue(row.requestPayloadJson, parseJsonValue(row.requestSummaryJson, {})),
+    responsePayload: parseJsonValue(row.responsePayloadJson, parseJsonValue(row.responseSummaryJson, {})),
   }));
 }
 

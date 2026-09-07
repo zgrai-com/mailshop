@@ -4335,6 +4335,12 @@ textarea::placeholder {
 .audit-log-detail-row:hover { background: transparent !important; }
 .audit-log-detail-row td { background: var(--color-surface-soft); padding: 12px 16px !important; }
 .audit-log-detail-row pre { max-height: 220px; margin: 0; overflow: auto; border: 1px solid var(--color-line); background: var(--color-surface); padding: 10px; color: var(--color-muted); font: 10px/1.5 var(--font-mono); white-space: pre-wrap; }
+.ai-log-status { display: inline-flex; align-items: center; border: 1px solid var(--color-line); padding: 4px 7px; font-size: 10px; font-weight: 700; }
+.ai-log-status.success { border-color: color-mix(in srgb, var(--color-green) 45%, var(--color-line)); color: var(--color-green); }
+.ai-log-status.failed { border-color: color-mix(in srgb, var(--color-coral) 45%, var(--color-line)); color: var(--color-coral); }
+.ai-log-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ai-log-detail > div { min-width: 0; display: grid; gap: 6px; }
+.ai-log-detail > div:last-child { grid-column: 1 / -1; }
 
 .dashboard-metrics {
   display: grid;
@@ -4409,6 +4415,8 @@ textarea::placeholder {
   .admin-dashboard-heading { flex-direction: column; }
   .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-dashboard-grid { grid-template-columns: 1fr; }
+  .ai-log-detail { grid-template-columns: 1fr; }
+  .ai-log-detail > div:last-child { grid-column: auto; }
   .dashboard-metrics { grid-template-columns: 1fr; }
   .dashboard-metrics button { min-height: 116px; }
   .credit-summary-band { align-items: flex-start; flex-direction: column; }
@@ -5904,10 +5912,14 @@ textarea::placeholder {
 .shopify-editor-title h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 22px; }
 .shopify-editor-title small { color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shopify-editor-header-actions { display: flex; align-items: center; gap: 10px; }
-.shopify-view-locale-field { display: grid; min-width: 132px; gap: 4px; }
-.shopify-view-locale-field > span { color: var(--color-muted); font-family: var(--font-mono); font-size: 9px; font-weight: 700; }
-.shopify-view-locale-field select { width: 100%; height: 32px; border: 1px solid var(--color-line); border-radius: var(--radius-control); background: var(--color-surface-soft); color: var(--color-ink); padding: 0 8px; font: inherit; font-size: 11px; }
-.shopify-view-locale-field select:focus { border-color: var(--color-accent); outline: 2px solid var(--color-accent-soft); }
+.current-language-card { gap: 12px; }
+.current-language-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-surface-soft); padding: 11px 12px; }
+.current-language-summary .current-language-select { grid-column: 1 / -1; width: 100%; height: 36px; border: 1px solid var(--color-line); border-radius: var(--radius-control); background: var(--color-surface); color: var(--color-ink); padding: 0 9px; font: inherit; font-size: 12px; }
+.current-language-summary .current-language-select:focus { border-color: var(--color-accent); outline: 2px solid var(--color-accent-soft); }
+.current-language-summary > strong { display: none; }
+.current-language-summary strong { font-size: 15px; }
+.current-language-summary code { align-self: center; color: var(--color-muted); font-family: var(--font-mono); font-size: 10px; }
+.current-language-summary span { grid-column: 1 / -1; color: var(--color-muted); font-size: 10px; line-height: 1.45; }
 .shopify-editor-page-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(360px, .8fr); align-items: start; gap: 18px; }
 .shopify-editor-main, .shopify-editor-side { display: grid; min-width: 0; gap: 18px; }
 .shopify-editor-card { display: grid; min-width: 0; gap: 12px; border: 1px solid var(--color-line-strong); border-radius: 8px; background: var(--color-surface); padding: 18px; box-shadow: 0 2px 10px rgba(24, 37, 29, .05); }
@@ -6196,7 +6208,6 @@ textarea::placeholder {
   .shopify-editor-page-header { grid-template-columns: auto minmax(0, 1fr); gap: 10px; }
   .shopify-editor-page-header > .button { grid-column: 1 / -1; justify-self: start; }
   .shopify-editor-header-actions { grid-column: 1 / -1; justify-content: space-between; flex-wrap: wrap; }
-  .shopify-view-locale-field { flex: 1 1 150px; }
   .shopify-editor-card { padding: 14px; }
   .translation-modal { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); }
   .translation-modal-body { gap: 12px; padding: 14px 14px 4px; }
