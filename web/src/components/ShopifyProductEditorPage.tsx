@@ -686,22 +686,31 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
         }),
       });
       const uploadedBySourceUrl = new Map((result.uploadedImages ?? []).map((item) => [item.sourceUrl, item.image]));
-      const replacements = new Map(replacementResults.map((item) => [item.imageId, item.resultUrl ? uploadedBySourceUrl.get(item.resultUrl) : undefined]));
-      const uploadedReplacementIds = new Set([...replacements.values()].filter((image): image is ShopifyRemoteImage => Boolean(image)).map((image) => image.id));
-      const updatedImages = (result.product.images ?? []).reduce<ShopifyRemoteImage[]>((images, image) => {
-        const replacement = replacements.get(image.id);
-        if (replacement) {
-          images.push({ ...replacement, position: images.length });
-        } else if (!uploadedReplacementIds.has(image.id)) {
-          images.push({ ...image, position: images.length });
-        }
-        return images;
-      }, []);
+      const replacementImages = new Map(replacementResults.flatMap((item) => {
+        const image = item.resultUrl ? uploadedBySourceUrl.get(item.resultUrl) : undefined;
+        return image ? [[item.imageId, image] as const] : [];
+      }));
+      const updatedImages = (result.product.images ?? []).map((image, index) => ({ ...image, position: index }));
       const updatedProduct = { ...result.product, images: updatedImages };
       setProduct(updatedProduct);
       setDetailImages(updatedImages);
       setModalImages(updatedImages.map((image) => ({ ...image })));
       setDraft(draftFrom(result.product));
+      if (replacementImages.size) {
+        const jobsToRemap = imageJobs.flatMap((job) => {
+          const replacement = replacementImages.get(job.imageId);
+          return replacement ? [{ job, imageId: replacement.id }] : [];
+        });
+        const remappedJobIds = new Map(jobsToRemap.map(({ job, imageId }) => [job.id, imageId]));
+        setImageJobs((current) => current.map((job) => {
+          const imageId = remappedJobIds.get(job.id);
+          return imageId ? { ...job, imageId } : job;
+        }));
+        await Promise.all(jobsToRemap.map(({ job, imageId }) => api(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}/ai/image-jobs/${encodeURIComponent(job.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ storeId, productId: product.id, imageId }),
+        }).catch(() => undefined)));
+      }
       setMediaSelectionActive(false);
       setMediaSelectionDraft([]);
       onNotify("商品已保存到 Shopify");

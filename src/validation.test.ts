@@ -14,6 +14,7 @@ import {
   shopifyProductTranslationPublishSchema,
   shopifyProductTranslationsQuerySchema,
   shopifyProductSeoAiSchema,
+  shopifyProductDescriptionAiSchema,
   shopifyImageAnalyzeSchema,
   shopifyImageEditSchema,
   shopifySettingsSchema,
@@ -25,6 +26,7 @@ import {
   collectionTaskBatchSchema,
   collectionTaskImportSchema,
   selfPasswordChangeSchema,
+  userAiPromptSettingsSchema,
 } from "./validation";
 
 describe("productInputSchema", () => {
@@ -221,6 +223,17 @@ describe("AI schemas", () => {
     expect(shopifyImageAnalyzeSchema.parse(common).imageId).toContain("ProductImage");
     expect(shopifyImageEditSchema.parse({ ...common, prompt: "明亮的棚拍背景" }).prompt).toBe("明亮的棚拍背景");
     expect(shopifyProductSeoAiSchema.parse({ storeId: common.storeId, productId: common.productId }).tags).toEqual([]);
+  });
+
+  it("allows expanded Shopify description prompts", () => {
+    const longPrompt = "x".repeat(12_001);
+    expect(userAiPromptSettingsSchema.parse({ aiDescriptionPrompt: longPrompt }).aiDescriptionPrompt).toHaveLength(12_001);
+    expect(shopifyProductDescriptionAiSchema.parse({
+      storeId: "00000000-0000-4000-8000-000000000000",
+      productId: "gid://shopify/Product/1",
+      prompt: longPrompt,
+      imageIds: ["image-1"],
+    }).prompt).toHaveLength(12_001);
   });
 
   it("caps AI candidate batches and accepts bounded page HTML snapshots", () => {

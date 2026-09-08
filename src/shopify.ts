@@ -680,11 +680,17 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
   }
   if (input.mediaSelectionActive) {
     const selectedMediaIds = new Set(input.mediaIds ?? []);
-    const replacementSourceIds = new Set(input.mediaReplacementSourceIds ?? []);
     const mediaToDelete = existingProductImages.flatMap((image) => {
-      if (!image.mediaId || selectedMediaIds.has(image.mediaId) || selectedMediaIds.has(image.id) || replacementSourceIds.has(image.mediaId) || replacementSourceIds.has(image.id)) return [];
+      if (!image.mediaId || selectedMediaIds.has(image.mediaId) || selectedMediaIds.has(image.id)) return [];
       return [image.mediaId];
     });
+    if (stagedMediaUrls.length) {
+      const mediaResult = await graphql<{ productCreateMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+        productCreateMedia(productId: $productId, media: $media) { userErrors { field message } }
+      }`, { productId: input.productId, media: stagedMediaUrls.map((originalSource) => ({ originalSource, mediaContentType: "IMAGE" })) });
+      const mediaError = userErrors(mediaResult.productCreateMedia.userErrors);
+      if (mediaError) throw new ApiError(502, mediaError, "shopify_media_create_failed");
+    }
     if (mediaToDelete.length) {
       const deleteResult = await graphql<{ productDeleteMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
         productDeleteMedia(productId: $productId, mediaIds: $mediaIds) { userErrors { field message } }
@@ -692,8 +698,7 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
       const deleteError = userErrors(deleteResult.productDeleteMedia.userErrors);
       if (deleteError) throw new ApiError(502, deleteError, "shopify_media_delete_failed");
     }
-  }
-  if (stagedMediaUrls.length) {
+  } else if (stagedMediaUrls.length) {
     const mediaResult = await graphql<{ productCreateMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
       productCreateMedia(productId: $productId, media: $media) { userErrors { field message } }
     }`, { productId: input.productId, media: stagedMediaUrls.map((originalSource) => ({ originalSource, mediaContentType: "IMAGE" })) });

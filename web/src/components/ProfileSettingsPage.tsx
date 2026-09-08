@@ -21,7 +21,7 @@ type ProfileAiPromptSectionProps = {
   icon: ReactNode;
   label: string;
   value: string;
-  maxLength: number;
+  maxLength?: number;
   placeholder: string;
   groupId: string;
   onChange: (value: string) => void;
@@ -34,7 +34,7 @@ function ProfileAiPromptSection({ icon, label, value, maxLength, placeholder, gr
     <section className="profile-ai-prompt-section">
       <label className="profile-ai-prompt-card">
         <span>{icon}{label}</span>
-        <textarea rows={7} maxLength={maxLength} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+        <textarea rows={7} {...(maxLength === undefined ? {} : { maxLength })} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
       </label>
       <details className="profile-ai-variable-group">
         <summary className="profile-ai-variable-group-head">
@@ -172,7 +172,6 @@ export function ProfileSettingsPage({ user, saving, aiPrompts, loadingAiPrompts,
                 icon={<FileText size={15} />}
                 label="AI 生成描述提示词"
                 value={aiDescriptionPrompt}
-                maxLength={12_000}
                 placeholder="留空时使用默认规则；需要 1688 原始 JSON 时手动加入 {1688json}。"
                 groupId="description"
                 onChange={setAiDescriptionPrompt}

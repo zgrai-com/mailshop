@@ -574,6 +574,7 @@ export async function createShopifyImageJobs(env: Env, userId: string, storeId: 
 }
 
 export type ShopifyImageJobUpdateInput = {
+  imageId?: string;
   status?: "queued" | "waiting" | "failed";
   prompt?: string | null;
   resultUrl?: string | null;
@@ -584,6 +585,7 @@ export async function updateShopifyImageJob(env: Env, userId: string, storeId: s
   await ensureShopifyImageJobsSchema(env);
   const sets: string[] = [];
   const values: unknown[] = [];
+  if (input.imageId !== undefined) { sets.push("image_id = ?"); values.push(input.imageId); }
   if (input.status !== undefined) { sets.push("status = ?"); values.push(input.status); }
   if (input.prompt !== undefined) { sets.push("prompt = ?"); values.push(input.prompt); }
   if (input.resultUrl !== undefined) { sets.push("result_url = ?"); values.push(input.resultUrl); }
