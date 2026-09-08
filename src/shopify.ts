@@ -669,18 +669,6 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
       : await stagedRemoteImageSource(store, token.accessToken, imageUrl, existingMediaIds.length + index);
     stagedMediaUrls.push(source);
   }
-  if (input.mediaSelectionActive) {
-    const selectedMediaIds = new Set(input.mediaIds ?? []);
-    const replacementSourceIds = new Set(input.mediaReplacementSourceIds ?? []);
-    const mediaToDelete = existingMediaIds.filter((id) => !selectedMediaIds.has(id) && !replacementSourceIds.has(id));
-    if (mediaToDelete.length) {
-      const deleteResult = await graphql<{ productDeleteMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
-        productDeleteMedia(productId: $productId, mediaIds: $mediaIds) { userErrors { field message } }
-      }`, { productId: input.productId, mediaIds: mediaToDelete });
-      const deleteError = userErrors(deleteResult.productDeleteMedia.userErrors);
-      if (deleteError) throw new ApiError(502, deleteError, "shopify_media_delete_failed");
-    }
-  }
   if (stagedMediaUrls.length) {
     const mediaResult = await graphql<{ productCreateMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
       productCreateMedia(productId: $productId, media: $media) { userErrors { field message } }
