@@ -679,8 +679,8 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
           productId: product.id,
           ...draftPayload(draft),
           mediaSelectionActive,
-          mediaIds: (product.images ?? []).flatMap((image) => image.mediaId && mediaSelectionDraft.includes(image.id) ? [image.mediaId] : []),
-          mediaReplacementSourceIds: mediaSelectionActive ? replacementResults.flatMap((item) => { const image = product.images?.find((candidate) => candidate.id === item.imageId); return image?.mediaId ? [image.mediaId] : []; }) : [],
+          mediaIds: (product.images ?? []).flatMap((image) => mediaSelectionDraft.includes(image.id) ? [image.mediaId ?? image.id] : []),
+          mediaReplacementSourceIds: mediaSelectionActive ? replacementResults.flatMap((item) => { const image = product.images?.find((candidate) => candidate.id === item.imageId); return image ? [image.mediaId ?? image.id] : []; }) : [],
           mediaUrls: imageJobs
             .filter((job) => mediaSelectionDraft.includes(job.id) && job.status === "queued" && job.resultUrl && !(product.images ?? []).some((image) => image.url === job.resultUrl))
             .map((job) => job.resultUrl),

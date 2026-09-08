@@ -201,7 +201,7 @@ const PRODUCT_FIELDS = `
 `;
 
 const PRODUCT_MEDIA_FIELDS = `
-  media(first: 250) { nodes { id ... on MediaImage { image { url altText } } } }
+  media(first: 250) { nodes { id ... on MediaImage { image { id url altText } } } }
 `;
 
 type RawShopifyProduct = {
@@ -223,7 +223,7 @@ type RawShopifyProduct = {
   seo?: { title?: string | null; description?: string | null } | null;
   options?: Array<{ name?: string; optionValues?: Array<{ name?: string }> }>;
   images?: { nodes?: Array<{ id: string; url: string; altText?: string | null }> };
-  media?: { nodes?: Array<{ id: string; image?: { url?: string; altText?: string | null } | null }> };
+  media?: { nodes?: Array<{ id: string; image?: { id?: string | null; url?: string; altText?: string | null } | null }> };
   variants?: { nodes?: Array<{ id: string; title: string; sku?: string | null; barcode?: string | null; price?: string | null; compareAtPrice?: string | null; inventoryQuantity?: number | null; selectedOptions?: Array<{ name: string; value: string }>; image?: { url?: string } | null }> };
 };
 
@@ -236,6 +236,7 @@ function mapShopifyProduct(raw: RawShopifyProduct): ShopifyProductDetail {
   const min = numberOrNull(raw.priceRangeV2?.minVariantPrice?.amount);
   const max = numberOrNull(raw.priceRangeV2?.maxVariantPrice?.amount);
   const variants = raw.variants?.nodes ?? [];
+  const mediaIdsByImageId = new Map((raw.media?.nodes ?? []).flatMap((media) => media.image?.id ? [[media.image.id, media.id] as const] : []));
   const mediaIdsByUrl = new Map((raw.media?.nodes ?? []).flatMap((media) => media.image?.url ? [[media.image.url, media.id] as const] : []));
   return {
     id: raw.id,
@@ -261,7 +262,7 @@ function mapShopifyProduct(raw: RawShopifyProduct): ShopifyProductDetail {
     giftCard: false,
     seo: { title: raw.seo?.title ?? null, description: raw.seo?.description ?? null },
     options: (raw.options ?? []).map((option) => ({ name: option.name ?? "", values: (option.optionValues ?? []).map((value) => value.name ?? "").filter(Boolean) })).filter((option) => option.name),
-    images: (raw.images?.nodes ?? []).map((image, index) => ({ id: image.id, mediaId: mediaIdsByUrl.get(image.url) ?? null, url: image.url, altText: image.altText ?? null, position: index })),
+    images: (raw.images?.nodes ?? []).map((image, index) => ({ id: image.id, mediaId: mediaIdsByImageId.get(image.id) ?? mediaIdsByUrl.get(image.url) ?? null, url: image.url, altText: image.altText ?? null, position: index })),
     variants: variants.map((variant) => ({
       id: variant.id,
       title: variant.title,
@@ -663,8 +664,9 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     const variantError = userErrors(variantResult.productVariantsBulkUpdate.userErrors);
     if (variantError) throw new ApiError(502, variantError, "shopify_variant_update_failed");
   }
-  const existingImageIds = (data.productUpdate.product.images?.nodes ?? []).map((image) => image.id);
-  const existingMediaIds = mapShopifyProduct(data.productUpdate.product).images.flatMap((image) => image.mediaId ? [image.mediaId] : []);
+  const existingProductImages = mapShopifyProduct(data.productUpdate.product).images;
+  const existingImageIds = existingProductImages.map((image) => image.id);
+  const existingMediaIds = existingProductImages.flatMap((image) => image.mediaId ? [image.mediaId] : []);
   const existingMediaUrls = new Set((data.productUpdate.product.images?.nodes ?? []).map((image) => image.url));
   const mediaUrlsToCreate = input.mediaSelectionActive
     ? input.mediaUrls.filter((url) => !existingMediaUrls.has(url))
@@ -679,7 +681,10 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
   if (input.mediaSelectionActive) {
     const selectedMediaIds = new Set(input.mediaIds ?? []);
     const replacementSourceIds = new Set(input.mediaReplacementSourceIds ?? []);
-    const mediaToDelete = existingMediaIds.filter((id) => !selectedMediaIds.has(id) && !replacementSourceIds.has(id));
+    const mediaToDelete = existingProductImages.flatMap((image) => {
+      if (!image.mediaId || selectedMediaIds.has(image.mediaId) || selectedMediaIds.has(image.id) || replacementSourceIds.has(image.mediaId) || replacementSourceIds.has(image.id)) return [];
+      return [image.mediaId];
+    });
     if (mediaToDelete.length) {
       const deleteResult = await graphql<{ productDeleteMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
         productDeleteMedia(productId: $productId, mediaIds: $mediaIds) { userErrors { field message } }
