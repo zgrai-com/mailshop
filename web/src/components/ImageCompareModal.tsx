@@ -8,6 +8,7 @@ type Props = {
   originalUrl: string;
   resultUrl: string;
   title: string;
+  resultLabel?: string;
   onClose: () => void;
 };
 
@@ -18,7 +19,7 @@ function imageUrl(url: string): string {
   return `/api/image-proxy${toQuery({ url })}`;
 }
 
-export function ImageCompareModal({ originalUrl, resultUrl, title, onClose }: Props) {
+export function ImageCompareModal({ originalUrl, resultUrl, title, resultLabel = "搜图结果", onClose }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const dragRef = useRef<{ pointerId: number; x: number; y: number; originX: number; originY: number } | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ zoom: 1, x: 0, y: 0 });
@@ -55,7 +56,7 @@ export function ImageCompareModal({ originalUrl, resultUrl, title, onClose }: Pr
   }
 
   const transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
-  const panels = [["原图", originalUrl], ["搜图结果", resultUrl]] as const;
+  const panels = [["原图", originalUrl], [resultLabel, resultUrl]] as const;
 
   return <dialog ref={dialogRef} className="image-compare-dialog" aria-labelledby="image-compare-title" onCancel={(event) => { event.preventDefault(); onClose(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <header className="task-dialog-header image-compare-header">

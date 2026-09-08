@@ -347,8 +347,10 @@ function isAbortError(error: unknown): boolean {
   return name === "AbortError" || name === "TimeoutError" || /signal is aborted|aborted without reason/iu.test(message);
 }
 
-function responseErrorMessage(payload: ResponsePayload | null, fallback: string): string {
-  return payload?.error?.message || payload?.message || fallback;
+function responseErrorMessage(payload: ResponsePayload | null, fallback: string, status?: number): string {
+  const message = payload?.error?.message || payload?.message;
+  if (message) return status ? `${message} (HTTP ${status})` : message;
+  return status ? `${fallback} (HTTP ${status})` : fallback;
 }
 async function safeRecordAiRequestLog(
   context: AiLogContext,
@@ -569,7 +571,7 @@ export async function analyzeShopifyImageStyle(env: Env, input: { imageUrl: stri
       { type: "input_image", image_url: input.imageUrl },
     ] }],
   }, context);
-  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "Image style analysis failed"), "shopify_image_analysis_failed");
+  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "Image style analysis failed", result.response.status), "shopify_image_analysis_failed", { upstreamStatus: result.response.status });
   const parsed = parseModelJson(responseOutputText(result.payload));
   const value = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
   const prompt = typeof value.prompt === "string" ? value.prompt.trim() : "Preserve the original clothing, garment details, model identity, pose, and facial features. Improve the background, lighting, and commercial-photography feel.";

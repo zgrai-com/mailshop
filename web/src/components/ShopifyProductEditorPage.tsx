@@ -1,10 +1,12 @@
 import {
   ArrowLeft,
+  ArrowRight,
   Bold,
   Check,
   CircleX,
   Clock3,
   ExternalLink,
+  Eye,
   Image as ImageIcon,
   Italic,
   Languages,
@@ -43,6 +45,8 @@ import type {
 import { draftFrom, draftPayload, statusLabels, type ShopifyProductDraft } from "./shopifyProductUtils";
 import { DEFAULT_DESCRIPTION_PROMPT, ShopifyDescriptionModal } from "./ShopifyDescriptionModal";
 import { DEFAULT_TITLE_PROMPT, ShopifyTitleModal } from "./ShopifyTitleModal";
+import { ImageCompareModal } from "./ImageCompareModal";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 
 type Props = {
   stores: ShopifyStore[];
@@ -80,6 +84,7 @@ function projectDraftToLocale(draft: ShopifyProductDraft, productId: string, tra
 type ImageJobStatus = "queued" | "waiting" | "failed";
 type ImageJob = { id: string; imageId: string; operation: "translate" | "edit"; locale: string; status: ImageJobStatus; createdAt: number | string; updatedAt: number | string; prompt?: string | null; resultUrl?: string | null; message?: string | null };
 type ImageResultDraft = ImageJob & { sourceUrl: string; discarded?: boolean; replacing?: boolean };
+type ImageAnalysisDraft = { id: string; imageId: string; sourceUrl: string; status: "analyzing" | "generating" | "ready" | "failed"; failedStage?: "analysis" | "generation"; prompt?: string; analysis?: string; message?: string };
 
 type DescriptionEditorProps = {
   value: string;
@@ -201,8 +206,11 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   const [imageAiStep, setImageAiStep] = useState<"select" | "analyzing" | "edit" | "generating">("select");
   const [imageAnalysis, setImageAnalysis] = useState("");
   const [imagePrompt, setImagePrompt] = useState("");
+  const [imageAnalysisDrafts, setImageAnalysisDrafts] = useState<ImageAnalysisDraft[]>([]);
   const [imageResultDrafts, setImageResultDrafts] = useState<ImageResultDraft[]>([]);
   const [imageModalSaving, setImageModalSaving] = useState(false);
+  const [imagePreviewState, setImagePreviewState] = useState<{ url: string; title: string } | null>(null);
+  const [imageCompareState, setImageCompareState] = useState<{ originalUrl: string; resultUrl: string; title: string } | null>(null);
   const imageModalInitialMediaSelectionRef = useRef<{ active: boolean; ids: string[] } | null>(null);
   const translationModalRef = useRef<HTMLElement>(null);
   const descriptionRequestIdRef = useRef(0);
@@ -901,6 +909,10 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       setImageJobs(created.jobs);
       currentJobs = created.jobs;
     } catch (error) { onError(error); return; }
+    setImageResultDrafts((current) => [
+      ...current.filter((item) => !jobs.some((job) => job.id === item.id)),
+      ...jobs.map((job, index) => ({ ...job, sourceUrl: images[index].url })),
+    ]);
     setImageAiStep("generating");
     const results = await Promise.allSettled(images.map((image, index) => api<{ imageUrl: string | null; prompt: string }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-edit`, {
       method: "POST",
@@ -917,10 +929,10 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       }
       return { ...item, status: "failed" as const, updatedAt: Date.now(), message: result.reason instanceof Error ? result.reason.message : "图片翻译失败" };
     });
-    setImageResultDrafts((current) => [
-      ...current.filter((item) => !jobs.some((job) => job.id === item.id)),
-      ...jobs.map((job, index) => ({ ...job, ...(nextJobs.find((item) => item.id === job.id) ?? {}), sourceUrl: images[index].url })),
-    ]);
+    setImageResultDrafts((current) => current.map((item) => {
+      const next = nextJobs.find((job) => job.id === item.id);
+      return next ? { ...item, ...next } : item;
+    }));
     await Promise.all(nextJobs.filter((item) => jobs.some((job) => job.id === item.id)).map((item) => api(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-jobs/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify({ storeId, productId, status: item.status, resultUrl: item.resultUrl ?? null, message: item.message ?? null, prompt: item.prompt ?? null }) })));
     setImageJobs(nextJobs);
     setSelectedImages([]);
@@ -935,8 +947,11 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     setImageAiStep("select");
     setImageAnalysis("");
     setImagePrompt(defaultImagePrompt);
+    setImageAnalysisDrafts([]);
     setImageResultDrafts([]);
     setImageModalSaving(false);
+    setImagePreviewState(null);
+    setImageCompareState(null);
     setAiImageModalOpen(true);
   }
 
@@ -949,7 +964,10 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     }
     imageModalInitialMediaSelectionRef.current = null;
     setAiImageModalOpen(false);
+    setImageAnalysisDrafts([]);
     setImageResultDrafts([]);
+    setImagePreviewState(null);
+    setImageCompareState(null);
   }
 
   function replaceImageWithResult(result: ImageResultDraft) {
@@ -1045,18 +1063,73 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   }
 
   async function analyzeImageStyle() {
-    if (!selectedImages.length) return;
-    const image = media.find((item) => item.id === selectedImages[0]);
-    if (!image) return;
-    setFocusedImageId(image.id);
+    const images = selectedImages.flatMap((imageId) => {
+      const image = media.find((item) => item.id === imageId);
+      return image ? [image] : [];
+    });
+    if (!images.length) return;
+    const batchId = `${Date.now()}`;
+    const drafts: ImageAnalysisDraft[] = images.map((image, index) => ({ id: `${batchId}-${index}-${image.id}`, imageId: image.id, sourceUrl: image.url, status: "analyzing" }));
+    setFocusedImageId(images[0].id);
+    setImageAnalysis("");
+    setImageAnalysisDrafts(drafts);
     setImageAiStep("analyzing");
+    const results = await Promise.allSettled(images.map((image) => api<{ prompt: string; analysis: string }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-analyze`, { method: "POST", body: JSON.stringify({ storeId, productId, imageId: image.id, imageUrl: image.url }) })));
+    const firstSuccess = results.find((result): result is PromiseFulfilledResult<{ prompt: string; analysis: string }> => result.status === "fulfilled");
+    const firstAnalysis = firstSuccess?.value.analysis || "";
+    setImageAnalysisDrafts((current) => current.map((draft, index) => {
+      const result = results[index];
+      if (result.status === "fulfilled") {
+        return { ...draft, status: "ready", prompt: result.value.prompt, analysis: result.value.analysis };
+      }
+      return { ...draft, status: "failed", failedStage: "analysis", message: result.reason instanceof Error ? result.reason.message : "图片分析失败" };
+    }));
+    setImageAnalysis(firstAnalysis);
+    setImageAiStep("edit");
+    const failedCount = results.filter((result) => result.status === "rejected").length;
+    if (failedCount) onNotify(`${images.length - failedCount} 张图片分析完成，${failedCount} 张失败`);
+  }
+
+  async function generateAnalyzedImage(draft: ImageAnalysisDraft) {
+    if (draft.status !== "ready" || !draft.prompt) return;
+    const image = media.find((item) => item.id === draft.imageId);
+    if (!image) return;
+    const job: ImageJob = { id: `${Date.now()}-${draft.imageId}`, imageId: image.id, operation: "edit", locale: "", status: "waiting", createdAt: Date.now(), updatedAt: Date.now(), prompt: draft.prompt };
+    try {
+      const created = await api<{ jobs: ImageJob[] }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-jobs`, { method: "POST", body: JSON.stringify({ storeId, productId, jobs: [job] }) });
+      setImageJobs(created.jobs);
+      setImageAiStep("generating");
+      setImageAnalysisDrafts((current) => current.map((item) => item.id === draft.id ? { ...item, status: "generating", message: "正在生成图片" } : item));
+      const result = await api<{ imageUrl: string | null; prompt: string }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-edit`, { method: "POST", body: JSON.stringify({ storeId, productId, imageId: image.id, imageUrl: image.url, prompt: draft.prompt, jobId: job.id }) });
+      const completed = { ...job, status: "queued" as const, updatedAt: Date.now(), resultUrl: result.imageUrl, prompt: result.prompt || draft.prompt };
+      setImageJobs((current) => current.map((item) => item.id === job.id ? completed : item));
+      setImageResultDrafts((current) => [...current.filter((item) => item.id !== job.id), { ...completed, sourceUrl: image.url }]);
+      setImageAnalysisDrafts((current) => current.map((item) => item.id === draft.id ? { ...item, status: "ready", failedStage: undefined, message: "已生成" } : item));
+      await api(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-jobs/${encodeURIComponent(job.id)}`, { method: "PATCH", body: JSON.stringify({ storeId, productId, status: "queued", resultUrl: result.imageUrl, message: null, prompt: result.prompt || draft.prompt }) });
+      onNotify("图片生成完成");
+    } catch (error) {
+      setImageAnalysisDrafts((current) => current.map((item) => item.id === draft.id ? { ...item, status: "failed", failedStage: "generation", message: error instanceof Error ? error.message : "图片生成失败" } : item));
+      onError(error);
+    } finally {
+      setImageAiStep("edit");
+    }
+  }
+
+  async function retryImageAnalysis(draft: ImageAnalysisDraft) {
+    if (draft.failedStage === "generation") {
+      const readyDraft = { ...draft, status: "ready" as const, failedStage: undefined, message: undefined };
+      setImageAnalysisDrafts((current) => current.map((item) => item.id === draft.id ? readyDraft : item));
+      await generateAnalyzedImage(readyDraft);
+      return;
+    }
+    const image = media.find((item) => item.id === draft.imageId);
+    if (!image) return;
+    setImageAnalysisDrafts((current) => current.map((item) => item.id === draft.id ? { ...item, status: "analyzing", message: undefined } : item));
     try {
       const result = await api<{ prompt: string; analysis: string }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-analyze`, { method: "POST", body: JSON.stringify({ storeId, productId, imageId: image.id, imageUrl: image.url }) });
-      setImageAnalysis(result.analysis);
-      if (!imagePrompt.trim() || imagePrompt.trim() === defaultImagePrompt.trim()) setImagePrompt(result.prompt);
-      setImageAiStep("edit");
+      setImageAnalysisDrafts((current) => current.map((item) => item.id === draft.id ? { ...item, status: "ready", prompt: result.prompt, analysis: result.analysis, message: undefined } : item));
     } catch (error) {
-      setImageAiStep("select");
+      setImageAnalysisDrafts((current) => current.map((item) => item.id === draft.id ? { ...item, status: "failed", failedStage: "analysis", message: error instanceof Error ? error.message : "图片分析失败" } : item));
       onError(error);
     }
   }
@@ -1339,20 +1412,22 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
         </section>
       </div> : null}
       {aiImageModalOpen && product ? <div className="modal-backdrop ai-image-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeImageAiModal()}>
-        <section className="ai-image-modal ai-image-workspace" role="dialog" aria-modal="true" aria-labelledby="ai-image-modal-title">
-          <header className="modal-header"><div><span>AI IMAGE WORKSPACE</span><h2 id="ai-image-modal-title">使用 AI 处理图片</h2></div><button className="icon-button" type="button" onClick={closeImageAiModal} aria-label="关闭" title="关闭"><X size={19} /></button></header>
+        <section className="ai-image-modal ai-image-workspace" role="dialog" aria-modal="true" aria-labelledby="ai-image-modal-title" aria-describedby="ai-image-modal-description">
+          <header className="modal-header"><div><span>AI IMAGE WORKSPACE</span><h2 id="ai-image-modal-title">多选图片进行编辑</h2></div><button className="icon-button" type="button" onClick={closeImageAiModal} aria-label="关闭" title="关闭"><X size={19} /></button></header>
           <div className="ai-image-modal-body">
-            <div className="ai-image-mode-switch" role="tablist" aria-label="图片处理模式"><button className={`button quiet compact ${imageTaskMode === "edit" ? "active" : ""}`} type="button" role="tab" aria-selected={imageTaskMode === "edit"} onClick={() => { setImageTaskMode("edit"); setImagePrompt(defaultImagePrompt); setImageAiStep("select"); }}><Sparkles size={14} />反推改图</button><button className={`button quiet compact ${imageTaskMode === "translate" ? "active" : ""}`} type="button" role="tab" aria-selected={imageTaskMode === "translate"} onClick={() => { setImageTaskMode("translate"); setImagePrompt(defaultImagePrompt || DEFAULT_IMAGE_TRANSLATION_PROMPT); setImageAiStep("select"); }}><Languages size={14} />图片翻译</button></div>
-            <div className="ai-image-workspace-toolbar"><div><strong>选择商品图片</strong><small>{imageTaskMode === "translate" ? `翻译目标：${targetLocaleName || "请先选择目标语言"}` : "可多选图片，统一应用下方提示词"}</small></div><button className="button quiet compact" type="button" onClick={() => setSelectedImages(selectedCount === media.length ? [] : media.map((image) => image.id))} disabled={!media.length}><ListChecks size={14} />全选</button></div>
-            <div className="ai-image-workspace-source-grid">{media.map((image) => <button key={image.id} className={`ai-image-modal-image ${selectedImages.includes(image.id) ? "selected" : ""}`} type="button" onClick={() => { setFocusedImageId(image.id); setSelectedImages((current) => current.includes(image.id) ? current.filter((item) => item !== image.id) : [...current, image.id]); }}><img src={image.url} alt={image.altText || product.title} /><span>{selectedImages.includes(image.id) ? <Check size={15} /> : image.position + 1}</span></button>)}</div>
-            <label className="ai-image-prompt-field"><span>统一提示词</span><textarea rows={5} value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} disabled={imageAiStep === "generating"} placeholder={imageTaskMode === "translate" ? "输入图片翻译要求" : "输入想要生成的画面变化"} /></label>
-            {imageAnalysis && imageTaskMode === "edit" ? <div className="ai-image-analysis">{imageAnalysis}</div> : null}
+            <div className="ai-image-workspace-top"><div className="ai-image-workspace-selection"><div className="ai-image-workspace-toolbar"><div><strong>选择商品图片</strong><small>{selectedCount ? `已选择 ${selectedCount} 张` : "可以多选图片"}</small></div><button className="button quiet compact" type="button" onClick={() => setSelectedImages(selectedCount === media.length ? [] : media.map((image) => image.id))} disabled={!media.length}><ListChecks size={14} />{selectedCount === media.length ? "取消全选" : "全选"}</button></div><div className="ai-image-workspace-source-grid">{media.map((image) => { const selected = selectedImages.includes(image.id); return <div className={`ai-image-modal-image-wrap ${selected ? "selected" : ""}`} key={image.id}><button className="ai-image-modal-image" type="button" onClick={() => setImagePreviewState({ url: image.url, title: `图片 ${image.position + 1}` })} aria-label={`预览图片 ${image.position + 1}`}><img src={image.url} alt={image.altText || product.title} /><span>{image.position + 1}</span></button><button className="ai-image-preview-button" type="button" onClick={(event) => { event.stopPropagation(); setSelectedImages((current) => current.includes(image.id) ? current.filter((item) => item !== image.id) : [...current, image.id]); }} aria-label={`${selected ? "取消选择" : "选择"}图片 ${image.position + 1}`} title={selected ? "取消选择" : "选择"}>{selected ? <Check size={13} /> : null}</button></div>; })}</div></div><aside className="ai-image-workspace-help" id="ai-image-modal-description"><strong>说明：</strong><p>进来先显示原来的所有图片。<br />可以多选<br />这个弹窗里的所有图片，点击可以预览。<br />是类似组图人那种放大拖动，然后如果是生成的图片，可以对比预览。</p></aside></div>
+            <div className="ai-image-mode-switch" role="tablist" aria-label="图片处理模式"><button className={`ai-image-mode-tab ${imageTaskMode === "edit" ? "active" : ""}`} type="button" role="tab" aria-selected={imageTaskMode === "edit"} onClick={() => { setImageTaskMode("edit"); setImagePrompt(defaultImagePrompt); setImageAiStep("select"); }}><Sparkles size={14} />反推改图</button><button className={`ai-image-mode-tab ${imageTaskMode === "translate" ? "active" : ""}`} type="button" role="tab" aria-selected={imageTaskMode === "translate"} onClick={() => { setImageTaskMode("translate"); setImagePrompt(defaultImagePrompt || DEFAULT_IMAGE_TRANSLATION_PROMPT); setImageAiStep("select"); }}><Languages size={14} />图片翻译</button></div>
+            <label className="ai-image-prompt-field"><span>对应任务的提示词</span><textarea rows={5} value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} disabled={imageAiStep === "generating"} placeholder={imageTaskMode === "translate" ? "输入图片翻译要求" : "输入想要生成的画面变化"} /></label>
+            <div className="ai-image-task-actions">{imageTaskMode === "edit" && selectedCount > 0 && imageAiStep !== "generating" ? <button className="button quiet" type="button" onClick={() => void analyzeImageStyle()} disabled={imageAiStep === "analyzing"}>{imageAiStep === "analyzing" ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}{imageAiStep === "analyzing" ? "分析中" : "分析图片"}</button> : null}{imageTaskMode === "translate" ? <button className="button primary" type="button" onClick={() => void queueImageTranslation()} disabled={!selectedCount || !locale || imageAiStep === "generating"}>{imageAiStep === "generating" ? <LoaderCircle className="spin" size={15} /> : <Languages size={15} />}{imageAiStep === "generating" ? "翻译中" : "开始翻译"}</button> : null}</div>
+            {imageAnalysis && imageTaskMode === "edit" ? <div className="ai-image-analysis"><strong>图片分析</strong><span>{imageAnalysis}</span></div> : null}
             <div className="ai-image-workspace-summary"><ImageIcon size={16} /><span>{selectedCount ? `已选择 ${selectedCount} 张图片` : "请先选择需要处理的图片"}{imageTaskMode === "translate" && !locale ? " · 翻译需要目标语言" : ""}</span></div>
-            <div className="ai-image-workspace-result-list"><div className="ai-image-workspace-result-heading"><strong>处理结果</strong><small>{imageResultDrafts.filter((item) => !item.discarded).length ? "替换原图后，点击保存才会提交 Shopify" : "生成结果会显示在这里"}</small></div>{imageResultDrafts.filter((item) => !item.discarded).map((result) => <article className="ai-image-result-row" key={result.id}><div className="ai-image-result-source"><img src={result.sourceUrl} alt="原图" /><span>原图</span></div><div className="ai-image-result-arrow" aria-hidden="true">→</div><div className="ai-image-result-output">{result.resultUrl ? <img src={result.resultUrl} alt="AI 生成结果" /> : <div className="ai-image-result-placeholder">{result.status === "failed" ? "生成失败" : "处理中"}</div>}<span className={`ai-image-result-status ${result.status}`}>{result.status === "queued" ? "已生成" : result.status === "failed" ? "失败" : "处理中"}</span></div><div className="ai-image-result-actions"><button className="button quiet compact" type="button" onClick={() => void retryImageResult(result)} disabled={result.status === "waiting"}>{result.status === "waiting" ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}重试</button><button className="button quiet compact" type="button" onClick={() => discardImageResult(result.id)}><Trash2 size={13} />弃用</button><button className={`button compact ${result.replacing ? "primary" : "quiet"}`} type="button" onClick={() => replaceImageWithResult(result)} disabled={!result.resultUrl || result.status !== "queued"}><Check size={13} />{result.replacing ? "已选替换" : "替换原图"}</button></div></article>)}</div>
+            <div className="ai-image-workspace-result-list"><div className="ai-image-workspace-result-heading"><strong>{imageTaskMode === "edit" ? "反推改图结果" : "图片翻译结果"}</strong><small>{imageTaskMode === "edit" ? "分析成功或失败后都可以重试，修改提示词后再生成" : "翻译任务直接显示原图与翻译结果"}</small></div>{imageTaskMode === "edit" ? imageAnalysisDrafts.filter((analysis) => !imageResultDrafts.some((result) => result.imageId === analysis.imageId && result.resultUrl)).map((analysis) => <article className="ai-image-analysis-row" key={analysis.id}><img className="ai-image-analysis-source" src={analysis.sourceUrl} alt="待分析图片" /><div className="ai-image-analysis-copy"><strong>{analysis.status === "analyzing" ? "分析中" : analysis.status === "generating" ? "生成中" : analysis.status === "failed" ? "分析失败" : "反推提示词"}</strong>{analysis.status === "ready" || analysis.status === "generating" || analysis.failedStage === "generation" ? <textarea className="ai-image-analysis-prompt" rows={4} value={analysis.prompt || ""} disabled={analysis.status === "generating"} onChange={(event) => setImageAnalysisDrafts((current) => current.map((item) => item.id === analysis.id ? { ...item, prompt: event.target.value } : item))} /> : <p>{analysis.status === "analyzing" ? "AI 正在分析图片风格" : analysis.message}</p>}</div>{analysis.status === "ready" || analysis.status === "generating" || analysis.failedStage === "generation" ? <div className="ai-image-generation-preview"><div className="ai-image-result-placeholder">{analysis.status === "generating" ? <><LoaderCircle className="spin" size={18} />生成中的图片</> : analysis.failedStage === "generation" ? "生成失败" : "待生成"}</div></div> : null}<div className="ai-image-analysis-actions">{analysis.status === "ready" ? <button className="button primary compact" type="button" onClick={() => void generateAnalyzedImage(analysis)} disabled={imageAiStep === "generating"}><Sparkles size={13} />生成</button> : null}<button className="button quiet compact" type="button" onClick={() => void retryImageAnalysis(analysis)} disabled={analysis.status === "analyzing" || analysis.status === "generating"}><RefreshCw size={13} />重试</button></div></article>) : imageResultDrafts.filter((item) => !item.discarded && item.operation === "translate").map((result) => <article className="ai-image-result-row" key={result.id}><button className="ai-image-result-media" type="button" onClick={() => setImagePreviewState({ url: result.sourceUrl, title: "原图预览" })} aria-label="预览原图"><img src={result.sourceUrl} alt="原图" /><span>原图</span><Eye size={13} /></button><div className="ai-image-result-arrow" aria-hidden="true"><ArrowRight size={18} /></div><button className="ai-image-result-media" type="button" onClick={() => result.resultUrl ? setImageCompareState({ originalUrl: result.sourceUrl, resultUrl: result.resultUrl, title: "翻译图片对比" }) : undefined} disabled={!result.resultUrl} aria-label="预览翻译结果"><div className="ai-image-result-output">{result.resultUrl ? <img src={result.resultUrl} alt="翻译结果" /> : <div className="ai-image-result-placeholder">{result.status === "failed" ? "翻译失败" : "翻译中"}</div>}<span className={`ai-image-result-status ${result.status}`}>{result.status === "queued" ? "已完成" : result.status === "failed" ? "失败" : "翻译中"}</span></div><span>翻译结果</span>{result.resultUrl ? <Eye size={13} /> : null}</button><div className="ai-image-result-actions"><button className="button quiet compact" type="button" onClick={() => void retryImageResult(result)} disabled={result.status === "waiting"}><RefreshCw size={13} />重试</button></div></article>)}</div>
           </div>
-          <footer className="modal-actions ai-image-workspace-footer"><span className="ai-image-workspace-status">{mediaSelectionActive ? "已有媒体替换草稿" : `${selectedCount} 张图片待处理`}</span><button className="button quiet" type="button" onClick={closeImageAiModal} disabled={imageModalSaving || imageAiStep === "generating"}>不保存</button>{imageTaskMode === "edit" && selectedCount > 0 && imageAiStep !== "generating" ? <button className="button quiet" type="button" onClick={() => void analyzeImageStyle()} disabled={imageAiStep === "analyzing"}>{imageAiStep === "analyzing" ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}{imageAiStep === "analyzing" ? "分析中" : "分析首张图片"}</button> : null}<button className="button primary" type="button" onClick={() => imageTaskMode === "translate" ? void queueImageTranslation() : void generateImageTask()} disabled={!selectedCount || !imagePrompt.trim() || imageAiStep === "generating" || (imageTaskMode === "translate" && !locale)}>{imageAiStep === "generating" ? <LoaderCircle className="spin" size={15} /> : imageTaskMode === "translate" ? <Languages size={15} /> : <Sparkles size={15} />}{imageAiStep === "generating" ? "处理中" : imageTaskMode === "translate" ? "生成翻译结果" : "生成改图结果"}</button><button className="button primary" type="button" onClick={() => void saveImageModalDraft()} disabled={imageModalSaving || imageAiStep === "generating"}>{imageModalSaving ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{imageModalSaving ? "保存中" : "保存"}</button></footer>
+          <footer className="modal-actions ai-image-workspace-footer"><button className="button primary" type="button" onClick={() => void saveImageModalDraft()} disabled={imageModalSaving || imageAiStep === "generating"}>{imageModalSaving ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{imageModalSaving ? "保存中" : "保存"}</button><button className="button quiet" type="button" onClick={closeImageAiModal} disabled={imageModalSaving || imageAiStep === "generating"}>不保存</button></footer>
         </section>
       </div> : null}
+      {imagePreviewState ? <ImagePreviewModal url={imagePreviewState.url} title={imagePreviewState.title} onClose={() => setImagePreviewState(null)} /> : null}
+      {imageCompareState ? <ImageCompareModal originalUrl={imageCompareState.originalUrl} resultUrl={imageCompareState.resultUrl} title={imageCompareState.title} resultLabel="生成结果" onClose={() => setImageCompareState(null)} /> : null}
     </section>
   );
 }
