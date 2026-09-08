@@ -96,7 +96,7 @@ export type ShopifyProductDetail = ShopifyProductListItem & {
   giftCard: boolean;
   seo: { title: string | null; description: string | null };
   options: Array<{ name: string; values: string[] }>;
-  images: Array<{ id: string; url: string; altText: string | null; position: number }>;
+  images: Array<{ id: string; mediaId: string | null; url: string; altText: string | null; position: number }>;
   variants: Array<{
     id: string;
     title: string;
@@ -200,6 +200,10 @@ const PRODUCT_FIELDS = `
   }
 `;
 
+const PRODUCT_MEDIA_FIELDS = `
+  media(first: 250) { nodes { id ... on MediaImage { image { url altText } } } }
+`;
+
 type RawShopifyProduct = {
   id: string;
   title: string;
@@ -219,6 +223,7 @@ type RawShopifyProduct = {
   seo?: { title?: string | null; description?: string | null } | null;
   options?: Array<{ name?: string; optionValues?: Array<{ name?: string }> }>;
   images?: { nodes?: Array<{ id: string; url: string; altText?: string | null }> };
+  media?: { nodes?: Array<{ id: string; image?: { url?: string; altText?: string | null } | null }> };
   variants?: { nodes?: Array<{ id: string; title: string; sku?: string | null; barcode?: string | null; price?: string | null; compareAtPrice?: string | null; inventoryQuantity?: number | null; selectedOptions?: Array<{ name: string; value: string }>; image?: { url?: string } | null }> };
 };
 
@@ -231,6 +236,7 @@ function mapShopifyProduct(raw: RawShopifyProduct): ShopifyProductDetail {
   const min = numberOrNull(raw.priceRangeV2?.minVariantPrice?.amount);
   const max = numberOrNull(raw.priceRangeV2?.maxVariantPrice?.amount);
   const variants = raw.variants?.nodes ?? [];
+  const mediaIdsByUrl = new Map((raw.media?.nodes ?? []).flatMap((media) => media.image?.url ? [[media.image.url, media.id] as const] : []));
   return {
     id: raw.id,
     title: raw.title,
@@ -255,7 +261,7 @@ function mapShopifyProduct(raw: RawShopifyProduct): ShopifyProductDetail {
     giftCard: false,
     seo: { title: raw.seo?.title ?? null, description: raw.seo?.description ?? null },
     options: (raw.options ?? []).map((option) => ({ name: option.name ?? "", values: (option.optionValues ?? []).map((value) => value.name ?? "").filter(Boolean) })).filter((option) => option.name),
-    images: (raw.images?.nodes ?? []).map((image, index) => ({ id: image.id, url: image.url, altText: image.altText ?? null, position: index })),
+    images: (raw.images?.nodes ?? []).map((image, index) => ({ id: image.id, mediaId: mediaIdsByUrl.get(image.url) ?? null, url: image.url, altText: image.altText ?? null, position: index })),
     variants: variants.map((variant) => ({
       id: variant.id,
       title: variant.title,
@@ -364,7 +370,7 @@ export async function getShopifyProduct(env: Env, userId: string, storeId: strin
   const store = await getStoreRow(env, storeId, userId);
   const credentials = await decryptCredentials(env, store);
   const token = await getAccessToken(store, credentials);
-  const data = await graphql<{ product: RawShopifyProduct | null }>(store, token.accessToken, `query Product($id: ID!) { product(id: $id) { ${PRODUCT_FIELDS} } }`, { id: productId });
+  const data = await graphql<{ product: RawShopifyProduct | null }>(store, token.accessToken, `query Product($id: ID!) { product(id: $id) { ${PRODUCT_FIELDS} ${PRODUCT_MEDIA_FIELDS} } }`, { id: productId });
   if (!data.product) throw new ApiError(404, "Shopify 商品不存在", "shopify_product_not_found");
   return { product: mapShopifyProduct(data.product), store: toSummary(store, credentials) };
 }
@@ -639,7 +645,7 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     seo: { title: input.seoTitle || null, description: input.seoDescription || null },
   };
   const data = await graphql<{ productUpdate: { product: RawShopifyProduct | null; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductUpdate($product: ProductUpdateInput!) {
-    productUpdate(product: $product) { product { ${PRODUCT_FIELDS} } userErrors { field message } }
+    productUpdate(product: $product) { product { ${PRODUCT_FIELDS} ${PRODUCT_MEDIA_FIELDS} } userErrors { field message } }
   }`, { product: productInput });
   const updateError = userErrors(data.productUpdate.userErrors);
   if (updateError || !data.productUpdate.product) throw new ApiError(502, updateError || "Shopify 商品更新失败", "shopify_product_update_failed");
@@ -657,7 +663,8 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     const variantError = userErrors(variantResult.productVariantsBulkUpdate.userErrors);
     if (variantError) throw new ApiError(502, variantError, "shopify_variant_update_failed");
   }
-  const existingMediaIds = (data.productUpdate.product.images?.nodes ?? []).map((image) => image.id);
+  const existingImageIds = (data.productUpdate.product.images?.nodes ?? []).map((image) => image.id);
+  const existingMediaIds = mapShopifyProduct(data.productUpdate.product).images.flatMap((image) => image.mediaId ? [image.mediaId] : []);
   const existingMediaUrls = new Set((data.productUpdate.product.images?.nodes ?? []).map((image) => image.url));
   const mediaUrlsToCreate = input.mediaSelectionActive
     ? input.mediaUrls.filter((url) => !existingMediaUrls.has(url))
@@ -690,8 +697,8 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
   }
   await updateStoreHealth(env, store.id, "active", null);
   const refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
-  const existingMediaIdSet = new Set(existingMediaIds);
-  const createdImages = refreshed.product.images.filter((image) => !existingMediaIdSet.has(image.id));
+  const existingImageIdSet = new Set(existingImageIds);
+  const createdImages = refreshed.product.images.filter((image) => !existingImageIdSet.has(image.id));
   return {
     ...refreshed,
     uploadedImages: mediaUrlsToCreate.map((sourceUrl, index) => ({ sourceUrl, image: createdImages[index] })).filter((item): item is { sourceUrl: string; image: (typeof refreshed.product.images)[number] } => Boolean(item.image)),

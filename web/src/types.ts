@@ -150,7 +150,7 @@ export type ShopifyRemoteProduct = {
   giftCard?: boolean;
   seo?: { title: string | null; description: string | null };
   options?: Array<{ name: string; values: string[] }>;
-  images?: Array<{ id: string; url: string; altText: string | null; position: number }>;
+  images?: Array<{ id: string; mediaId: string | null; url: string; altText: string | null; position: number }>;
   variants?: Array<{
     id: string;
     title: string;
