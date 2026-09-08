@@ -93,6 +93,20 @@ function parseJsonValue(value: unknown, fallback: unknown): unknown {
   }
 }
 
+function hasStoredJson(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = value.trim();
+  return Boolean(normalized) && normalized !== "{}" && normalized !== "null";
+}
+
+function isProviderRequestPayload(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.endpoint === "string"
+    && record.method === "POST"
+    && Boolean(record.body && typeof record.body === "object");
+}
+
 function hydrateJson(row: JsonRow, fields: Array<[string, unknown]>): JsonRow {
   const hydrated = { ...row };
   for (const [field, fallback] of fields) {
@@ -341,6 +355,26 @@ export type AiLogInput = {
   entityId?: string | null;
 };
 
+type AiLogDatabaseRow = {
+  id: string;
+  userId: string | null;
+  userName: string | null;
+  operation: string;
+  scope: string;
+  status: "success" | "failed";
+  httpStatus: number | null;
+  durationMs: number;
+  modelId: string | null;
+  requestSummaryJson: string;
+  responseSummaryJson: string;
+  requestPayloadJson: string;
+  responsePayloadJson: string;
+  errorMessage: string | null;
+  entityType: string | null;
+  entityId: string | null;
+  createdAt: string;
+};
+
 function boundedJson(value: unknown, maxLength = 8_000): string {
   const text = jsonText(value, {});
   return text.length > maxLength
@@ -402,16 +436,41 @@ export async function recordAiLog(request: Request, env: Env, userId: string | n
 export async function listAiLogs(env: Env, userId: string, isAdmin: boolean, limit = 100): Promise<Array<Record<string, unknown>>> {
   await ensureAiLogsSchema(env);
   const safeLimit = Math.min(200, Math.max(1, Math.floor(limit)));
+  const queryLimit = Math.min(600, safeLimit * 3);
   const result = isAdmin
-    ? await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.request_payload_json AS requestPayloadJson, l.response_payload_json AS responsePayloadJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id ORDER BY l.created_at DESC LIMIT ?`).bind(safeLimit).all()
-    : await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.request_payload_json AS requestPayloadJson, l.response_payload_json AS responsePayloadJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id WHERE l.user_id = ? ORDER BY l.created_at DESC LIMIT ?`).bind(userId, safeLimit).all();
-  return result.results.map((row) => ({
-    ...row,
-    requestSummary: parseJsonValue(row.requestSummaryJson, {}),
-    responseSummary: parseJsonValue(row.responseSummaryJson, {}),
-    requestPayload: parseJsonValue(row.requestPayloadJson, parseJsonValue(row.requestSummaryJson, {})),
-    responsePayload: parseJsonValue(row.responsePayloadJson, parseJsonValue(row.responseSummaryJson, {})),
-  }));
+    ? await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.request_payload_json AS requestPayloadJson, l.response_payload_json AS responsePayloadJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id ORDER BY l.created_at DESC LIMIT ?`).bind(queryLimit).all<AiLogDatabaseRow>()
+    : await env.DB.prepare(`SELECT l.id, l.user_id AS userId, u.display_name AS userName, l.operation, l.scope, l.status, l.http_status AS httpStatus, l.duration_ms AS durationMs, l.model_id AS modelId, l.request_summary_json AS requestSummaryJson, l.response_summary_json AS responseSummaryJson, l.request_payload_json AS requestPayloadJson, l.response_payload_json AS responsePayloadJson, l.error_message AS errorMessage, l.entity_type AS entityType, l.entity_id AS entityId, l.created_at AS createdAt FROM ai_request_logs l LEFT JOIN users u ON u.id = l.user_id WHERE l.user_id = ? ORDER BY l.created_at DESC LIMIT ?`).bind(userId, queryLimit).all<AiLogDatabaseRow>();
+  const records = result.results.map((row) => {
+    const requestSummary = parseJsonValue(row.requestSummaryJson, {});
+    const responseSummary = parseJsonValue(row.responseSummaryJson, {});
+    const requestPayloadStored = hasStoredJson(row.requestPayloadJson);
+    const responsePayloadStored = hasStoredJson(row.responsePayloadJson);
+    const parsedRequestPayload = parseJsonValue(row.requestPayloadJson, {});
+    const parsedResponsePayload = parseJsonValue(row.responsePayloadJson, {});
+    const providerRequest = isProviderRequestPayload(parsedRequestPayload)
+      || (requestPayloadStored && Boolean(row.modelId));
+    return {
+      ...row,
+      requestSummary,
+      responseSummary,
+      requestPayload: requestPayloadStored || providerRequest ? parsedRequestPayload : requestSummary,
+      responsePayload: responsePayloadStored || providerRequest ? parsedResponsePayload : responseSummary,
+      requestPayloadAvailable: requestPayloadStored,
+      responsePayloadAvailable: responsePayloadStored,
+      providerRequest,
+    };
+  });
+  const providerRecords = records.filter((record) => record.providerRequest);
+  const visibleRecords = records.filter((record) => {
+    if (record.providerRequest) return true;
+    return !providerRecords.some((provider) => {
+      if (record.userId !== provider.userId || record.operation !== provider.operation || record.entityId !== provider.entityId) return false;
+      const recordTime = Date.parse(String(record.createdAt));
+      const providerTime = Date.parse(String(provider.createdAt));
+      return Number.isFinite(recordTime) && Number.isFinite(providerTime) && Math.abs(recordTime - providerTime) <= 120_000;
+    });
+  });
+  return visibleRecords.slice(0, safeLimit);
 }
 
 export type UserAiPromptSettings = {

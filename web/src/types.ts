@@ -94,6 +94,9 @@ export type AiRequestLog = {
   responseSummary: Record<string, unknown>;
   requestPayload: unknown;
   responsePayload: unknown;
+  requestPayloadAvailable?: boolean;
+  responsePayloadAvailable?: boolean;
+  providerRequest?: boolean;
   errorMessage: string | null;
   entityType: string | null;
   entityId: string | null;

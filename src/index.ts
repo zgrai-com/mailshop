@@ -48,7 +48,6 @@ import {
   patchProduct,
   patchUser,
   recordAudit,
-  recordAiLog,
   listAiLogs,
   listShopifyImageJobs,
   createShopifyImageJobs,
@@ -134,14 +133,6 @@ import {
 } from "./validation";
 import type { CollectionTaskBatchItemInput, CollectionTaskImportInput, SearchTaskRunInput, SearchTaskSyncInput } from "./validation";
 import { normalizeTaskUrl } from "./task-url";
-
-async function safeRecordAiLog(request: Request, env: Env, userId: string | null, input: Parameters<typeof recordAiLog>[3]): Promise<void> {
-  try {
-    await recordAiLog(request, env, userId, input);
-  } catch (error) {
-    console.error(JSON.stringify({ level: "error", event: "ai_log_write_failed", error: error instanceof Error ? error.message : String(error) }));
-  }
-}
 
 function methodNotAllowed(allowed: string[]): Response {
   return json(
@@ -722,15 +713,12 @@ async function handlePublicExtensionAi(request: Request, env: Env): Promise<Resp
     candidateCount: input.candidates.length,
     regionCount: input.regionSnapshots.length,
   });
-  const startedAt = Date.now();
   try {
     const result = await classifyImageCandidates(env, input.candidates, input.pageSnapshot ?? null, input.stage, input.regionSnapshots, {
       env, request, userId: user.id, operation: "extension.image_classify", scope: "image_filter",
     });
-    await safeRecordAiLog(request, env, user.id, { operation: "extension.image_classify", scope: "image_filter", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, modelId: serverAi.models.imageFilterModelId, requestSummary: { stage: input.stage, candidateCount: input.candidates.length, regionCount: input.regionSnapshots.length }, responseSummary: { resultCount: result.results.length, regionCount: result.regions?.length ?? 0 } });
     return json({ ok: true, credits: { balance: charge.balance, charged: charge.cost }, ...result });
   } catch (error) {
-    await safeRecordAiLog(request, env, user.id, { operation: "extension.image_classify", scope: "image_filter", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, modelId: serverAi.models.imageFilterModelId, requestSummary: { stage: input.stage, candidateCount: input.candidates.length, regionCount: input.regionSnapshots.length }, errorMessage: error instanceof Error ? error.message : String(error) });
     await refundAiRequest(env, user.id, charge);
     throw error;
   }
@@ -1289,7 +1277,6 @@ async function handleAuthenticatedApi(
         throw new ApiError(422, "描述生成请求包含不属于当前 1688 来源的图片", "shopify_description_image_invalid");
       }
       const charge = await chargeAiRequest(env, user.id, { feature: "shopify_description", storeId: parsed.storeId, productId: parsed.productId, offerId: source.offerId, imageCount: selectedImages.length });
-      const startedAt = Date.now();
       const prompt = parsed.prompt || (await getUserAiPromptSettings(env, user.id)).aiDescriptionPrompt;
       try {
         const result = await generateShopifyDescription(env, {
@@ -1308,10 +1295,8 @@ async function handleAuthenticatedApi(
           env, request, userId: user.id, operation: "shopify.description", scope: "chat",
           entityType: "shopify_product", entityId: parsed.productId,
         });
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.description", scope: "chat", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { offerId: source.offerId, sourceOrigin: source.origin, imageCount: selectedImages.length, promptLength: prompt.length }, responseSummary: { descriptionLength: result.descriptionHtml.length, imageCount: result.imageCount, promptVersion: result.promptVersion }, entityType: "shopify_product", entityId: parsed.productId });
         return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
       } catch (error) {
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.description", scope: "chat", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { offerId: source.offerId, sourceOrigin: source.origin, imageCount: selectedImages.length, promptLength: prompt.length }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
         await refundAiRequest(env, user.id, charge).catch(() => undefined);
         throw error;
       }
@@ -1331,7 +1316,6 @@ async function handleAuthenticatedApi(
         throw new ApiError(422, "标题生成请求包含不属于当前 Shopify 商品的图片", "shopify_title_image_invalid");
       }
       const charge = await chargeAiRequest(env, user.id, { feature: "shopify_title", storeId: parsed.storeId, productId: parsed.productId, imageCount: selectedImages.length });
-      const startedAt = Date.now();
       const prompt = parsed.prompt || (await getUserAiPromptSettings(env, user.id)).aiTitlePrompt;
       try {
         const result = await generateShopifyTitle(env, {
@@ -1352,10 +1336,8 @@ async function handleAuthenticatedApi(
           env, request, userId: user.id, operation: "shopify.title", scope: "chat",
           entityType: "shopify_product", entityId: parsed.productId,
         });
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.title", scope: "chat", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { imageCount: selectedImages.length, promptLength: prompt.length, targetLanguage: parsed.targetLanguage || parsed.locale || "English" }, responseSummary: { title: result.title, imageCount: result.imageCount, promptVersion: result.promptVersion }, entityType: "shopify_product", entityId: parsed.productId });
         return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
       } catch (error) {
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.title", scope: "chat", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { imageCount: selectedImages.length, promptLength: prompt.length }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
         await refundAiRequest(env, user.id, charge).catch(() => undefined);
         throw error;
       }
@@ -1366,16 +1348,13 @@ async function handleAuthenticatedApi(
         throw new ApiError(422, "SEO 请求的店铺或商品不匹配当前路由", "shopify_seo_resource_mismatch");
       }
       const charge = await chargeAiRequest(env, user.id, { feature: "shopify_seo", storeId: parsed.storeId, productId: parsed.productId });
-      const startedAt = Date.now();
       try {
         const result = await generateShopifySeo(env, parsed, {
           env, request, userId: user.id, operation: "shopify.seo", scope: "chat",
           entityType: "shopify_product", entityId: parsed.productId,
         });
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.seo", scope: "chat", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { title: parsed.title, productType: parsed.productType, vendor: parsed.vendor, tagCount: parsed.tags.length }, responseSummary: { seoTitle: result.seoTitle, seoDescription: result.seoDescription }, entityType: "shopify_product", entityId: parsed.productId });
         return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
       } catch (error) {
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.seo", scope: "chat", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { title: parsed.title, productType: parsed.productType, vendor: parsed.vendor, tagCount: parsed.tags.length }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
         await refundAiRequest(env, user.id, charge).catch(() => undefined);
         throw error;
       }
@@ -1388,16 +1367,13 @@ async function handleAuthenticatedApi(
       const image = product.product.images?.find((item) => item.id === parsed.imageId);
       if (!image || image.url !== parsed.imageUrl) throw new ApiError(422, "图片不属于当前商品", "shopify_image_resource_mismatch");
       const charge = await chargeAiRequest(env, user.id, { feature: shopifyProductAi.action, storeId: parsed.storeId, productId: parsed.productId, imageId: parsed.imageId });
-      const startedAt = Date.now();
       try {
         const result = await analyzeShopifyImageStyle(env, parsed, {
           env, request, userId: user.id, operation: "shopify.image_analyze", scope: "image_analysis",
           entityType: "shopify_product", entityId: parsed.productId,
         });
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.image_analyze", scope: "image_analysis", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { imageId: parsed.imageId, imageUrl: parsed.imageUrl.slice(0, 200) }, responseSummary: { analysis: result.analysis, prompt: result.prompt }, entityType: "shopify_product", entityId: parsed.productId });
         return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
       } catch (error) {
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.image_analyze", scope: "image_analysis", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { imageId: parsed.imageId }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
         await refundAiRequest(env, user.id, charge).catch(() => undefined);
         throw error;
       }
@@ -1409,26 +1385,15 @@ async function handleAuthenticatedApi(
     const image = product.product.images?.find((item) => item.id === parsed.imageId);
     if (!image || image.url !== parsed.imageUrl) throw new ApiError(422, "图片不属于当前商品", "shopify_image_resource_mismatch");
     const charge = await chargeAiRequest(env, user.id, { feature: shopifyProductAi.action, storeId: parsed.storeId, productId: parsed.productId, imageId: parsed.imageId });
-    const startedAt = Date.now();
     try {
       const result = await editShopifyImage(env, parsed, {
         env, request, userId: user.id, operation: "shopify.image_edit", scope: "image_generation",
         entityType: "shopify_product", entityId: parsed.productId,
       });
       if (parsed.jobId) await updateShopifyImageJob(env, user.id, shopifyProductAi.storeId, shopifyProductAi.productId, parsed.jobId, { status: "queued", resultUrl: result.imageUrl, message: null, prompt: result.prompt }).catch(() => undefined);
-      await safeRecordAiLog(request, env, user.id, { operation: "shopify.image_edit", scope: "image_generation", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { imageId: parsed.imageId, prompt: parsed.prompt }, responseSummary: { imageUrl: result.imageUrl?.startsWith("data:") ? "[base64 图片已返回]" : result.imageUrl, prompt: result.prompt }, entityType: "shopify_product", entityId: parsed.productId });
       return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
     } catch (error) {
       if (parsed.jobId) await updateShopifyImageJob(env, user.id, shopifyProductAi.storeId, shopifyProductAi.productId, parsed.jobId, { status: "failed", message: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
-      await safeRecordAiLog(request, env, user.id, {
-        operation: "shopify.image_edit", scope: "image_generation", status: "failed",
-        httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt,
-        requestSummary: { imageId: parsed.imageId, prompt: parsed.prompt },
-        requestPayload: { imageId: parsed.imageId, productId: parsed.productId, jobId: parsed.jobId ?? null },
-        responsePayload: error instanceof ApiError ? { code: error.code, details: error.details ?? null } : { error: error instanceof Error ? error.name : String(error) },
-        errorMessage: error instanceof Error ? error.message : String(error),
-        entityType: "shopify_product", entityId: parsed.productId,
-      });
       await refundAiRequest(env, user.id, charge).catch(() => undefined);
       throw error;
     }
@@ -1456,17 +1421,14 @@ async function handleAuthenticatedApi(
         return { ...field, resourceId: source.resourceId, resourceType: source.resourceType, resourceLabel: source.resourceLabel, sourceLocale: source.locale, sourceValue: source.value, existingValue: field.existingValue ?? existingByKey.get(identity), digest: source.digest };
       });
       const charge = await chargeAiRequest(env, user.id, { feature: "shopify_translation", storeId: parsed.storeId, productId: parsed.productId, locale: parsed.locale, fieldCount: fields.length });
-      const startedAt = Date.now();
       const prompt = parsed.prompt || (await getUserAiPromptSettings(env, user.id)).translationPrompt;
       try {
         const result = await translateShopifyContent(env, { ...parsed, prompt, fields }, {
           env, request, userId: user.id, operation: "shopify.translation", scope: "translation",
           entityType: "shopify_product", entityId: parsed.productId,
         });
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.translation", scope: "translation", status: "success", httpStatus: 200, durationMs: Date.now() - startedAt, requestSummary: { locale: parsed.locale, marketId: parsed.marketId, fieldCount: fields.length, style: parsed.style }, responseSummary: { locale: result.locale, translations: result.translations, translationCount: result.translations.length, changedCount: result.translations.filter((item) => item.changed).length }, entityType: "shopify_product", entityId: parsed.productId });
         return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
       } catch (error) {
-        await safeRecordAiLog(request, env, user.id, { operation: "shopify.translation", scope: "translation", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { locale: parsed.locale, marketId: parsed.marketId, fieldCount: fields.length, style: parsed.style }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
         await refundAiRequest(env, user.id, charge).catch(() => undefined);
         throw error;
       }
