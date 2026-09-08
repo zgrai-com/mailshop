@@ -6284,7 +6284,8 @@ textarea::placeholder {
 .ai-image-workspace-summary { display: flex; align-items: center; gap: 7px; border-left: 3px solid var(--color-accent); background: var(--color-accent-soft); color: var(--color-ink); padding: 9px 10px; font-size: 10px; }
 .ai-image-workspace-result-list { display: grid; min-width: 0; gap: 8px; }
 .ai-image-workspace-result-heading { grid-template-columns: auto 1fr; align-items: end; gap: 8px; }
-.ai-image-result-row { display: grid; grid-template-columns: 112px 28px 180px minmax(0, 1fr); align-items: center; gap: 10px; border: 1px solid var(--color-line); background: var(--color-surface-soft); padding: 8px; }
+.ai-image-result-row { display: grid; grid-template-columns: 112px 28px 180px minmax(0, 1fr); align-items: center; gap: 10px; border: 1px solid var(--color-line); background: var(--color-surface-soft); padding: 10px; }
+.ai-image-result-row:has(.ai-image-result-prompt) { grid-template-columns: 180px 28px minmax(220px, 1fr) 180px 118px; gap: 12px; }
 .ai-image-result-media { position: relative; display: grid; min-width: 0; gap: 4px; border: 0; background: transparent; color: var(--color-muted); padding: 0; text-align: left; cursor: pointer; }
 .ai-image-result-media:disabled { cursor: default; }
 .ai-image-result-media > svg { position: absolute; top: 7px; right: 7px; color: #fff; filter: drop-shadow(0 1px 2px rgba(0,0,0,.75)); }
@@ -6298,6 +6299,11 @@ textarea::placeholder {
 .ai-image-result-status.queued { background: var(--color-accent); }
 .ai-image-result-status.failed { background: var(--color-coral); }
 .ai-image-result-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.ai-image-result-prompt { display: grid; min-width: 0; align-self: stretch; gap: 7px; }
+.ai-image-result-prompt > span { color: var(--color-muted); font-size: 10px; font-weight: 700; }
+.ai-image-result-prompt textarea { width: 100%; min-height: 150px; height: 100%; resize: vertical; border: 1px solid var(--color-line-strong); border-radius: var(--radius-control); background: var(--color-surface-soft); color: var(--color-ink); padding: 10px; font: inherit; font-size: 11px; line-height: 1.55; }
+.ai-image-result-prompt textarea:focus { border-color: var(--color-accent); outline: 2px solid var(--color-accent-soft); }
+.ai-image-result-row:has(.ai-image-result-prompt) .ai-image-result-actions { flex-direction: column; align-items: stretch; }
 .ai-image-workspace-footer { align-items: center; flex-wrap: wrap; }
 .ai-image-workspace-status { margin-right: auto; color: var(--color-muted); font-size: 10px; }
 .publishing-card .danger-text { justify-self: start; }
@@ -6341,13 +6347,16 @@ textarea::placeholder {
   .ai-image-modal-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .ai-image-modal-options { grid-template-columns: 1fr; }
   .ai-image-workspace-source-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .ai-image-result-row { grid-template-columns: 64px 16px minmax(0, 1fr); }
+  .ai-image-result-row { grid-template-columns: 64px 16px minmax(0, 1fr); gap: 8px; }
+  .ai-image-result-row:has(.ai-image-result-prompt) { grid-template-columns: 92px 16px minmax(150px, 1fr) 92px; gap: 8px; }
+  .ai-image-result-prompt textarea { min-height: 128px; }
   .ai-image-analysis-row { grid-template-columns: 92px minmax(150px, 1fr) 128px auto; gap: 8px; }
   .ai-image-analysis-row > img { width: 92px; height: 128px; }
   .ai-image-analysis-copy { min-height: 128px; }
   .ai-image-generation-preview { width: 128px; min-width: 128px; min-height: 128px; }
   .ai-image-generation-preview .ai-image-result-placeholder { min-height: 128px; }
   .ai-image-result-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .ai-image-result-row:has(.ai-image-result-prompt) .ai-image-result-actions { grid-column: 1 / -1; flex-direction: row; justify-content: flex-start; }
   .ai-image-workspace-footer .button { flex: 1 1 calc(50% - 5px); justify-content: center; }
   .ai-image-workspace-status { width: 100%; margin: 0 0 2px; }
   .shopify-description-modal { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); }
