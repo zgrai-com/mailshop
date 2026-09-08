@@ -117,6 +117,7 @@ export const shopifyProductUpdateSchema = z.object({
   seoDescription: z.string().trim().max(320).default(""),
   mediaSelectionActive: z.boolean().default(false),
   mediaIds: z.array(z.string().trim().min(1).max(255)).max(250).default([]),
+  mediaReplacementSourceIds: z.array(z.string().trim().min(1).max(255)).max(250).default([]),
   mediaUrls: z.array(z.union([
     z.string().trim().url().max(2_048),
     z.string().trim().regex(/^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/=\s]+$/u).max(20_000_000),

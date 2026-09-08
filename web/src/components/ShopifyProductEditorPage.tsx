@@ -85,6 +85,7 @@ type ImageJobStatus = "queued" | "waiting" | "failed";
 type ImageJob = { id: string; imageId: string; operation: "translate" | "edit"; locale: string; status: ImageJobStatus; createdAt: number | string; updatedAt: number | string; prompt?: string | null; resultUrl?: string | null; message?: string | null };
 type ImageResultDraft = ImageJob & { sourceUrl: string; discarded?: boolean; replacing?: boolean };
 type ImageAnalysisDraft = { id: string; imageId: string; sourceUrl: string; status: "analyzing" | "generating" | "ready" | "failed"; failedStage?: "analysis" | "generation"; prompt?: string; analysis?: string; message?: string };
+type ShopifyRemoteImage = NonNullable<ShopifyRemoteProduct["images"]>[number];
 
 type DescriptionEditorProps = {
   value: string;
@@ -197,6 +198,8 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   const viewTranslationRequestIdRef = useRef(0);
   const [selectedImages, setSelectedImages] = useState<string[]>([]);
   const [focusedImageId, setFocusedImageId] = useState<string | null>(null);
+  const [detailImages, setDetailImages] = useState<ShopifyRemoteImage[]>([]);
+  const [modalImages, setModalImages] = useState<ShopifyRemoteImage[]>([]);
   const [imageJobs, setImageJobs] = useState<ImageJob[]>([]);
   const [mediaSelectionActive, setMediaSelectionActive] = useState(false);
   const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
@@ -222,6 +225,8 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     try {
       const result = await api<{ product: ShopifyRemoteProduct }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}`);
       setProduct(result.product);
+      setDetailImages(result.product.images ?? []);
+      setModalImages((result.product.images ?? []).map((image) => ({ ...image })));
       setDraft(draftFrom(result.product));
       const jobsResult = await api<{ jobs: ImageJob[] }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-jobs`);
       setImageJobs(jobsResult.jobs);
@@ -233,6 +238,12 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   }, [onError, productId, storeId]);
 
   useEffect(() => { void loadProduct(); }, [loadProduct]);
+
+  useEffect(() => {
+    const nextImages = product?.images ?? [];
+    setDetailImages(nextImages);
+    setModalImages(nextImages.map((image) => ({ ...image })));
+  }, [product?.images]);
 
   const primaryLocale = translation?.locales.find((item) => item.primary)?.locale ?? "";
 
@@ -660,7 +671,8 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     if (!draft || !product || localizedEditingDisabled) return false;
     setSaving(true);
     try {
-      const result = await api<{ product: ShopifyRemoteProduct }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}`, {
+      const replacementResults = imageResultDrafts.filter((item) => item.replacing && item.resultUrl);
+      const result = await api<{ product: ShopifyRemoteProduct; uploadedImages?: Array<{ sourceUrl: string; image: ShopifyRemoteImage }> }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}`, {
         method: "PATCH",
         body: JSON.stringify({
           storeId,
@@ -668,12 +680,28 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
           ...draftPayload(draft),
           mediaSelectionActive,
           mediaIds: (product.images ?? []).map((image) => image.id).filter((id) => mediaSelectionDraft.includes(id)),
+          mediaReplacementSourceIds: mediaSelectionActive ? replacementResults.map((item) => item.imageId) : [],
           mediaUrls: imageJobs
             .filter((job) => mediaSelectionDraft.includes(job.id) && job.status === "queued" && job.resultUrl && !(product.images ?? []).some((image) => image.url === job.resultUrl))
             .map((job) => job.resultUrl),
         }),
       });
-      setProduct(result.product);
+      const uploadedBySourceUrl = new Map((result.uploadedImages ?? []).map((item) => [item.sourceUrl, item.image]));
+      const replacements = new Map(replacementResults.map((item) => [item.imageId, item.resultUrl ? uploadedBySourceUrl.get(item.resultUrl) : undefined]));
+      const uploadedReplacementIds = new Set([...replacements.values()].filter((image): image is ShopifyRemoteImage => Boolean(image)).map((image) => image.id));
+      const updatedImages = (result.product.images ?? []).reduce<ShopifyRemoteImage[]>((images, image) => {
+        const replacement = replacements.get(image.id);
+        if (replacement) {
+          images.push({ ...replacement, position: images.length });
+        } else if (!uploadedReplacementIds.has(image.id)) {
+          images.push({ ...image, position: images.length });
+        }
+        return images;
+      }, []);
+      const updatedProduct = { ...result.product, images: updatedImages };
+      setProduct(updatedProduct);
+      setDetailImages(updatedImages);
+      setModalImages(updatedImages.map((image) => ({ ...image })));
       setDraft(draftFrom(result.product));
       setMediaSelectionActive(false);
       setMediaSelectionDraft([]);
@@ -1193,7 +1221,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
     onNotify(failedCount ? `${successCount} 张图片生成成功，${failedCount} 张失败` : `${successCount} 张图片 AI 修改任务已生成`);
   }
 
-  const media = product?.images ?? [];
+  const media = detailImages;
   const selectedCount = selectedImages.length;
   const focusedImage = media.find((image) => image.id === focusedImageId) ?? media[0] ?? null;
   const queuedImageCount = imageJobs.filter((job) => job.status === "queued").length;
@@ -1387,7 +1415,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
           <div className="media-picker-body">
             <p className="media-picker-note">勾选的图片会在点击页面顶部“保存”后设置为商品媒体。当前 Shopify 媒体默认已勾选，AI 草稿默认未勾选。</p>
             <div className="media-picker-grid">
-              {media.map((image) => {
+              {modalImages.map((image) => {
                 const selected = mediaSelectionDraft.includes(image.id);
                 return <label className={`media-picker-card ${selected ? "selected" : ""}`} key={image.id}>
                   <input type="checkbox" checked={selected} onChange={() => setMediaSelectionDraft((current) => selected ? current.filter((id) => id !== image.id) : [...current, image.id])} />

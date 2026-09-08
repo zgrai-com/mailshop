@@ -172,6 +172,7 @@ export type ShopifyProductUpdateInput = {
   seoDescription: string;
   mediaSelectionActive?: boolean;
   mediaIds?: string[];
+  mediaReplacementSourceIds?: string[];
   mediaUrls: string[];
   variants: Array<{
     id: string;
@@ -621,7 +622,7 @@ export async function registerShopifyTranslations(env: Env, userId: string, inpu
   };
 }
 
-export async function updateShopifyProduct(env: Env, userId: string, input: ShopifyProductUpdateInput): Promise<{ product: ShopifyProductDetail }> {
+export async function updateShopifyProduct(env: Env, userId: string, input: ShopifyProductUpdateInput): Promise<{ product: ShopifyProductDetail; uploadedImages: Array<{ sourceUrl: string; image: ShopifyProductDetail["images"][number] }> }> {
   const store = await getStoreRow(env, input.storeId, userId);
   const credentials = await decryptCredentials(env, store);
   const token = await getAccessToken(store, credentials);
@@ -670,7 +671,8 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
   }
   if (input.mediaSelectionActive) {
     const selectedMediaIds = new Set(input.mediaIds ?? []);
-    const mediaToDelete = existingMediaIds.filter((id) => !selectedMediaIds.has(id));
+    const replacementSourceIds = new Set(input.mediaReplacementSourceIds ?? []);
+    const mediaToDelete = existingMediaIds.filter((id) => !selectedMediaIds.has(id) && !replacementSourceIds.has(id));
     if (mediaToDelete.length) {
       const deleteResult = await graphql<{ productDeleteMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
         productDeleteMedia(productId: $productId, mediaIds: $mediaIds) { userErrors { field message } }
@@ -687,7 +689,13 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     if (mediaError) throw new ApiError(502, mediaError, "shopify_media_create_failed");
   }
   await updateStoreHealth(env, store.id, "active", null);
-  return getShopifyProduct(env, userId, input.storeId, input.productId);
+  const refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
+  const existingMediaIdSet = new Set(existingMediaIds);
+  const createdImages = refreshed.product.images.filter((image) => !existingMediaIdSet.has(image.id));
+  return {
+    ...refreshed,
+    uploadedImages: mediaUrlsToCreate.map((sourceUrl, index) => ({ sourceUrl, image: createdImages[index] })).filter((item): item is { sourceUrl: string; image: (typeof refreshed.product.images)[number] } => Boolean(item.image)),
+  };
 }
 
 export async function deleteShopifyProduct(env: Env, userId: string, storeId: string, productId: string): Promise<void> {
