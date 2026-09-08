@@ -1420,7 +1420,15 @@ async function handleAuthenticatedApi(
       return json({ ok: true, ...result, credits: { balance: charge.balance, charged: charge.cost } });
     } catch (error) {
       if (parsed.jobId) await updateShopifyImageJob(env, user.id, shopifyProductAi.storeId, shopifyProductAi.productId, parsed.jobId, { status: "failed", message: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
-      await safeRecordAiLog(request, env, user.id, { operation: "shopify.image_edit", scope: "image_generation", status: "failed", httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt, requestSummary: { imageId: parsed.imageId, prompt: parsed.prompt }, errorMessage: error instanceof Error ? error.message : String(error), entityType: "shopify_product", entityId: parsed.productId });
+      await safeRecordAiLog(request, env, user.id, {
+        operation: "shopify.image_edit", scope: "image_generation", status: "failed",
+        httpStatus: error instanceof ApiError ? error.status : 500, durationMs: Date.now() - startedAt,
+        requestSummary: { imageId: parsed.imageId, prompt: parsed.prompt },
+        requestPayload: { imageId: parsed.imageId, productId: parsed.productId, jobId: parsed.jobId ?? null },
+        responsePayload: error instanceof ApiError ? { code: error.code, details: error.details ?? null } : { error: error instanceof Error ? error.name : String(error) },
+        errorMessage: error instanceof Error ? error.message : String(error),
+        entityType: "shopify_product", entityId: parsed.productId,
+      });
       await refundAiRequest(env, user.id, charge).catch(() => undefined);
       throw error;
     }

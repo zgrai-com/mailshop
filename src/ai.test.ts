@@ -125,6 +125,11 @@ describe("Shopify translation prompt", () => {
     expect(extractGeneratedImage({ output_text: "source https://img.example/source.jpg result ![image](<https://img.example/result.png>)" }, ["https://img.example/source.jpg"])).toBe("https://img.example/result.png");
   });
 
+  it("extracts standard images API data responses", () => {
+    expect(extractGeneratedImage({ data: [{ b64_json: "aGVsbG8=" }] })).toBe("data:image/png;base64,aGVsbG8=");
+    expect(extractGeneratedImage({ data: [{ url: "https://img.example/result.png" }] })).toBe("https://img.example/result.png");
+  });
+
 });
 
 describe("Shopify description prompt", () => {

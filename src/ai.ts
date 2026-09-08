@@ -317,8 +317,12 @@ type AiRegionSelection = {
 type ResponsePayload = {
   output_text?: string;
   output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
-  error?: { message?: string };
+  data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
+  error?: { message?: string; code?: string; type?: string; param?: string };
   message?: string;
+  code?: string;
+  type?: string;
+  request_id?: string;
 };
 
 function responseOutputText(payload: ResponsePayload | null): string {
@@ -352,6 +356,7 @@ function responseErrorMessage(payload: ResponsePayload | null, fallback: string,
   if (message) return status ? `${message} (HTTP ${status})` : message;
   return status ? `${fallback} (HTTP ${status})` : fallback;
 }
+
 async function safeRecordAiRequestLog(
   context: AiLogContext,
   input: Parameters<typeof recordAiLog>[3],
@@ -469,8 +474,9 @@ async function requestCompletion(env: Env, credentials: AiCredentials, body: Rec
   const controller = new AbortController();
   const timeout = setTimeout(() => abortAiRequest(controller, AI_REQUEST_TIMEOUT_MS), AI_REQUEST_TIMEOUT_MS);
   const startedAt = Date.now();
+  const endpoint = responsesUrl(credentials.baseUrl);
   try {
-    const response = await fetch(responsesUrl(credentials.baseUrl), {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { authorization: `Bearer ${credentials.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -487,14 +493,14 @@ async function requestCompletion(env: Env, credentials: AiCredentials, body: Rec
     if (context) await safeRecordAiRequestLog(context, {
       operation: context.operation, scope: context.scope, status: response.ok ? "success" : "failed",
       httpStatus: response.status, durationMs: Date.now() - startedAt, modelId: credentials.modelId,
-      requestPayload: body, responsePayload: loggedResponsePayload, errorMessage: response.ok ? null : responseErrorMessage(payload, `AI request failed (HTTP ${response.status})`),
+      requestPayload: { endpoint, method: "POST", body }, responsePayload: loggedResponsePayload, errorMessage: response.ok ? null : responseErrorMessage(payload, `AI request failed (HTTP ${response.status})`, response.status),
       entityType: context.entityType, entityId: context.entityId,
     });
     return { response, payload };
   } catch (error) {
     if (context) await safeRecordAiRequestLog(context, {
       operation: context.operation, scope: context.scope, status: "failed", durationMs: Date.now() - startedAt,
-      modelId: credentials.modelId, requestPayload: body, responsePayload: {}, errorMessage: error instanceof Error ? error.message : String(error),
+      modelId: credentials.modelId, requestPayload: { endpoint, method: "POST", body }, responsePayload: {}, errorMessage: error instanceof Error ? error.message : String(error),
       entityType: context.entityType, entityId: context.entityId,
     });
     throw error;
@@ -587,6 +593,10 @@ export function extractGeneratedImage(payload: ResponsePayload | null, excludedU
   const markdownMatches = [...text.matchAll(/!\[[^\]]*\]\(\s*<?(https?:\/\/[^\s)>]+)>?\s*\)/giu)];
   const markdownImage = markdownMatches.map((match) => match[1]).find((url) => !excluded.has(url));
   if (markdownImage) return markdownImage;
+  const encodedImage = payload?.data?.map((item) => typeof item.b64_json === "string" && item.b64_json.trim() ? `data:image/png;base64,${item.b64_json.trim()}` : null).find(Boolean);
+  if (encodedImage) return encodedImage;
+  const dataImage = payload?.data?.map((item) => typeof item.url === "string" ? item.url : null).find((url): url is string => typeof url === "string" && !excluded.has(url));
+  if (dataImage) return dataImage;
   const directMatches = [...text.matchAll(/(?:https?:\/\/[^"'\s<>\)]+|data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)/giu)];
   return directMatches.map((match) => match[0]).find((url) => !excluded.has(url)) ?? null;
 }
@@ -646,16 +656,59 @@ async function materializeGeneratedImage(imageUrl: string): Promise<string> {
   return `data:${contentType};base64,${base64Image(bytes)}`;
 }
 
+function imageEditsUrl(baseUrl: string): string {
+  const value = baseUrl.replace(/\/+$/u, "");
+  if (/\/images\/edits$/iu.test(value)) return value;
+  if (/\/responses$/iu.test(value)) return value.replace(/\/responses$/iu, "/images/edits");
+  if (/\/images\/generations$/iu.test(value)) return value.replace(/\/images\/generations$/iu, "/images/edits");
+  return `${value}/images/edits`;
+}
+
+async function requestImageEdit(credentials: AiCredentials, prompt: string, imageUrl: string, context?: AiLogContext): Promise<{ response: Response; payload: ResponsePayload | null }> {
+  const endpoint = imageEditsUrl(credentials.baseUrl);
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => abortAiRequest(controller, AI_REQUEST_TIMEOUT_MS), AI_REQUEST_TIMEOUT_MS);
+  try {
+    const source = await fetch(imageUrl, { signal: controller.signal });
+    if (!source.ok) throw new ApiError(502, "Failed to download the source image for editing", "shopify_image_source_download_failed", { upstreamStatus: source.status });
+    const bytes = await source.arrayBuffer();
+    const contentType = source.headers.get("content-type")?.split(";", 1)[0] || "image/png";
+    const form = new FormData();
+    const modelId = credentials.modelId;
+    form.set("model", modelId);
+    form.set("prompt", prompt);
+    form.set("size", "1024x1024");
+    form.set("quality", "high");
+    form.set("image", new File([bytes], "source.png", { type: contentType }));
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { authorization: `Bearer ${credentials.apiKey}` },
+      body: form,
+      signal: controller.signal,
+    });
+    const responseText = await response.text();
+    let payload: ResponsePayload | null = null;
+    try { payload = JSON.parse(responseText) as ResponsePayload; } catch { /* preserve raw response in the log */ }
+    if (context) await safeRecordAiRequestLog(context, {
+      operation: context.operation, scope: context.scope, status: response.ok ? "success" : "failed",
+      httpStatus: response.status, durationMs: Date.now() - startedAt, modelId,
+      requestPayload: { endpoint, method: "POST", body: { model: modelId, prompt, size: "1024x1024", quality: "high", image: "[source image multipart]" } },
+      responsePayload: payload ?? (responseText ? { rawText: responseText } : {}),
+      errorMessage: response.ok ? null : responseErrorMessage(payload, `AI image edit failed (HTTP ${response.status})`, response.status),
+      entityType: context.entityType, entityId: context.entityId,
+    });
+    return { response, payload };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function editShopifyImage(env: Env, input: { imageUrl: string; prompt: string }, context?: AiLogContext): Promise<{ imageUrl: string | null; prompt: string }> {
   const credentials = await readCredentials(env, "image_generation");
   const prompt = `${input.prompt.trim()}\nHard requirement: preserve the original clothing, garment details, model identity, pose, and facial features. Do not generate a new model or change the garment style.`;
-  const result = await requestCompletion(env, credentials, {
-    model: credentials.modelId,
-    max_output_tokens: 1_000,
-    input: [{ role: "user", content: [{ type: "input_text", text: prompt }, { type: "input_image", image_url: input.imageUrl }] }],
-    tools: [{ type: "image_generation", size: "1024x1024", quality: "high" }],
-  }, context);
-  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "Image generation failed"), "shopify_image_generation_failed");
+  const result = await requestImageEdit(credentials, prompt, input.imageUrl, context);
+  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "Image generation failed", result.response.status), "shopify_image_generation_failed", { upstreamStatus: result.response.status, endpoint: imageEditsUrl(credentials.baseUrl), response: result.payload });
   const imageUrl = extractGeneratedImage(result.payload, [input.imageUrl]);
   if (!imageUrl) throw new ApiError(502, "The image generation API succeeded but did not return an image URL", "shopify_image_generation_empty");
   return { imageUrl: await materializeGeneratedImage(imageUrl), prompt };
