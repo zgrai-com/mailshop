@@ -489,7 +489,11 @@ async function requestCompletion(env: Env, credentials: AiCredentials, body: Rec
     } catch {
       // Keep the raw body in the log below while preserving the existing null payload behavior.
     }
-    const loggedResponsePayload = payload ?? (responseText ? { rawText: responseText } : {});
+    const loggedResponsePayload = payload ?? {
+      rawText: responseText,
+      bodyPresent: Boolean(responseText),
+      contentType: response.headers.get("content-type"),
+    };
     if (context) await safeRecordAiRequestLog(context, {
       operation: context.operation, scope: context.scope, status: response.ok ? "success" : "failed",
       httpStatus: response.status, durationMs: Date.now() - startedAt, modelId: credentials.modelId,
