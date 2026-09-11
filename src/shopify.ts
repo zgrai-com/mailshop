@@ -97,6 +97,7 @@ export type ShopifyProductDetail = ShopifyProductListItem & {
   seo: { title: string | null; description: string | null };
   options: Array<{ name: string; values: string[] }>;
   images: Array<{ id: string; mediaId: string | null; url: string; altText: string | null; position: number }>;
+  hiddenMediaIds?: string[];
   variants: Array<{
     id: string;
     title: string;
@@ -173,7 +174,9 @@ export type ShopifyProductUpdateInput = {
   mediaSelectionActive?: boolean;
   mediaIds?: string[];
   mediaReplacementSourceIds?: string[];
+  mediaReplacementPositions?: Array<{ sourceId: string; resultUrl: string; position: number }>;
   mediaUrls: string[];
+  optionUpdates?: Array<{ resourceId: string; resourceType: "ProductOption" | "ProductOptionValue"; value: string }>;
   variants: Array<{
     id: string;
     price: string;
@@ -181,6 +184,28 @@ export type ShopifyProductUpdateInput = {
     sku: string;
     barcode: string;
   }>;
+};
+
+async function ensureShopifyMediaPreferences(env: Env): Promise<void> {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS shopify_product_media_preferences (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    store_id TEXT NOT NULL REFERENCES shopify_stores(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL,
+    media_id TEXT NOT NULL,
+    visible INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (user_id, store_id, product_id, media_id)
+  )`).run();
+}
+
+export type ShopifyImageCreateInput = {
+  storeId: string;
+  productId: string;
+  imageUrl?: string;
+  imageBytes?: Uint8Array;
+  contentType?: string;
+  position?: number;
+  altText?: string;
 };
 
 const PRODUCT_FIELDS = `
@@ -373,7 +398,57 @@ export async function getShopifyProduct(env: Env, userId: string, storeId: strin
   const token = await getAccessToken(store, credentials);
   const data = await graphql<{ product: RawShopifyProduct | null }>(store, token.accessToken, `query Product($id: ID!) { product(id: $id) { ${PRODUCT_FIELDS} ${PRODUCT_MEDIA_FIELDS} } }`, { id: productId });
   if (!data.product) throw new ApiError(404, "Shopify 商品不存在", "shopify_product_not_found");
-  return { product: mapShopifyProduct(data.product), store: toSummary(store, credentials) };
+  await ensureShopifyMediaPreferences(env);
+  const hidden = await env.DB.prepare("SELECT media_id AS mediaId FROM shopify_product_media_preferences WHERE user_id = ? AND store_id = ? AND product_id = ? AND visible = 0").bind(userId, storeId, productId).all<{ mediaId: string }>();
+  return { product: { ...mapShopifyProduct(data.product), hiddenMediaIds: hidden.results.map((row) => row.mediaId) }, store: toSummary(store, credentials) };
+}
+
+export async function deleteShopifyProductImage(env: Env, userId: string, storeId: string, productId: string, mediaId: string): Promise<void> {
+  const store = await getStoreRow(env, storeId, userId);
+  const credentials = await decryptCredentials(env, store);
+  const token = await getAccessToken(store, credentials);
+  const result = await graphql<{ productDeleteMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) { productDeleteMedia(productId: $productId, mediaIds: $mediaIds) { userErrors { field message } } }`, { productId, mediaIds: [mediaId] });
+  const error = userErrors(result.productDeleteMedia.userErrors);
+  if (error) throw new ApiError(502, error, "shopify_media_delete_failed");
+  await ensureShopifyMediaPreferences(env);
+  await env.DB.prepare("DELETE FROM shopify_product_media_preferences WHERE user_id = ? AND store_id = ? AND product_id = ? AND media_id = ?").bind(userId, storeId, productId, mediaId).run();
+}
+
+export async function createShopifyProductImage(env: Env, userId: string, input: ShopifyImageCreateInput): Promise<{ image: ShopifyProductDetail["images"][number] }> {
+  const store = await getStoreRow(env, input.storeId, userId);
+  const credentials = await decryptCredentials(env, store);
+  const token = await getAccessToken(store, credentials);
+  const existing = await getShopifyProduct(env, userId, input.storeId, input.productId);
+  const index = existing.product.images.length;
+  const source = input.imageBytes
+    ? await stagedImageBytesSource(store, token.accessToken, input.imageBytes, input.contentType ?? "image/png", index)
+    : input.imageUrl
+      ? await stagedRemoteImageSource(store, token.accessToken, input.imageUrl, index)
+      : null;
+  if (!source) throw new ApiError(422, "缺少图片内容", "shopify_image_missing");
+  const created = await graphql<{ productCreateMedia: { media?: Array<{ id?: string; image?: { id?: string; url?: string; altText?: string | null } | null }>; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+    productCreateMedia(productId: $productId, media: $media) { media { id ... on MediaImage { image { id url altText } } } userErrors { field message } }
+  }`, { productId: input.productId, media: [{ originalSource: source, mediaContentType: "IMAGE", alt: input.altText?.trim().slice(0, 255) || undefined }] });
+  const error = userErrors(created.productCreateMedia.userErrors);
+  const media = created.productCreateMedia.media?.[0];
+  if (error || !media?.id) throw new ApiError(502, error || "Shopify 图片创建失败", "shopify_media_create_failed");
+  let imageData = media.image;
+  for (let attempt = 0; !imageData?.id || !imageData.url; attempt += 1) {
+    if (attempt >= 6) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
+    const candidate = refreshed.product.images.find((item) => item.mediaId === media.id);
+    if (candidate) imageData = { id: candidate.id, url: candidate.url, altText: candidate.altText };
+  }
+  if (!imageData?.id || !imageData.url) throw new ApiError(502, "Shopify 图片仍在处理中，请稍后刷新商品", "shopify_media_processing");
+  const image = { id: imageData.id, mediaId: media.id, url: imageData.url, altText: imageData.altText ?? null, position: input.position ?? index };
+  if (input.position !== undefined && input.position !== index) {
+    const reorder = await graphql<{ productReorderMedia: { mediaUserErrors?: unknown } }>(store, token.accessToken, `mutation ProductReorderMedia($id: ID!, $moves: [MoveInput!]!) { productReorderMedia(id: $id, moves: $moves) { mediaUserErrors { field message } } }`, { id: input.productId, moves: [{ id: media.id, newPosition: String(input.position) }] });
+    const reorderError = userErrors(reorder.productReorderMedia.mediaUserErrors);
+    if (reorderError) throw new ApiError(502, reorderError, "shopify_media_reorder_failed");
+  }
+  await updateStoreHealth(env, store.id, "active", null);
+  return { image };
 }
 
 type ShopifyTranslationResourceResponse = {
@@ -465,10 +540,6 @@ async function getShopifyProductOptionValueResourceIds(store: ShopifyStoreRow, a
   return (data.product?.options ?? []).flatMap((option) => (option.optionValues ?? []).map((value) => value.id));
 }
 
-function excludeProductOptionNameResources(resources: ShopifyTranslationResourceResponse[]): ShopifyTranslationResourceResponse[] {
-  return resources.filter((resource) => resource.resourceId.split("/").at(-2) !== "ProductOption");
-}
-
 async function getShopifyTranslationResourcesByIds(
   store: ShopifyStoreRow,
   accessToken: string,
@@ -533,7 +604,7 @@ export async function getShopifyProductTranslations(env: Env, userId: string, st
   const resources = await getTranslationResources(store, token.accessToken, productId, selectedLocale, selectedSourceLocale, marketId);
   const optionResourceIds = await getShopifyProductOptionValueResourceIds(store, token.accessToken, productId);
   const optionResources = await getShopifyTranslationResourcesByIds(store, token.accessToken, optionResourceIds, selectedLocale, selectedSourceLocale, marketId);
-  const allResources = excludeProductOptionNameResources([...resources, ...optionResources]).filter((resource, index, items) => items.findIndex((item) => item.resourceId === resource.resourceId) === index);
+  const allResources = [...resources, ...optionResources].filter((resource, index, items) => items.findIndex((item) => item.resourceId === resource.resourceId) === index);
   const markets = token.scopes.includes("read_markets") ? await getShopMarkets(store, token.accessToken) : [];
   return {
     locale: selectedLocale,
@@ -580,7 +651,7 @@ export async function registerShopifyTranslations(env: Env, userId: string, inpu
   const resources = await getTranslationResources(store, token.accessToken, input.productId, input.locale, sourceLocale, marketIds[0]);
   const optionResourceIds = await getShopifyProductOptionValueResourceIds(store, token.accessToken, input.productId);
   const optionResources = await getShopifyTranslationResourcesByIds(store, token.accessToken, optionResourceIds, input.locale, sourceLocale, marketIds[0]);
-  const resourceById = new Map(excludeProductOptionNameResources([...resources, ...optionResources]).map((resource) => [resource.resourceId, resource] as const));
+  const resourceById = new Map([...resources, ...optionResources].map((resource) => [resource.resourceId, resource] as const));
   const normalized = input.translations.map((item) => ({ ...item, resourceId: item.resourceId || input.productId }));
   for (const item of normalized) {
     const resource = resourceById.get(item.resourceId);
@@ -664,6 +735,37 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     const variantError = userErrors(variantResult.productVariantsBulkUpdate.userErrors);
     if (variantError) throw new ApiError(502, variantError, "shopify_variant_update_failed");
   }
+  if (input.optionUpdates?.length) {
+    const optionData = await graphql<{ product: { options?: Array<{ id: string; optionValues?: Array<{ id: string }> }> } | null }>(store, token.accessToken,
+      "query ProductOptionUpdateTargets($productId: ID!) { product(id: $productId) { options { id optionValues { id } } } }",
+      { productId: input.productId });
+    const productOptions = optionData.product?.options ?? [];
+    const optionIds = new Set(productOptions.map((option) => option.id));
+    const optionByValueId = new Map(productOptions.flatMap((option) => (option.optionValues ?? []).map((value) => [value.id, option.id] as const)));
+    const optionNames = input.optionUpdates.filter((item) => item.resourceType === "ProductOption");
+    const valueUpdatesByOption = new Map<string, Array<{ id: string; name: string }>>();
+    for (const item of input.optionUpdates) {
+      if (item.resourceType !== "ProductOptionValue") continue;
+      const optionId = optionByValueId.get(item.resourceId);
+      if (!optionId) throw new ApiError(422, "商品选项值不属于当前商品", "shopify_option_value_invalid");
+      valueUpdatesByOption.set(optionId, [...(valueUpdatesByOption.get(optionId) ?? []), { id: item.resourceId, name: item.value }]);
+    }
+    for (const item of optionNames) {
+      if (!optionIds.has(item.resourceId)) throw new ApiError(422, "商品选项不属于当前商品", "shopify_option_invalid");
+      const result = await graphql<{ productOptionUpdate: { userErrors?: unknown } }>(store, token.accessToken,
+        "mutation UpdateProductOption($productId: ID!, $option: OptionUpdateInput!) { productOptionUpdate(productId: $productId, option: $option) { userErrors { field message } } }",
+        { productId: input.productId, option: { id: item.resourceId, name: item.value } });
+      const error = userErrors(result.productOptionUpdate.userErrors);
+      if (error) throw new ApiError(502, error, "shopify_option_update_failed");
+    }
+    for (const [optionId, values] of valueUpdatesByOption) {
+      const result = await graphql<{ productOptionUpdate: { userErrors?: unknown } }>(store, token.accessToken,
+        "mutation UpdateProductOptionValues($productId: ID!, $option: OptionUpdateInput!, $optionValuesToUpdate: [OptionValueUpdateInput!]) { productOptionUpdate(productId: $productId, option: $option, optionValuesToUpdate: $optionValuesToUpdate) { userErrors { field message } } }",
+        { productId: input.productId, option: { id: optionId }, optionValuesToUpdate: values });
+      const error = userErrors(result.productOptionUpdate.userErrors);
+      if (error) throw new ApiError(502, error, "shopify_option_value_update_failed");
+    }
+  }
   const existingProductImages = mapShopifyProduct(data.productUpdate.product).images;
   const existingImageIds = existingProductImages.map((image) => image.id);
   const existingMediaIds = existingProductImages.flatMap((image) => image.mediaId ? [image.mediaId] : []);
@@ -672,7 +774,8 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     ? input.mediaUrls.filter((url) => !existingMediaUrls.has(url))
     : input.mediaUrls;
   const stagedMediaUrls: string[] = [];
-  for (const [index, imageUrl] of mediaUrlsToCreate.entries()) {
+  const createdSourceUrls = [...mediaUrlsToCreate];
+  for (const [index, imageUrl] of createdSourceUrls.entries()) {
     const source = /^data:image\//iu.test(imageUrl)
       ? await stagedDataImageSource(store, token.accessToken, imageUrl, existingMediaIds.length + index)
       : await stagedRemoteImageSource(store, token.accessToken, imageUrl, existingMediaIds.length + index);
@@ -680,23 +783,12 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
   }
   if (input.mediaSelectionActive) {
     const selectedMediaIds = new Set(input.mediaIds ?? []);
-    const mediaToDelete = existingProductImages.flatMap((image) => {
-      if (!image.mediaId || selectedMediaIds.has(image.mediaId) || selectedMediaIds.has(image.id)) return [];
-      return [image.mediaId];
-    });
     if (stagedMediaUrls.length) {
       const mediaResult = await graphql<{ productCreateMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
         productCreateMedia(productId: $productId, media: $media) { userErrors { field message } }
       }`, { productId: input.productId, media: stagedMediaUrls.map((originalSource) => ({ originalSource, mediaContentType: "IMAGE" })) });
       const mediaError = userErrors(mediaResult.productCreateMedia.userErrors);
       if (mediaError) throw new ApiError(502, mediaError, "shopify_media_create_failed");
-    }
-    if (mediaToDelete.length) {
-      const deleteResult = await graphql<{ productDeleteMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
-        productDeleteMedia(productId: $productId, mediaIds: $mediaIds) { userErrors { field message } }
-      }`, { productId: input.productId, mediaIds: mediaToDelete });
-      const deleteError = userErrors(deleteResult.productDeleteMedia.userErrors);
-      if (deleteError) throw new ApiError(502, deleteError, "shopify_media_delete_failed");
     }
   } else if (stagedMediaUrls.length) {
     const mediaResult = await graphql<{ productCreateMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
@@ -706,12 +798,45 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     if (mediaError) throw new ApiError(502, mediaError, "shopify_media_create_failed");
   }
   await updateStoreHealth(env, store.id, "active", null);
-  const refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
+  let refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
   const existingImageIdSet = new Set(existingImageIds);
   const createdImages = refreshed.product.images.filter((image) => !existingImageIdSet.has(image.id));
+  const createdImagesBySourceUrl = new Map(createdSourceUrls.flatMap((sourceUrl, index) => {
+    const image = createdImages[index];
+    return image ? [[sourceUrl, image] as const] : [];
+  }));
+  const imagesByUrl = new Map(refreshed.product.images.map((image) => [image.url, image]));
+  const reorderMoves = (input.mediaReplacementPositions ?? []).flatMap((replacement) => {
+    const replacementImage = createdImagesBySourceUrl.get(replacement.resultUrl) ?? imagesByUrl.get(replacement.resultUrl);
+    return replacementImage ? [{ id: replacementImage.mediaId ?? replacementImage.id, newPosition: String(replacement.position) }] : [];
+  });
+  if (reorderMoves.length) {
+    const reorderResult = await graphql<{ productReorderMedia: { mediaUserErrors?: unknown } }>(store, token.accessToken, `mutation ProductReorderMedia($id: ID!, $moves: [MoveInput!]!) {
+      productReorderMedia(id: $id, moves: $moves) { mediaUserErrors { field message } }
+    }`, { id: input.productId, moves: reorderMoves });
+    const reorderError = userErrors(reorderResult.productReorderMedia.mediaUserErrors);
+    if (reorderError) throw new ApiError(502, reorderError, "shopify_media_reorder_failed");
+    refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
+  }
+  if (input.mediaSelectionActive) {
+    await ensureShopifyMediaPreferences(env);
+    const selectedMediaIds = new Set(input.mediaIds ?? []);
+    const preferenceStatements: D1PreparedStatement[] = [env.DB.prepare("DELETE FROM shopify_product_media_preferences WHERE user_id = ? AND store_id = ? AND product_id = ?").bind(userId, input.storeId, input.productId)];
+    for (const image of refreshed.product.images) {
+      const mediaId = image.mediaId ?? image.id;
+      if (!selectedMediaIds.has(mediaId) && !selectedMediaIds.has(image.id)) {
+        preferenceStatements.push(env.DB.prepare("INSERT INTO shopify_product_media_preferences (user_id, store_id, product_id, media_id, visible) VALUES (?, ?, ?, ?, 0)").bind(userId, input.storeId, input.productId, mediaId));
+      }
+    }
+    await env.DB.batch(preferenceStatements);
+  }
+  const uploadedImages = createdSourceUrls.flatMap((sourceUrl) => {
+    const image = createdImagesBySourceUrl.get(sourceUrl) ?? refreshed.product.images.find((candidate) => !existingImageIdSet.has(candidate.id) && candidate.url === sourceUrl);
+    return image ? [{ sourceUrl, image }] : [];
+  });
   return {
     ...refreshed,
-    uploadedImages: mediaUrlsToCreate.map((sourceUrl, index) => ({ sourceUrl, image: createdImages[index] })).filter((item): item is { sourceUrl: string; image: (typeof refreshed.product.images)[number] } => Boolean(item.image)),
+    uploadedImages,
   };
 }
 

@@ -154,6 +154,7 @@ export type ShopifyRemoteProduct = {
   seo?: { title: string | null; description: string | null };
   options?: Array<{ name: string; values: string[] }>;
   images?: Array<{ id: string; mediaId: string | null; url: string; altText: string | null; position: number }>;
+  hiddenMediaIds?: string[];
   variants?: Array<{
     id: string;
     title: string;
@@ -267,11 +268,24 @@ export type ShopifyDescriptionSource = {
   images: ShopifyDescriptionSourceImage[];
 };
 
+export type SizeChartSpec = {
+  columns: string[];
+  rows: string[][];
+  note: string;
+};
+
+export type ShopifySizeChart = {
+  imageUrl: string;
+  hash: string;
+  spec: SizeChartSpec;
+};
+
 export type ShopifyDescriptionAiContext = {
   product: ShopifyRemoteProduct;
   store: ShopifyStore;
   source: ShopifyDescriptionSource;
   recommendedImageIds: string[];
+  sizeChart: ShopifySizeChart | null;
   promptVersion: string;
 };
 
@@ -279,6 +293,8 @@ export type ShopifyDescriptionAiResult = {
   descriptionHtml: string;
   promptVersion: string;
   imageCount: number;
+  sizeChart: ShopifySizeChart | null;
+  sizeChartError?: string | null;
   credits: { balance: number; charged: number };
 };
 

@@ -118,10 +118,23 @@ export const shopifyProductUpdateSchema = z.object({
   mediaSelectionActive: z.boolean().default(false),
   mediaIds: z.array(z.string().trim().min(1).max(255)).max(250).default([]),
   mediaReplacementSourceIds: z.array(z.string().trim().min(1).max(255)).max(250).default([]),
+  mediaReplacementPositions: z.array(z.object({
+    sourceId: z.string().trim().min(1).max(255),
+    resultUrl: z.union([
+      z.string().trim().url().max(2_048),
+      z.string().trim().regex(/^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/=\s]+$/u).max(20_000_000),
+    ]),
+    position: z.number().int().min(0).max(10_000),
+  })).max(250).default([]),
   mediaUrls: z.array(z.union([
     z.string().trim().url().max(2_048),
     z.string().trim().regex(/^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/=\s]+$/u).max(20_000_000),
   ])).max(50).default([]),
+  optionUpdates: z.array(z.object({
+    resourceId: z.string().trim().min(1).max(255),
+    resourceType: z.enum(["ProductOption", "ProductOptionValue"]),
+    value: z.string().trim().min(1).max(255),
+  })).max(100).default([]),
   variants: z.array(shopifyVariantUpdateSchema).max(250).default([]),
 });
 
@@ -164,6 +177,7 @@ export const shopifyProductTranslationAiSchema = z.object({
   prompt: z.string().trim().max(8_000).default(""),
   style: z.string().trim().max(500).default("自然、清晰、符合目标市场电商习惯"),
   glossary: z.string().trim().max(4_000).default(""),
+  rewritePrimary: z.boolean().default(false),
 });
 
 export const shopifyProductSeoAiSchema = z.object({
@@ -237,6 +251,7 @@ export const shopifyImageJobUpdateSchema = z.object({
     z.string().trim().url().max(4_096),
     z.string().trim().regex(/^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/=\s]+$/u).max(20_000_000),
   ]).nullable().optional(),
+  mediaId: z.string().trim().max(255).nullable().optional(),
   message: z.string().trim().max(2_000).nullable().optional(),
 });
 

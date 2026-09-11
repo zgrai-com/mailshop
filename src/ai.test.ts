@@ -87,19 +87,43 @@ describe("Shopify translation prompt", () => {
     expect(prompt).toContain("优先使用简洁、自然的法语电商表达。");
   });
 
-  it("translates option values without translating option names", () => {
+  it("translates option names and option values", () => {
     const prompt = buildShopifyTranslationPrompt({
       storeId: "5a8c0989-67a9-4a51-bf16-591a2d9d408d",
       productId: "gid://shopify/Product/1",
       locale: "fr",
-      fields: [{ resourceId: "gid://shopify/ProductOptionValue/2", resourceType: "ProductOptionValue", resourceLabel: "Color", key: "name", sourceValue: "Red" }],
+      fields: [
+        { resourceId: "gid://shopify/ProductOption/1", resourceType: "ProductOption", resourceLabel: "Color", key: "name", sourceValue: "Color" },
+        { resourceId: "gid://shopify/ProductOptionValue/2", resourceType: "ProductOptionValue", resourceLabel: "Red", key: "name", sourceValue: "Red" },
+      ],
       prompt: "",
       style: "自然、清晰、符合目标市场电商习惯",
       glossary: "",
     });
 
-    expect(prompt).toContain("ProductOptionValue 资源只翻译选项值");
-    expect(prompt).toContain("禁止翻译或返回 ProductOption 资源的选项名");
+    expect(prompt).toContain("ProductOption 资源翻译属性名称");
+    expect(prompt).toContain("ProductOptionValue 资源只翻译属性值");
+  });
+
+  it("allows primary-language rewrites for option names and values", () => {
+    const prompt = buildShopifyTranslationPrompt({
+      storeId: "5a8c0989-67a9-4a51-bf16-591a2d9d408d",
+      productId: "gid://shopify/Product/1",
+      locale: "en",
+      sourceLocale: "en",
+      rewritePrimary: true,
+      fields: [
+        { resourceId: "gid://shopify/ProductOption/2", resourceType: "ProductOption", resourceLabel: "颜色", key: "name", sourceValue: "颜色" },
+        { resourceId: "gid://shopify/ProductOptionValue/3", resourceType: "ProductOptionValue", resourceLabel: "金色", key: "name", sourceValue: "金色" },
+      ],
+      prompt: "",
+      style: "自然、清晰、符合目标市场电商习惯",
+      glossary: "",
+    });
+
+    expect(prompt).toContain("primary-language rewrite");
+    expect(prompt).toContain("rewrite the option name");
+    expect(prompt).toContain("金色 to Gold");
   });
 
   it("accepts direct field keys, numeric ids, and legacy key-based AI output", () => {

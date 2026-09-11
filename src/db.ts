@@ -553,6 +553,7 @@ export type ShopifyImageJob = {
   updatedAt: string;
   prompt: string | null;
   resultUrl: string | null;
+  mediaId: string | null;
   message: string | null;
 };
 
@@ -576,6 +577,7 @@ export async function ensureShopifyImageJobsSchema(env: Env): Promise<void> {
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       )`).run();
+      await env.DB.prepare("ALTER TABLE shopify_image_jobs ADD COLUMN shopify_media_id TEXT").run().catch(() => undefined);
       await env.DB.batch([
         env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_shopify_image_jobs_product ON shopify_image_jobs(user_id, store_id, product_id, created_at DESC)"),
         env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_shopify_image_jobs_status ON shopify_image_jobs(user_id, status, updated_at DESC)"),
@@ -596,6 +598,7 @@ function mapShopifyImageJob(row: Record<string, unknown>): ShopifyImageJob {
     updatedAt: String(row.updatedAt),
     prompt: typeof row.prompt === "string" ? row.prompt : null,
     resultUrl: typeof row.resultUrl === "string" ? row.resultUrl : null,
+    mediaId: typeof row.mediaId === "string" ? row.mediaId : null,
     message: typeof row.message === "string" ? row.message : null,
   };
 }
@@ -603,7 +606,7 @@ function mapShopifyImageJob(row: Record<string, unknown>): ShopifyImageJob {
 export async function listShopifyImageJobs(env: Env, userId: string, storeId: string, productId: string): Promise<ShopifyImageJob[]> {
   await ensureShopifyImageJobsSchema(env);
   const result = await env.DB.prepare(`SELECT id, image_id AS imageId, operation, locale, status, prompt,
-      result_url AS resultUrl, error_message AS message, created_at AS createdAt, updated_at AS updatedAt
+      result_url AS resultUrl, shopify_media_id AS mediaId, error_message AS message, created_at AS createdAt, updated_at AS updatedAt
       FROM shopify_image_jobs WHERE user_id = ? AND store_id = ? AND product_id = ? ORDER BY created_at DESC`).bind(userId, storeId, productId).all<Record<string, unknown>>();
   return result.results.map(mapShopifyImageJob);
 }
@@ -624,7 +627,7 @@ export async function createShopifyImageJobs(env: Env, userId: string, storeId: 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       ON CONFLICT(id) DO UPDATE SET image_id = excluded.image_id, operation = excluded.operation,
         locale = excluded.locale, status = excluded.status, prompt = excluded.prompt,
-        result_url = NULL, error_message = NULL, updated_at = excluded.updated_at
+        result_url = NULL, shopify_media_id = NULL, error_message = NULL, updated_at = excluded.updated_at
       WHERE shopify_image_jobs.user_id = excluded.user_id AND shopify_image_jobs.store_id = excluded.store_id
         AND shopify_image_jobs.product_id = excluded.product_id`).bind(
     job.id, userId, storeId, productId, job.imageId, job.operation, job.locale ?? "", job.status, job.prompt ?? null,
@@ -637,6 +640,7 @@ export type ShopifyImageJobUpdateInput = {
   status?: "queued" | "waiting" | "failed";
   prompt?: string | null;
   resultUrl?: string | null;
+  mediaId?: string | null;
   message?: string | null;
 };
 
@@ -648,10 +652,11 @@ export async function updateShopifyImageJob(env: Env, userId: string, storeId: s
   if (input.status !== undefined) { sets.push("status = ?"); values.push(input.status); }
   if (input.prompt !== undefined) { sets.push("prompt = ?"); values.push(input.prompt); }
   if (input.resultUrl !== undefined) { sets.push("result_url = ?"); values.push(input.resultUrl); }
+  if (input.mediaId !== undefined) { sets.push("shopify_media_id = ?"); values.push(input.mediaId); }
   if (input.message !== undefined) { sets.push("error_message = ?"); values.push(input.message); }
   if (!sets.length) {
     const existing = await env.DB.prepare(`SELECT id, image_id AS imageId, operation, locale, status, prompt,
-      result_url AS resultUrl, error_message AS message, created_at AS createdAt, updated_at AS updatedAt
+      result_url AS resultUrl, shopify_media_id AS mediaId, error_message AS message, created_at AS createdAt, updated_at AS updatedAt
       FROM shopify_image_jobs WHERE id = ? AND user_id = ? AND store_id = ? AND product_id = ?`).bind(jobId, userId, storeId, productId).first<Record<string, unknown>>();
     if (!existing) throw new ApiError(404, "AI 图片任务不存在", "shopify_image_job_not_found");
     return mapShopifyImageJob(existing);
@@ -661,7 +666,7 @@ export async function updateShopifyImageJob(env: Env, userId: string, storeId: s
     WHERE id = ? AND user_id = ? AND store_id = ? AND product_id = ?`).bind(...values, jobId, userId, storeId, productId).run();
   if (!result.meta.changes) throw new ApiError(404, "AI 图片任务不存在", "shopify_image_job_not_found");
   const updated = await env.DB.prepare(`SELECT id, image_id AS imageId, operation, locale, status, prompt,
-    result_url AS resultUrl, error_message AS message, created_at AS createdAt, updated_at AS updatedAt
+    result_url AS resultUrl, shopify_media_id AS mediaId, error_message AS message, created_at AS createdAt, updated_at AS updatedAt
     FROM shopify_image_jobs WHERE id = ?`).bind(jobId).first<Record<string, unknown>>();
   if (!updated) throw new ApiError(404, "AI 图片任务不存在", "shopify_image_job_not_found");
   return mapShopifyImageJob(updated);

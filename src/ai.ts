@@ -2,11 +2,10 @@ import { ApiError } from "./http";
 import { fetchRemoteImageBytes } from "./image-proxy";
 import { decryptSetting, encryptSetting } from "./settings-crypto";
 import { recordAiLog } from "./db";
+import { buildSizeChartImagePrompt, normalizeSizeChartSpec, sizeChartHash, type SizeChartSpec } from "./size-chart";
 import type { AiCandidate, AiPageRegion, AiPageSnapshot, AiSettingsInput, ShopifyProductTranslationAiInput } from "./validation";
 
 const AI_REQUEST_TIMEOUT_MS = 300_000;
-const AI_IMAGE_RESULT_TIMEOUT_MS = 30_000;
-const MAX_AI_IMAGE_RESULT_BYTES = 14 * 1024 * 1024;
 export const SHOPIFY_TRANSLATION_PROMPT_VERSION = "shopify-product-translation-v7";
 export const SHOPIFY_DESCRIPTION_PROMPT_VERSION = "shopify-product-description-v1";
 export const SHOPIFY_TITLE_PROMPT_VERSION = "shopify-product-title-v1";
@@ -514,8 +513,9 @@ async function requestCompletion(env: Env, credentials: AiCredentials, body: Rec
 }
 
 export type ShopifyTranslationResult = { id?: string; key?: string; resourceId?: string; value: string };
+type ShopifyTranslationPromptInput = Omit<ShopifyProductTranslationAiInput, "rewritePrimary"> & { rewritePrimary?: boolean };
 
-export function buildShopifyTranslationPrompt(input: ShopifyProductTranslationAiInput): string {
+export function buildShopifyTranslationPrompt(input: ShopifyTranslationPromptInput): string {
   const resources = new Map<string, Array<{ key: string; sourceValue: string }>>();
   for (const field of input.fields) {
     const resourceId = field.resourceId ?? input.productId;
@@ -534,7 +534,9 @@ export function buildShopifyTranslationPrompt(input: ShopifyProductTranslationAi
       : "No additional glossary provided.",
     "System rules (higher priority than user request):",
     "1. Translate each sourceValue field. Natural-language content may change, but do not skip a field because a prior translation already exists. Brand names, series names, model numbers, SKUs, URLs, Liquid variables, placeholders, numbers, currency, sizes, and units must remain factually consistent.",
-    "2. Translate ordinary text fields such as title, handle, product_type, and vendor. ProductOptionValue resources should translate only the option value. ProductOptionValue 资源只翻译选项值. Even though the Shopify key is name, do not translate or return ProductOption option names. 禁止翻译或返回 ProductOption 资源的选项名. handle must be returned in the target language using native writing, not romanized, transliterated, or converted to English. For Japanese, use Japanese characters. handle must not equal sourceValue; it must use an unused target-language URL slug and preserve digits, SKUs, models, and brand names.",
+    input.rewritePrimary
+      ? "2. This is a primary-language rewrite. Rewrite ordinary text fields such as title, handle, product_type, and vendor in the primary language. For ProductOption resources, rewrite the option name (for example 颜色 to Color). For ProductOptionValue resources, rewrite only the option value (for example 金色 to Gold). Do not change product facts, variant identity, numbers, sizes, units, SKUs, or brand names. handle must use an unused URL slug in the primary language."
+      : "2. Translate ordinary text fields such as title, handle, product_type, and vendor. For ProductOption resources, translate the option name (for example Color or Size). For ProductOptionValue resources, translate only the option value. ProductOption 资源翻译属性名称，ProductOptionValue 资源只翻译属性值. handle must be returned in the target language using native writing, not romanized, transliterated, or converted to English. For Japanese, use Japanese characters. handle must not equal sourceValue; it must use an unused target-language URL slug and preserve digits, SKUs, models, and brand names.",
     "3. body_html/descriptionHtml must return full HTML. Preserve all tags, attributes, nesting, lists, links, and line breaks exactly; only translate visible text between tags. Do not add, delete, reorder, or modify any HTML tags or attributes.",
     "4. Do not add features, certifications, discounts, promises, specifications, or after-sales information that are not present in the source. When unsure, return sourceValue instead of an empty string.",
     `5. Return strict JSON only. Do not explain, use Markdown, or wrap code fences. Return {"translations":[{"resourceId":"input resourceId","title":"翻译后的 title","body_html":"翻译后的完整 HTML"}]}. Field names must use the input fields' keys directly, such as title, handle, body_html. Return one entry per field for each resourceId. resourceId is used to distinguish multiple fields with the same name (for example several variant.title fields).`,
@@ -605,59 +607,16 @@ export function extractGeneratedImage(payload: ResponsePayload | null, excludedU
   return directMatches.map((match) => match[0]).find((url) => !excluded.has(url)) ?? null;
 }
 
-function imageContentType(value: string | null, imageUrl: string): string | null {
-  const headerType = value?.split(";", 1)[0]?.trim().toLowerCase();
-  if (headerType && ["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"].includes(headerType)) return headerType;
-  const extension = new URL(imageUrl).pathname.split(".").at(-1)?.toLowerCase();
-  return extension === "avif" ? "image/avif" : extension === "gif" ? "image/gif" : extension === "jpg" || extension === "jpeg" ? "image/jpeg" : extension === "webp" ? "image/webp" : extension === "png" ? "image/png" : null;
-}
-
-function base64Image(bytes: Uint8Array): string {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
-  return btoa(binary);
-}
-
 async function materializeGeneratedImage(imageUrl: string): Promise<string> {
-  if (imageUrl.startsWith("data:image/")) return imageUrl;
+  if (/^data:image\/(?:avif|gif|jpeg|png|webp);base64,/iu.test(imageUrl)) return imageUrl;
   let target: URL;
   try {
     target = new URL(imageUrl);
   } catch {
     throw new ApiError(502, "AI returned an invalid image URL", "shopify_image_result_invalid");
   }
-  if (!["http:", "https:"].includes(target.protocol)) throw new ApiError(502, "AI returned an invalid image URL", "shopify_image_result_invalid");
-  const signal = AbortSignal.timeout(AI_IMAGE_RESULT_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(target, {
-      method: "GET",
-      headers: {
-        accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8",
-        referer: `${target.origin}/`,
-        "user-agent": "Mozilla/5.0 (compatible; Mailshop/1.0)",
-      },
-      redirect: "follow",
-      signal,
-    });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "TimeoutError") throw new ApiError(504, "Downloading the AI image result timed out; please retry manually", "shopify_image_result_timeout");
-    throw new ApiError(502, "Failed to download the AI image result; please retry manually", "shopify_image_result_download_failed");
-  }
-  if (!response.ok) {
-    await response.body?.cancel("AI image result request failed");
-    throw new ApiError(502, "The AI image URL is no longer valid; please retry manually", "shopify_image_result_download_failed", { upstreamStatus: response.status, imageHost: target.hostname });
-  }
-  const contentLength = Number(response.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_AI_IMAGE_RESULT_BYTES) {
-    await response.body?.cancel("AI image result too large");
-    throw new ApiError(413, "AI image result exceeds the Shopify upload limit", "shopify_image_result_too_large");
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!bytes.byteLength || bytes.byteLength > MAX_AI_IMAGE_RESULT_BYTES) throw new ApiError(413, "AI image result exceeds the Shopify upload limit", "shopify_image_result_too_large");
-  const contentType = imageContentType(response.headers.get("content-type"), imageUrl);
-  if (!contentType) throw new ApiError(502, "AI image result is not a supported image format", "shopify_image_result_content_type_invalid");
-  return `data:${contentType};base64,${base64Image(bytes)}`;
+  if (!["http:", "https:"].includes(target.protocol)) throw new ApiError(502, "AI returned an unsupported image URL", "shopify_image_result_invalid");
+  return target.toString();
 }
 
 function imageEditsUrl(baseUrl: string): string {
@@ -666,6 +625,42 @@ function imageEditsUrl(baseUrl: string): string {
   if (/\/responses$/iu.test(value)) return value.replace(/\/responses$/iu, "/images/edits");
   if (/\/images\/generations$/iu.test(value)) return value.replace(/\/images\/generations$/iu, "/images/edits");
   return `${value}/images/edits`;
+}
+
+function imageGenerationsUrl(baseUrl: string): string {
+  const value = baseUrl.replace(/\/+$/u, "");
+  if (/\/images\/(?:generations|edits)$/iu.test(value)) return value.replace(/\/images\/edits$/iu, "/images/generations");
+  if (/\/responses$/iu.test(value)) return value.replace(/\/responses$/iu, "/images/generations");
+  return `${value}/images/generations`;
+}
+
+async function requestImageGeneration(credentials: AiCredentials, prompt: string, context?: AiLogContext): Promise<{ response: Response; payload: ResponsePayload | null }> {
+  const endpoint = imageGenerationsUrl(credentials.baseUrl);
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => abortAiRequest(controller, AI_REQUEST_TIMEOUT_MS), AI_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { authorization: `Bearer ${credentials.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: credentials.modelId, prompt, size: "1024x1024", quality: "high" }),
+      signal: controller.signal,
+    });
+    const responseText = await response.text();
+    let payload: ResponsePayload | null = null;
+    try { payload = JSON.parse(responseText) as ResponsePayload; } catch { /* preserve raw response in the log */ }
+    if (context) await safeRecordAiRequestLog(context, {
+      operation: context.operation, scope: context.scope, status: response.ok ? "success" : "failed",
+      httpStatus: response.status, durationMs: Date.now() - startedAt, modelId: credentials.modelId,
+      requestPayload: { endpoint, method: "POST", body: { model: credentials.modelId, prompt, size: "1024x1024", quality: "high" } },
+      responsePayload: payload ?? (responseText ? { rawText: responseText } : {}),
+      errorMessage: response.ok ? null : responseErrorMessage(payload, `AI image generation failed (HTTP ${response.status})`, response.status),
+      entityType: context.entityType, entityId: context.entityId,
+    });
+    return { response, payload };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function requestImageEdit(credentials: AiCredentials, prompt: string, imageUrl: string, context?: AiLogContext): Promise<{ response: Response; payload: ResponsePayload | null }> {
@@ -715,7 +710,35 @@ export async function editShopifyImage(env: Env, input: { imageUrl: string; prom
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "Image generation failed", result.response.status), "shopify_image_generation_failed", { upstreamStatus: result.response.status, endpoint: imageEditsUrl(credentials.baseUrl), response: result.payload });
   const imageUrl = extractGeneratedImage(result.payload, [input.imageUrl]);
   if (!imageUrl) throw new ApiError(502, "The image generation API succeeded but did not return an image URL", "shopify_image_generation_empty");
-  return { imageUrl: await materializeGeneratedImage(imageUrl), prompt };
+  return { imageUrl: await materializeGeneratedImage(imageUrl), prompt: input.prompt.trim() };
+}
+
+export async function generateShopifySizeChartData(env: Env, input: { productTitle: string; source: Record<string, unknown>; properties: unknown[]; variants: unknown[]; targetLanguage?: string }, context?: AiLogContext): Promise<SizeChartSpec | null> {
+  const credentials = await readCredentials(env, "chat");
+  const prompt = [
+    "Extract a Shopify clothing size chart from the supplied product JSON.",
+    "Use only explicit size and measurement facts. Never infer, convert, round, or invent values.",
+    "Return strict JSON only in this exact shape: {\"columns\":[\"Size\",\"Bust\"],\"rows\":[[\"S\",\"86 cm\"]],\"note\":\"\"}.",
+    "The first column must be Size. Include only columns with explicit values. If no size facts exist, return {\"columns\":[],\"rows\":[],\"note\":\"\"}.",
+    `Product title: ${input.productTitle}`,
+    `Target language for headers and note: ${input.targetLanguage || "English"}`,
+    `Properties JSON: ${JSON.stringify(input.properties)}`,
+    `Variants JSON: ${JSON.stringify(input.variants)}`,
+    `Raw product JSON: ${JSON.stringify(input.source)}`,
+  ].join("\n");
+  const result = await requestCompletion(env, credentials, { model: credentials.modelId, max_output_tokens: 2_000, input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }] }, context);
+  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "AI size chart extraction failed", result.response.status), "shopify_size_chart_data_failed");
+  return normalizeSizeChartSpec(parseModelJson(responseOutputText(result.payload)));
+}
+
+export async function generateShopifySizeChartImage(env: Env, input: { productTitle: string; spec: SizeChartSpec; targetLanguage?: string }, context?: AiLogContext): Promise<{ imageUrl: string; hash: string }> {
+  const credentials = await readCredentials(env, "image_generation");
+  const prompt = buildSizeChartImagePrompt({ title: input.productTitle, spec: input.spec, targetLanguage: input.targetLanguage || "English" });
+  const result = await requestImageGeneration(credentials, prompt, context);
+  if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "AI size chart image generation failed", result.response.status), "shopify_size_chart_image_failed");
+  const imageUrl = extractGeneratedImage(result.payload);
+  if (!imageUrl) throw new ApiError(502, "AI size chart image generation returned no image", "shopify_size_chart_image_empty");
+  return { imageUrl: await materializeGeneratedImage(imageUrl), hash: sizeChartHash(input.spec) };
 }
 
 export async function generateShopifySeo(env: Env, input: { title: string; descriptionHtml: string; productType: string; vendor: string; tags: string[]; seoTitle?: string; seoDescription?: string; targetLanguage?: string }, context?: AiLogContext): Promise<{ seoTitle: string; seoDescription: string }> {

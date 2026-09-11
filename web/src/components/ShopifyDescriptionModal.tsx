@@ -21,6 +21,9 @@ type ShopifyDescriptionModalProps = {
   selectedImageIds: string[];
   credits: { balance: number; charged: number } | null;
   promptVersion: string | null;
+  sizeChartStatus: "idle" | "uploading" | "uploaded" | "unavailable" | "failed";
+  canRetrySizeChart: boolean;
+  onRetrySizeChart: () => void;
   onClose: () => void;
   onPromptChange: (value: string) => void;
   onHtmlChange: (value: string) => void;
@@ -60,6 +63,9 @@ export function ShopifyDescriptionModal({
   selectedImageIds,
   credits,
   promptVersion,
+  sizeChartStatus,
+  canRetrySizeChart,
+  onRetrySizeChart,
   onClose,
   onPromptChange,
   onHtmlChange,
@@ -84,6 +90,15 @@ export function ShopifyDescriptionModal({
         : source
           ? `已选 ${selectedCount} 张图片`
           : "当前商品没有可用的 1688 来源";
+  const sizeChartText = sizeChartStatus === "uploading"
+    ? "正在生成并上传尺码图"
+    : sizeChartStatus === "uploaded"
+      ? "尺码图已上传并显示"
+      : sizeChartStatus === "failed"
+        ? canRetrySizeChart ? "尺码图上传失败，可单独重试上传" : "尺码图 AI 生成失败，请重新生成描述"
+        : sizeChartStatus === "unavailable"
+          ? "未找到可用尺码数据"
+          : "生成描述后将自动生成尺码图";
 
   if (!open) return null;
 
@@ -160,6 +175,12 @@ export function ShopifyDescriptionModal({
                 <span>当前商品没有可用的 1688 来源，仍可手动编辑 HTML。</span>
               </div>
             )}
+          </section>
+
+          <section className="translation-modal-section shopify-description-size-chart-status">
+            <div className="translation-modal-section-heading"><div><span>SIZE CHART</span><h3>尺码图</h3></div><span className="shopify-description-modal-meta">{sizeChartStatus === "uploaded" ? "已显示" : "自动处理"}</span></div>
+            <p>{sizeChartText}</p>
+            {sizeChartStatus === "failed" && canRetrySizeChart ? <button className="button quiet compact" type="button" onClick={onRetrySizeChart}><RefreshCw size={14} />重新上传尺码图</button> : null}
           </section>
 
           <section className="translation-modal-section">
