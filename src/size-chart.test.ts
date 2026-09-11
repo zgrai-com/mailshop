@@ -13,6 +13,11 @@ describe("AI size chart data", () => {
     expect(normalizeSizeChartSpec({ columns: ["Bust"], rows: [["86 cm"]] })).toBeNull();
   });
 
+  it("rejects size labels without corresponding measurement data", () => {
+    expect(normalizeSizeChartSpec({ columns: ["Size"], rows: [["S"], ["M"], ["L"]] })).toBeNull();
+    expect(normalizeSizeChartSpec({ columns: ["Size", "Bust"], rows: [["S", ""], ["M", ""]] })).toBeNull();
+  });
+
   it("pins table content into the image-generation prompt", () => {
     const spec = { columns: ["Size"], rows: [["M"]], note: "" };
     const prompt = buildSizeChartImagePrompt({ title: "Dress", spec, targetLanguage: "English" });

@@ -33,10 +33,13 @@ export function normalizeSizeChartSpec(value: unknown): SizeChartSpec | null {
   const rows = Array.isArray(source.rows)
     ? source.rows.flatMap((row) => Array.isArray(row) ? [row.map((item) => text(item, 80)).slice(0, columns.length)] : []).filter((row) => row.some(Boolean)).slice(0, 24)
     : [];
-  if (!columns.length || !rows.length || !columns.some((column) => /^(?:size|尺码|尺碼|尺寸)$/iu.test(column))) return null;
+  const sizeColumnIndex = columns.findIndex((column) => /^(?:size|尺码|尺碼|尺寸)$/iu.test(column));
+  if (columns.length < 2 || !rows.length || sizeColumnIndex < 0) return null;
+  const rowsWithMeasurements = rows.filter((row) => Boolean(row[sizeColumnIndex]) && row.some((value, index) => index !== sizeColumnIndex && Boolean(value)));
+  if (!rowsWithMeasurements.length) return null;
   return {
     columns,
-    rows: rows.map((row) => [...row, ...Array(Math.max(0, columns.length - row.length)).fill("")]),
+    rows: rowsWithMeasurements.map((row) => [...row, ...Array(Math.max(0, columns.length - row.length)).fill("")]),
     note: text(source.note, 240),
   };
 }

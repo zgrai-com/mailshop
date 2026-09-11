@@ -248,6 +248,8 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   const [imagePreviewState, setImagePreviewState] = useState<{ url: string; title: string } | null>(null);
   const [imageCompareState, setImageCompareState] = useState<{ originalUrl: string; resultUrl: string; title: string } | null>(null);
   const imageModalInitialMediaSelectionRef = useRef<{ active: boolean; ids: string[] } | null>(null);
+  const sizeChartUploadPendingRef = useRef(new Map<string, Promise<void>>());
+  const sizeChartUploadedHashesRef = useRef(new Set<string>());
   const translationModalRef = useRef<HTMLElement>(null);
   const descriptionRequestIdRef = useRef(0);
   const descriptionModalRef = useRef<HTMLElement>(null);
@@ -663,13 +665,21 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       setDescriptionSizeChartStatus("unavailable");
       return;
     }
+    const hash = sizeChart.hash;
     const altText = `Mailshop Size Chart ${sizeChart.hash}`;
     if ((product.images ?? []).some((image) => image.altText === altText)) {
+      sizeChartUploadedHashesRef.current.add(hash);
       setDescriptionSizeChartStatus("uploaded");
       return;
     }
-    setDescriptionSizeChartStatus("uploading");
-    try {
+    if (sizeChartUploadedHashesRef.current.has(hash)) {
+      setDescriptionSizeChartStatus("uploaded");
+      return;
+    }
+    const pending = sizeChartUploadPendingRef.current.get(hash);
+    if (pending) return pending;
+    const uploadTask = (async () => {
+      setDescriptionSizeChartStatus("uploading");
       const form = new FormData();
       if (/^data:image\//iu.test(sizeChart.imageUrl)) form.append("file", dataImageFile(sizeChart.imageUrl, `size-chart-${sizeChart.hash}`));
       else form.append("sourceUrl", sizeChart.imageUrl);
@@ -677,15 +687,23 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       form.append("altText", altText);
       const result = await api<{ image: NonNullable<ShopifyRemoteProduct["images"]>[number] }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}/media`, { method: "POST", body: form });
       if (!result.image) throw new Error("Shopify 未返回尺码图");
-      setProduct((current) => current ? { ...current, images: [...(current.images ?? []), result.image] } : current);
-      setDetailImages((current) => [...current, result.image]);
-      setModalImages((current) => [...current, result.image]);
-      if (mediaSelectionActive) setMediaSelectionDraft((current) => current.includes(result.image.id) ? current : [...current, result.image.id]);
+      const appendUnique = (current: NonNullable<ShopifyRemoteProduct["images"]>) => current.some((image) => image.id === result.image.id || (result.image.mediaId && image.mediaId === result.image.mediaId) || image.altText === altText) ? current : [...current, result.image];
+      setProduct((current) => current ? { ...current, images: appendUnique(current.images ?? []) } : current);
+      setDetailImages((current) => appendUnique(current));
+      setModalImages((current) => appendUnique(current));
+      setMediaSelectionDraft((current) => current.includes(result.image.id) ? current : [...current, result.image.id]);
+      sizeChartUploadedHashesRef.current.add(hash);
       setDescriptionSizeChartStatus("uploaded");
       onNotify("尺码图已上传并设置为显示");
+    })();
+    sizeChartUploadPendingRef.current.set(hash, uploadTask);
+    try {
+      await uploadTask;
     } catch (error) {
       setDescriptionSizeChartStatus("failed");
       onError(error);
+    } finally {
+      sizeChartUploadPendingRef.current.delete(hash);
     }
   }
 
@@ -1575,7 +1593,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
         <section className="media-picker-modal" role="dialog" aria-modal="true" aria-labelledby="media-picker-title">
           <header className="modal-header"><div><span>PRODUCT MEDIA</span><h2 id="media-picker-title">设置显示图片</h2></div><button className="icon-button" type="button" onClick={() => setMediaPickerOpen(false)} aria-label="关闭" title="关闭"><X size={19} /></button></header>
           <div className="media-picker-body">
-            <p className="media-picker-note">勾选的图片会在点击页面顶部“保存”后设置为商品媒体。当前 Shopify 媒体默认已勾选，AI 草稿默认未勾选。</p>
+            <p className="media-picker-note">勾选的图片会在点击页面顶部“保存”后作为本系统的显示媒体。此设置不会从 Shopify 后台删除或隐藏媒体；要从 Shopify 移除图片，请使用删除操作。当前 Shopify 媒体默认已勾选，AI 草稿默认未勾选。</p>
             <div className="media-picker-grid">
               {modalImages.map((image) => {
                 const selected = mediaSelectionDraft.includes(image.id);
