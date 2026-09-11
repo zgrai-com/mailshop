@@ -265,9 +265,8 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       setDraft(draftFrom(result.product));
       const jobsResult = await api<{ jobs: ImageJob[] }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(productId)}/ai/image-jobs`);
       setImageJobs(jobsResult.jobs);
-      const hiddenMediaIds = new Set(result.product.hiddenMediaIds ?? []);
-      setMediaSelectionActive(hiddenMediaIds.size > 0);
-      setMediaSelectionDraft((result.product.images ?? []).filter((image) => !hiddenMediaIds.has(image.mediaId ?? image.id) && !hiddenMediaIds.has(image.id)).map((image) => image.id));
+      setMediaSelectionActive(false);
+      setMediaSelectionDraft((result.product.images ?? []).map((image) => image.id));
     } catch (error) {
       onError(error);
     } finally {
@@ -825,9 +824,6 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
             .map((job) => job.resultUrl),
         }),
       });
-      // Keep the local media selection visible. Shopify may still be processing
-      // newly created media when the PATCH response is returned, so replacing
-      // the page state with that response can temporarily hide a saved image.
       onNotify("商品已保存到 Shopify");
       return true;
     } catch (error) {
@@ -1387,7 +1383,6 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   }
 
   const media = detailImages;
-  const hiddenMediaIds = new Set(product?.hiddenMediaIds ?? []);
   const selectedCount = selectedImages.length;
   const focusedImage = media.find((image) => image.id === focusedImageId) ?? media[0] ?? null;
   const queuedImageCount = imageJobs.filter((job) => job.status === "queued").length;
@@ -1405,7 +1400,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
         }),
         ...selectedAdditionalJobs.map((job, index) => ({ id: job.id, mediaId: null, url: job.resultUrl as string, altText: "AI 图片草稿", position: media.length + index })),
       ]
-    : media.filter((image) => !hiddenMediaIds.has(image.id) && !hiddenMediaIds.has(image.mediaId ?? image.id));
+    : media;
   const currentStatus = draft ? statusLabels[draft.status] : "";
   const viewLanguage = translation?.locales.find((item) => item.locale === viewLocale);
   const viewLocaleName = viewLanguage?.name ?? viewLocale;
@@ -1593,7 +1588,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
         <section className="media-picker-modal" role="dialog" aria-modal="true" aria-labelledby="media-picker-title">
           <header className="modal-header"><div><span>PRODUCT MEDIA</span><h2 id="media-picker-title">设置显示图片</h2></div><button className="icon-button" type="button" onClick={() => setMediaPickerOpen(false)} aria-label="关闭" title="关闭"><X size={19} /></button></header>
           <div className="media-picker-body">
-            <p className="media-picker-note">勾选的图片会在点击页面顶部“保存”后作为本系统的显示媒体。此设置不会从 Shopify 后台删除或隐藏媒体；要从 Shopify 移除图片，请使用删除操作。当前 Shopify 媒体默认已勾选，AI 草稿默认未勾选。</p>
+            <p className="media-picker-note">勾选的图片会在点击页面顶部“保存”后同步为 Shopify 商品展示媒体。取消勾选会解除图片与当前商品的关联，不会删除 Shopify 文件中的原始图片。当前 Shopify 商品媒体默认已勾选，AI 草稿默认未勾选。</p>
             <div className="media-picker-grid">
               {modalImages.map((image) => {
                 const selected = mediaSelectionDraft.includes(image.id);

@@ -154,7 +154,6 @@ export type ShopifyRemoteProduct = {
   seo?: { title: string | null; description: string | null };
   options?: Array<{ name: string; values: string[] }>;
   images?: Array<{ id: string; mediaId: string | null; url: string; altText: string | null; position: number }>;
-  hiddenMediaIds?: string[];
   variants?: Array<{
     id: string;
     title: string;

@@ -97,7 +97,7 @@ export type ShopifyProductDetail = ShopifyProductListItem & {
   seo: { title: string | null; description: string | null };
   options: Array<{ name: string; values: string[] }>;
   images: Array<{ id: string; mediaId: string | null; url: string; altText: string | null; position: number }>;
-  hiddenMediaIds?: string[];
+  mediaIds: string[];
   variants: Array<{
     id: string;
     title: string;
@@ -185,18 +185,6 @@ export type ShopifyProductUpdateInput = {
     barcode: string;
   }>;
 };
-
-async function ensureShopifyMediaPreferences(env: Env): Promise<void> {
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS shopify_product_media_preferences (
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    store_id TEXT NOT NULL REFERENCES shopify_stores(id) ON DELETE CASCADE,
-    product_id TEXT NOT NULL,
-    media_id TEXT NOT NULL,
-    visible INTEGER NOT NULL DEFAULT 1,
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    PRIMARY KEY (user_id, store_id, product_id, media_id)
-  )`).run();
-}
 
 export type ShopifyImageCreateInput = {
   storeId: string;
@@ -288,6 +276,7 @@ function mapShopifyProduct(raw: RawShopifyProduct): ShopifyProductDetail {
     seo: { title: raw.seo?.title ?? null, description: raw.seo?.description ?? null },
     options: (raw.options ?? []).map((option) => ({ name: option.name ?? "", values: (option.optionValues ?? []).map((value) => value.name ?? "").filter(Boolean) })).filter((option) => option.name),
     images: (raw.images?.nodes ?? []).map((image, index) => ({ id: image.id, mediaId: mediaIdsByImageId.get(image.id) ?? mediaIdsByUrl.get(image.url) ?? null, url: image.url, altText: image.altText ?? null, position: index })),
+    mediaIds: (raw.media?.nodes ?? []).map((media) => media.id),
     variants: variants.map((variant) => ({
       id: variant.id,
       title: variant.title,
@@ -398,9 +387,7 @@ export async function getShopifyProduct(env: Env, userId: string, storeId: strin
   const token = await getAccessToken(store, credentials);
   const data = await graphql<{ product: RawShopifyProduct | null }>(store, token.accessToken, `query Product($id: ID!) { product(id: $id) { ${PRODUCT_FIELDS} ${PRODUCT_MEDIA_FIELDS} } }`, { id: productId });
   if (!data.product) throw new ApiError(404, "Shopify 商品不存在", "shopify_product_not_found");
-  await ensureShopifyMediaPreferences(env);
-  const hidden = await env.DB.prepare("SELECT media_id AS mediaId FROM shopify_product_media_preferences WHERE user_id = ? AND store_id = ? AND product_id = ? AND visible = 0").bind(userId, storeId, productId).all<{ mediaId: string }>();
-  return { product: { ...mapShopifyProduct(data.product), hiddenMediaIds: hidden.results.map((row) => row.mediaId) }, store: toSummary(store, credentials) };
+  return { product: mapShopifyProduct(data.product), store: toSummary(store, credentials) };
 }
 
 export async function deleteShopifyProductImage(env: Env, userId: string, storeId: string, productId: string, mediaId: string): Promise<void> {
@@ -410,8 +397,6 @@ export async function deleteShopifyProductImage(env: Env, userId: string, storeI
   const result = await graphql<{ productDeleteMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) { productDeleteMedia(productId: $productId, mediaIds: $mediaIds) { userErrors { field message } } }`, { productId, mediaIds: [mediaId] });
   const error = userErrors(result.productDeleteMedia.userErrors);
   if (error) throw new ApiError(502, error, "shopify_media_delete_failed");
-  await ensureShopifyMediaPreferences(env);
-  await env.DB.prepare("DELETE FROM shopify_product_media_preferences WHERE user_id = ? AND store_id = ? AND product_id = ? AND media_id = ?").bind(userId, storeId, productId, mediaId).run();
 }
 
 export async function createShopifyProductImage(env: Env, userId: string, input: ShopifyImageCreateInput): Promise<{ image: ShopifyProductDetail["images"][number] }> {
@@ -781,21 +766,24 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
       : await stagedRemoteImageSource(store, token.accessToken, imageUrl, existingMediaIds.length + index);
     stagedMediaUrls.push(source);
   }
+  const createdMediaIds: string[] = [];
   if (input.mediaSelectionActive) {
     const selectedMediaIds = new Set(input.mediaIds ?? []);
     if (stagedMediaUrls.length) {
-      const mediaResult = await graphql<{ productCreateMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
-        productCreateMedia(productId: $productId, media: $media) { userErrors { field message } }
+      const mediaResult = await graphql<{ productCreateMedia: { media?: Array<{ id?: string | null }>; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+        productCreateMedia(productId: $productId, media: $media) { media { id } userErrors { field message } }
       }`, { productId: input.productId, media: stagedMediaUrls.map((originalSource) => ({ originalSource, mediaContentType: "IMAGE" })) });
       const mediaError = userErrors(mediaResult.productCreateMedia.userErrors);
       if (mediaError) throw new ApiError(502, mediaError, "shopify_media_create_failed");
+      createdMediaIds.push(...(mediaResult.productCreateMedia.media ?? []).flatMap((media) => media.id ? [media.id] : []));
     }
   } else if (stagedMediaUrls.length) {
-    const mediaResult = await graphql<{ productCreateMedia: { userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
-      productCreateMedia(productId: $productId, media: $media) { userErrors { field message } }
+    const mediaResult = await graphql<{ productCreateMedia: { media?: Array<{ id?: string | null }>; userErrors?: unknown } }>(store, token.accessToken, `mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+      productCreateMedia(productId: $productId, media: $media) { media { id } userErrors { field message } }
     }`, { productId: input.productId, media: stagedMediaUrls.map((originalSource) => ({ originalSource, mediaContentType: "IMAGE" })) });
     const mediaError = userErrors(mediaResult.productCreateMedia.userErrors);
     if (mediaError) throw new ApiError(502, mediaError, "shopify_media_create_failed");
+    createdMediaIds.push(...(mediaResult.productCreateMedia.media ?? []).flatMap((media) => media.id ? [media.id] : []));
   }
   await updateStoreHealth(env, store.id, "active", null);
   let refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
@@ -819,16 +807,29 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
     refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
   }
   if (input.mediaSelectionActive) {
-    await ensureShopifyMediaPreferences(env);
     const selectedMediaIds = new Set(input.mediaIds ?? []);
-    const preferenceStatements: D1PreparedStatement[] = [env.DB.prepare("DELETE FROM shopify_product_media_preferences WHERE user_id = ? AND store_id = ? AND product_id = ?").bind(userId, input.storeId, input.productId)];
-    for (const image of refreshed.product.images) {
-      const mediaId = image.mediaId ?? image.id;
-      if (!selectedMediaIds.has(mediaId) && !selectedMediaIds.has(image.id)) {
-        preferenceStatements.push(env.DB.prepare("INSERT INTO shopify_product_media_preferences (user_id, store_id, product_id, media_id, visible) VALUES (?, ?, ?, ?, 0)").bind(userId, input.storeId, input.productId, mediaId));
-      }
+    createdMediaIds.forEach((mediaId) => selectedMediaIds.add(mediaId));
+    for (const sourceUrl of input.mediaUrls) {
+      const createdImage = createdImagesBySourceUrl.get(sourceUrl);
+      if (createdImage?.mediaId) selectedMediaIds.add(createdImage.mediaId);
+      if (createdImage?.id) selectedMediaIds.add(createdImage.id);
     }
-    await env.DB.batch(preferenceStatements);
+    const imageMediaIds = new Set(refreshed.product.images.flatMap((image) => image.mediaId ? [image.mediaId] : []));
+    const files = [
+      ...refreshed.product.mediaIds.filter((mediaId) => !imageMediaIds.has(mediaId)).map((id) => ({ id })),
+      ...refreshed.product.images.flatMap((image) => {
+        if (!image.mediaId || (!selectedMediaIds.has(image.mediaId) && !selectedMediaIds.has(image.id))) return [];
+        return [{ id: image.mediaId }];
+      }),
+    ];
+    const mediaResult = await graphql<{ productSet: { userErrors?: unknown } }>(store, token.accessToken,
+      `mutation ProductSetMedia($identifier: ProductSetIdentifiers!, $input: ProductSetInput!, $synchronous: Boolean!) {
+        productSet(identifier: $identifier, input: $input, synchronous: $synchronous) { userErrors { field message } }
+      }`,
+      { identifier: { id: input.productId }, input: { files }, synchronous: true });
+    const mediaError = userErrors(mediaResult.productSet.userErrors);
+    if (mediaError) throw new ApiError(502, mediaError, "shopify_media_selection_failed");
+    refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
   }
   const uploadedImages = createdSourceUrls.flatMap((sourceUrl) => {
     const image = createdImagesBySourceUrl.get(sourceUrl) ?? refreshed.product.images.find((candidate) => !existingImageIdSet.has(candidate.id) && candidate.url === sourceUrl);
