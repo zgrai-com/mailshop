@@ -204,6 +204,13 @@ export const shopifyProductDescriptionAiSchema = z.object({
     .transform((values) => [...new Set(values)]),
 });
 
+export const shopifyProductSizeChartAiSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(255),
+  locale: shopifyLocaleSchema.optional(),
+  targetLanguage: z.string().trim().max(100).optional(),
+});
+
 export const shopifyProductTitleAiSchema = z.object({
   storeId: z.string().uuid(),
   productId: z.string().min(1).max(255),

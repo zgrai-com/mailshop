@@ -208,6 +208,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
   const [titleSelectedImageIds, setTitleSelectedImageIds] = useState<string[]>([]);
   const [titleCredits, setTitleCredits] = useState<{ balance: number; charged: number } | null>(null);
   const [titlePromptVersion, setTitlePromptVersion] = useState<string | null>(null);
+  const [sizeChartGenerating, setSizeChartGenerating] = useState(false);
   const [translation, setTranslation] = useState<ShopifyProductTranslations | null>(null);
   const [viewTranslation, setViewTranslation] = useState<ShopifyProductTranslations | null>(null);
   const [translationModalOpen, setTranslationModalOpen] = useState(false);
@@ -600,6 +601,32 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
       onError(error);
     } finally {
       setTitleGenerating(false);
+    }
+  }
+
+  async function generateSizeChart() {
+    if (!product || !draft || sizeChartGenerating || localizedEditingDisabled) return;
+    setSizeChartGenerating(true);
+    setDescriptionSizeChartStatus("uploading");
+    try {
+      const result = await api<{ sizeChart: ShopifySizeChart | null; sizeChartError?: string | null; credits: { balance: number; charged: number } }>(`/api/shopify/stores/${storeId}/products/${encodeURIComponent(product.id)}/ai/size-chart`, {
+        method: "POST",
+        body: JSON.stringify({ storeId, productId: product.id, locale: viewLocale || undefined, targetLanguage: viewLocaleName || undefined }),
+      });
+      setDescriptionCredits(result.credits);
+      setDescriptionSizeChart(result.sizeChart);
+      if (result.sizeChart) {
+        await uploadGeneratedSizeChart(result.sizeChart);
+        onNotify("AI 尺码表图已生成并上传到 Shopify");
+      } else {
+        setDescriptionSizeChartStatus("unavailable");
+        onNotify(result.sizeChartError || "未找到可用尺码数据");
+      }
+    } catch (error) {
+      setDescriptionSizeChartStatus("failed");
+      onError(error);
+    } finally {
+      setSizeChartGenerating(false);
     }
   }
 
@@ -1399,6 +1426,7 @@ export function ShopifyProductEditorPage({ stores, storeId, productId, returnPat
               <div className="editor-section-actions">
                 <button className="button quiet compact" type="button" onClick={() => void openDescriptionModal()} disabled={!product || !draft || localizedEditingDisabled}><Sparkles size={14} />AI 生成描述</button>
                 <button className="button quiet compact" type="button" onClick={openTitleModal} disabled={!product || !draft || localizedEditingDisabled}><Sparkles size={14} />AI 生成标题</button>
+                <button className="button quiet compact" type="button" onClick={() => void generateSizeChart()} disabled={!product || !draft || localizedEditingDisabled || sizeChartGenerating}><Sparkles size={14} />{sizeChartGenerating ? "尺码表图生成中" : "AI 生成尺码表图"}</button>
               </div>
             </div>
             <label><span>标题</span><input value={displayDraft?.title ?? ""} onChange={(event) => updateDraft("title", event.target.value)} disabled={localizedEditingDisabled} /></label>

@@ -123,6 +123,7 @@ import {
   shopifyProductTranslationAiSchema,
   shopifyProductSeoAiSchema,
   shopifyProductDescriptionAiSchema,
+  shopifyProductSizeChartAiSchema,
   shopifyProductTitleAiSchema,
   shopifyImageAnalyzeSchema,
   shopifyImageEditSchema,
@@ -780,10 +781,10 @@ function shopifyProductTranslationRoute(pathname: string): { storeId: string; pr
   return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "ai" ? "ai" : "read" };
 }
 
-function shopifyProductAiRoute(pathname: string): { storeId: string; productId: string; action: "seo" | "description" | "title" | "image_analyze" | "image_edit" } | null {
-  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/ai\/(seo|description|title|image-analyze|image-edit)$/iu);
+function shopifyProductAiRoute(pathname: string): { storeId: string; productId: string; action: "seo" | "description" | "size_chart" | "title" | "image_analyze" | "image_edit" } | null {
+  const match = pathname.match(/^\/api\/shopify\/stores\/([0-9a-f-]{36})\/products\/([^/]+)\/ai\/(seo|description|size-chart|title|image-analyze|image-edit)$/iu);
   if (!match) return null;
-  return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "seo" ? "seo" : match[3] === "description" ? "description" : match[3] === "title" ? "title" : match[3] === "image-analyze" ? "image_analyze" : "image_edit" };
+  return { storeId: match[1], productId: decodeURIComponent(match[2]), action: match[3] === "seo" ? "seo" : match[3] === "description" ? "description" : match[3] === "size-chart" ? "size_chart" : match[3] === "title" ? "title" : match[3] === "image-analyze" ? "image_analyze" : "image_edit" };
 }
 
 async function loadShopifyDescriptionSource(env: Env, storeId: string, productId: string): Promise<ShopifyDescriptionSourceContext | null> {
@@ -1379,6 +1380,33 @@ async function handleAuthenticatedApi(
         return json({ ok: true, ...result, sizeChart, sizeChartError, credits: { balance: await getCreditBalance(env, user.id), charged: totalAiCharged } });
       } catch (error) {
         await refundAiRequest(env, user.id, charge).catch(() => undefined);
+        throw error;
+      }
+    }
+    if (shopifyProductAi.action === "size_chart") {
+      if (request.method !== "POST") return methodNotAllowed(["POST"]);
+      const parsed = await readJson(request, shopifyProductSizeChartAiSchema);
+      if (parsed.storeId !== shopifyProductAi.storeId || parsed.productId !== shopifyProductAi.productId) {
+        throw new ApiError(422, "尺码图请求的店铺或商品不匹配当前路由", "shopify_size_chart_resource_mismatch");
+      }
+      const source = await loadShopifyDescriptionSource(env, shopifyProductAi.storeId, shopifyProductAi.productId);
+      if (!source) throw new ApiError(404, "没有找到可用于生成尺码图的 1688 来源", "shopify_size_chart_source_not_found");
+      const sourceInput = toShopifyDescriptionSourceInput(source);
+      const targetLanguage = parsed.targetLanguage || parsed.locale || "English";
+      const dataCharge = await chargeAiRequest(env, user.id, { feature: "shopify_size_chart_data", storeId: parsed.storeId, productId: parsed.productId, offerId: source.offerId });
+      try {
+        const spec = await generateShopifySizeChartData(env, { productTitle: product.product.title, source: sourceInput.raw, properties: sourceInput.properties ?? [], variants: sourceInput.variants ?? [], targetLanguage }, { env, request, userId: user.id, operation: "shopify.size_chart_data", scope: "chat", entityType: "shopify_product", entityId: parsed.productId });
+        if (!spec) return json({ ok: true, sizeChart: null, sizeChartError: "未找到可用尺码数据", credits: { balance: await getCreditBalance(env, user.id), charged: dataCharge.cost } });
+        const imageCharge = await chargeAiRequest(env, user.id, { feature: "shopify_size_chart_image", storeId: parsed.storeId, productId: parsed.productId, offerId: source.offerId });
+        try {
+          const generated = await generateShopifySizeChartImage(env, { productTitle: product.product.title, spec, targetLanguage }, { env, request, userId: user.id, operation: "shopify.size_chart_image", scope: "image_generation", entityType: "shopify_product", entityId: parsed.productId });
+          return json({ ok: true, sizeChart: { ...generated, spec }, sizeChartError: null, credits: { balance: await getCreditBalance(env, user.id), charged: dataCharge.cost + imageCharge.cost } });
+        } catch (error) {
+          await refundAiRequest(env, user.id, imageCharge).catch(() => undefined);
+          throw error;
+        }
+      } catch (error) {
+        await refundAiRequest(env, user.id, dataCharge).catch(() => undefined);
         throw error;
       }
     }
