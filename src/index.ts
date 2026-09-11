@@ -1357,7 +1357,7 @@ async function handleAuthenticatedApi(
           const sizeDataCharge = await chargeAiRequest(env, user.id, { feature: "shopify_size_chart_data", storeId: parsed.storeId, productId: parsed.productId, offerId: source.offerId });
           let sizeSpec;
           try {
-            sizeSpec = await generateShopifySizeChartData(env, { productTitle: product.product.title, source: sourceInput.raw, properties: sourceInput.properties ?? [], variants: sourceInput.variants ?? [], targetLanguage: parsed.targetLanguage || parsed.locale || "English" }, { env, request, userId: user.id, operation: "shopify.size_chart_data", scope: "chat", entityType: "shopify_product", entityId: parsed.productId });
+            sizeSpec = await generateShopifySizeChartData(env, { productTitle: product.product.title, source: sourceInput.raw, properties: sourceInput.properties ?? [], variants: sourceInput.variants ?? [], images: sourceInput.images, targetLanguage: parsed.targetLanguage || parsed.locale || "English" }, { env, request, userId: user.id, operation: "shopify.size_chart_data", scope: "chat", entityType: "shopify_product", entityId: parsed.productId });
           } catch (error) {
             await refundAiRequest(env, user.id, sizeDataCharge).catch(() => undefined);
             throw error;
@@ -1395,7 +1395,7 @@ async function handleAuthenticatedApi(
       const targetLanguage = parsed.targetLanguage || parsed.locale || "English";
       const dataCharge = await chargeAiRequest(env, user.id, { feature: "shopify_size_chart_data", storeId: parsed.storeId, productId: parsed.productId, offerId: source.offerId });
       try {
-        const spec = await generateShopifySizeChartData(env, { productTitle: product.product.title, source: sourceInput.raw, properties: sourceInput.properties ?? [], variants: sourceInput.variants ?? [], targetLanguage }, { env, request, userId: user.id, operation: "shopify.size_chart_data", scope: "chat", entityType: "shopify_product", entityId: parsed.productId });
+        const spec = await generateShopifySizeChartData(env, { productTitle: product.product.title, source: sourceInput.raw, properties: sourceInput.properties ?? [], variants: sourceInput.variants ?? [], images: sourceInput.images, targetLanguage }, { env, request, userId: user.id, operation: "shopify.size_chart_data", scope: "chat", entityType: "shopify_product", entityId: parsed.productId });
         if (!spec) return json({ ok: true, sizeChart: null, sizeChartError: "未找到可用尺码数据", credits: { balance: await getCreditBalance(env, user.id), charged: dataCharge.cost } });
         const imageCharge = await chargeAiRequest(env, user.id, { feature: "shopify_size_chart_image", storeId: parsed.storeId, productId: parsed.productId, offerId: source.offerId });
         try {

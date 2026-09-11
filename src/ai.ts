@@ -713,20 +713,36 @@ export async function editShopifyImage(env: Env, input: { imageUrl: string; prom
   return { imageUrl: await materializeGeneratedImage(imageUrl), prompt: input.prompt.trim() };
 }
 
-export async function generateShopifySizeChartData(env: Env, input: { productTitle: string; source: Record<string, unknown>; properties: unknown[]; variants: unknown[]; targetLanguage?: string }, context?: AiLogContext): Promise<SizeChartSpec | null> {
+export async function generateShopifySizeChartData(env: Env, input: { productTitle: string; source: Record<string, unknown>; properties: unknown[]; variants: unknown[]; images?: ShopifyDescriptionImageInput[]; targetLanguage?: string }, context?: AiLogContext): Promise<SizeChartSpec | null> {
   const credentials = await readCredentials(env, "chat");
   const prompt = [
-    "Extract a Shopify clothing size chart from the supplied product JSON.",
-    "Use only explicit size and measurement facts. Never infer, convert, round, or invent values.",
+    "Extract a Shopify clothing size chart from the supplied product JSON and product detail images.",
+    "Size information may appear in JSON, variant attributes, property images, or text inside detail images. Inspect every supplied detail image carefully, including Chinese or multilingual labels.",
+    "Support any chart type and any explicit measurement fields, such as Size, Recommended Weight, Height, Length, Bust, Waist, Hip, Shoulder, Sleeve Length, Inseam, Foot Length, or equivalent labels found in the source.",
+    "Use only explicit facts visible in the JSON or images. Never infer, convert units, round values, repair unreadable digits, or invent missing values.",
     "Return strict JSON only in this exact shape: {\"columns\":[\"Size\",\"Bust\"],\"rows\":[[\"S\",\"86 cm\"]],\"note\":\"\"}.",
-    "The first column must be Size. Include only columns with explicit values. If no size facts exist, return {\"columns\":[],\"rows\":[],\"note\":\"\"}.",
+    "The first column must be Size. Keep headers and cell values faithful to the source. Include only columns with explicit values and omit fields that cannot be read reliably. If no reliable size facts exist, return {\"columns\":[],\"rows\":[],\"note\":\"\"}.",
     `Product title: ${input.productTitle}`,
     `Target language for headers and note: ${input.targetLanguage || "English"}`,
     `Properties JSON: ${JSON.stringify(input.properties)}`,
     `Variants JSON: ${JSON.stringify(input.variants)}`,
     `Raw product JSON: ${JSON.stringify(input.source)}`,
   ].join("\n");
-  const result = await requestCompletion(env, credentials, { model: credentials.modelId, max_output_tokens: 2_000, input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }] }, context);
+  const content: Array<{ type: "input_text" | "input_image"; text?: string; image_url?: string }> = [{ type: "input_text", text: prompt }];
+  const detailImages = (input.images ?? []).filter((image) => image.group === "detail").slice(0, 8);
+  let imageCount = 0;
+  for (const image of detailImages) {
+    try {
+      const materialized = await materializeShopifyDescriptionImage(env, image);
+      content.push({ type: "input_text", text: `Detail image ${image.position ?? imageCount + 1}; inspect it for size-chart data.` });
+      content.push({ type: "input_image", image_url: materialized });
+      imageCount += 1;
+    } catch {
+      // Continue with the remaining detail images and JSON data.
+    }
+  }
+  if (imageCount) content.push({ type: "input_text", text: `The request includes ${imageCount} detail image(s). Prefer explicit readable values from those images when JSON is incomplete.` });
+  const result = await requestCompletion(env, credentials, { model: credentials.modelId, max_output_tokens: 2_000, input: [{ role: "user", content }] }, context);
   if (!result.response.ok) throw new ApiError(502, responseErrorMessage(result.payload, "AI size chart extraction failed", result.response.status), "shopify_size_chart_data_failed");
   return normalizeSizeChartSpec(parseModelJson(responseOutputText(result.payload)));
 }
