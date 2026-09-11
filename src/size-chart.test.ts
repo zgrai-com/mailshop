@@ -18,5 +18,7 @@ describe("AI size chart data", () => {
     const prompt = buildSizeChartImagePrompt({ title: "Dress", spec, targetLanguage: "English" });
     expect(prompt).toContain(JSON.stringify(spec));
     expect(prompt).toContain("Do not translate, paraphrase, omit, add, reorder, round, or alter");
+    expect(prompt).toContain("warm white background");
+    expect(prompt).toContain("no green palette");
   });
 });
