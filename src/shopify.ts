@@ -97,7 +97,6 @@ export type ShopifyProductDetail = ShopifyProductListItem & {
   seo: { title: string | null; description: string | null };
   options: Array<{ name: string; values: string[] }>;
   images: Array<{ id: string; mediaId: string | null; url: string; altText: string | null; position: number }>;
-  mediaIds: string[];
   variants: Array<{
     id: string;
     title: string;
@@ -276,7 +275,6 @@ function mapShopifyProduct(raw: RawShopifyProduct): ShopifyProductDetail {
     seo: { title: raw.seo?.title ?? null, description: raw.seo?.description ?? null },
     options: (raw.options ?? []).map((option) => ({ name: option.name ?? "", values: (option.optionValues ?? []).map((value) => value.name ?? "").filter(Boolean) })).filter((option) => option.name),
     images: (raw.images?.nodes ?? []).map((image, index) => ({ id: image.id, mediaId: mediaIdsByImageId.get(image.id) ?? mediaIdsByUrl.get(image.url) ?? null, url: image.url, altText: image.altText ?? null, position: index })),
-    mediaIds: (raw.media?.nodes ?? []).map((media) => media.id),
     variants: variants.map((variant) => ({
       id: variant.id,
       title: variant.title,
@@ -814,22 +812,23 @@ export async function updateShopifyProduct(env: Env, userId: string, input: Shop
       if (createdImage?.mediaId) selectedMediaIds.add(createdImage.mediaId);
       if (createdImage?.id) selectedMediaIds.add(createdImage.id);
     }
-    const imageMediaIds = new Set(refreshed.product.images.flatMap((image) => image.mediaId ? [image.mediaId] : []));
-    const files = [
-      ...refreshed.product.mediaIds.filter((mediaId) => !imageMediaIds.has(mediaId)).map((id) => ({ id })),
-      ...refreshed.product.images.flatMap((image) => {
-        if (!image.mediaId || (!selectedMediaIds.has(image.mediaId) && !selectedMediaIds.has(image.id))) return [];
-        return [{ id: image.mediaId }];
-      }),
-    ];
-    const mediaResult = await graphql<{ productSet: { userErrors?: unknown } }>(store, token.accessToken,
-      `mutation ProductSetMedia($identifier: ProductSetIdentifiers!, $input: ProductSetInput!, $synchronous: Boolean!) {
-        productSet(identifier: $identifier, input: $input, synchronous: $synchronous) { userErrors { field message } }
-      }`,
-      { identifier: { id: input.productId }, input: { files }, synchronous: true });
-    const mediaError = userErrors(mediaResult.productSet.userErrors);
-    if (mediaError) throw new ApiError(502, mediaError, "shopify_media_selection_failed");
-    refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
+    const mediaToRemove = refreshed.product.images.flatMap((image) => {
+      if (!image.mediaId || selectedMediaIds.has(image.mediaId) || selectedMediaIds.has(image.id)) return [];
+      return [image.mediaId];
+    });
+    if (mediaToRemove.length) {
+      if (!token.scopes.includes("write_files") && !token.scopes.includes("write_themes")) {
+        throw new ApiError(403, "Shopify 应用缺少 write_files（或 write_themes）权限，请更新应用版本并重新安装", "shopify_scope_missing");
+      }
+      const mediaResult = await graphql<{ fileUpdate: { userErrors?: unknown } }>(store, token.accessToken,
+        `mutation FileUpdateReferences($files: [FileUpdateInput!]!) {
+          fileUpdate(files: $files) { userErrors { field message } }
+        }`,
+        { files: mediaToRemove.map((id) => ({ id, referencesToRemove: [input.productId] })) });
+      const mediaError = userErrors(mediaResult.fileUpdate.userErrors);
+      if (mediaError) throw new ApiError(502, mediaError, "shopify_media_selection_failed");
+      refreshed = await getShopifyProduct(env, userId, input.storeId, input.productId);
+    }
   }
   const uploadedImages = createdSourceUrls.flatMap((sourceUrl) => {
     const image = createdImagesBySourceUrl.get(sourceUrl) ?? refreshed.product.images.find((candidate) => !existingImageIdSet.has(candidate.id) && candidate.url === sourceUrl);
@@ -1431,7 +1430,7 @@ export async function saveShopifySettings(env: Env, userId: string, input: Shopi
   await ensureShopifySchema(env);
   const shopDomain = normalizeShopDomain(input.shopDomain);
   const [clientId, clientSecret] = await Promise.all([encryptSetting(env, input.clientId), encryptSetting(env, input.clientSecret)]);
-  const scopes = JSON.stringify(["read_products", "write_products", "read_locales", "read_translations", "write_translations", "read_markets"]);
+  const scopes = JSON.stringify(["read_products", "write_products", "write_files", "read_locales", "read_translations", "write_translations", "read_markets"]);
   await env.DB.prepare(
     `INSERT INTO shopify_stores
        (id, owner_user_id, shop_domain, display_name, status, api_version, scopes_json, client_id_ciphertext, client_secret_ciphertext, last_error, updated_at)

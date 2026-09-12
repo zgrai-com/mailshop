@@ -318,7 +318,7 @@ Remove-Item Env:INGEST_API_KEY
 准备步骤：
 
 1. 准备一个目标 Shopify 商店。开发测试可使用 Shopify Dev Dashboard 中的开发商店，正式销售则使用正式商店。
-2. 在 Shopify Dev Dashboard 创建应用，为应用版本申请 `write_products` 权限，并把应用安装到目标商店。
+2. 在 Shopify Dev Dashboard 创建应用，为应用版本申请 `write_products` 和 `write_files` 权限，并把应用安装到目标商店。
 3. 在 Mailshop 的“系统设置 / Shopify 商品发布”中填写商店的 `xxx.myshopify.com` 域名、Client ID 和 Client Secret。
 4. 点击“测试连接”。通过后，进入商品详情并点击“上传到 Shopify 草稿”。
 
